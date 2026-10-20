@@ -105,3 +105,36 @@ static inline void slrr_mat_transpose(SlrrMat34 *o, const SlrrMat34 *s)
     o->m[4] = s->m[1]; o->m[5] = s->m[5]; o->m[6]  = s->m[9];
     o->m[8] = s->m[2]; o->m[9] = s->m[6]; o->m[10] = s->m[10];
 }
+
+// 0x566830 FUN_00566830: 3x3 inverse (adjugate / determinant); unused 4th column left untouched
+static inline void slrr_mat_inverse(SlrrMat34 *o, const SlrrMat34 *s)
+{
+    const float *p = s->m;
+    float a = p[0], b = p[1], c = p[2], d = p[4], e = p[5], f = p[6], g = p[8], h = p[9], i = p[10];
+    float k = 1.0f / (((i * a * e + g * b * f + h * c * d) - a * f * h) - d * b * i - c * e * g);
+    float c0 = i * e - h * f, c1 = g * f - d * i, c2 = h * d - e * g;
+    float c4 = h * c - i * b, c5 = i * a - c * g, c6 = g * b - h * a;
+    float c8 = b * f - c * e, c9 = c * d - a * f, c10 = a * e - d * b;
+    o->m[0] = c0 * k;  o->m[5] = c5 * k;  o->m[10] = c10 * k;
+    o->m[1] = c4 * k;  o->m[4] = c1 * k;
+    o->m[8] = c2 * k;  o->m[2] = c8 * k;
+    o->m[9] = c6 * k;  o->m[6] = c9 * k;
+}
+
+// 0x5666d0 FUN_005666d0: Euler angles {a0,a1,a2} -> rotation matrix.
+// 0x570fcb is sin and 0x570e7e is cos (inferred from the -sin(a1) entry at m[6]); verify against the exe's CRT helpers.
+static inline void slrr_euler_to_mat(SlrrMat34 *o, const float ang[3])
+{
+    float sa = sinf(ang[0]), ca = cosf(ang[0]);
+    float sb = sinf(ang[1]), cb = cosf(ang[1]);
+    float sc = sinf(ang[2]), cc = cosf(ang[2]);
+    o->m[1]  = sb * sa * cc - sc * ca;
+    o->m[0]  = sb * sa * sc + cc * ca;
+    o->m[2]  = cb * sa;
+    o->m[4]  = sc * cb;
+    o->m[5]  = cc * cb;
+    o->m[6]  = -sb;
+    o->m[8]  = sc * sb * ca - cc * sa;
+    o->m[9]  = sb * ca * cc + sc * sa;
+    o->m[10] = cb * ca;
+}

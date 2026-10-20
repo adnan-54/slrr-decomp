@@ -65,5 +65,5 @@ Matrices are 3 rows × stride 4 floats (`Mat34`, 12 floats), quaternions `{x,y,z
 | 0x567ea0 | matrix → quaternion (trace branch / largest diagonal) |
 | 0x566c10 | 3×3 multiply |
 | 0x567380 | 3×3 transpose (in place if same pointer) |
-| 0x566830 | 3×3 inverse via determinant (not yet ported) |
-| 0x5666d0 | Euler (yaw/pitch/roll) → rotation matrix using the x87 sin/cos helpers `0x570fcb`/`0x570e7e` (not yet ported: Ghidra lost the x87 result variables, port from disassembly) |
+| 0x566830 | 3×3 inverse (adjugate/determinant) |
+| 0x5666d0 | Euler → rotation matrix (SSE code; `0x570fcb`=sin, `0x570e7e`=cos inferred) |
