@@ -4,11 +4,11 @@
 #pragma once
 #include <math.h>
 
-typedef struct { float x, y, z, w; } SlrrQuat;
-typedef struct { float m[12]; } SlrrMat34;   // m[row*4 + col]
+typedef struct { float x, y, z, w; } Quat;
+typedef struct { float m[12]; } Mat34;   // m[row*4 + col]
 
 // 0x5665c0 FUN_005665c0: quaternion -> rotation matrix (writes the 9 used entries only)
-static inline void slrr_quat_to_mat(SlrrMat34 *o, const SlrrQuat *q)
+static inline void quat_to_mat(Mat34 *o, const Quat *q)
 {
     float x = q->x, y = q->y, z = q->z, w = q->w;
     float z2 = z + z, y2 = y + y, x2xx = x * (x + x), w2x = w * (x + x);
@@ -24,7 +24,7 @@ static inline void slrr_quat_to_mat(SlrrMat34 *o, const SlrrQuat *q)
 }
 
 // 0x5680d0 FUN_005680d0: normalize; zero quaternion becomes identity (0,0,0,1)
-static inline void slrr_quat_normalize(SlrrQuat *q)
+static inline void quat_normalize(Quat *q)
 {
     float n = sqrtf(q->y * q->y + q->x * q->x + q->z * q->z + q->w * q->w);
     if (n == 0.0f) { q->x = q->y = q->z = 0.0f; q->w = 1.0f; return; }
@@ -33,7 +33,7 @@ static inline void slrr_quat_normalize(SlrrQuat *q)
 }
 
 // 0x567b40 FUN_00567b40: o = a * b (Hamilton product, the exe's 7-multiplication form)
-static inline void slrr_quat_mul(SlrrQuat *o, const SlrrQuat *a, const SlrrQuat *b)
+static inline void quat_mul(Quat *o, const Quat *a, const Quat *b)
 {
     float a0 = a->x, a1 = a->y, a2 = a->z, a3 = a->w;
     float b0 = b->x, b1 = b->y, b2 = b->z, b3 = b->w;
@@ -51,7 +51,7 @@ static inline void slrr_quat_mul(SlrrQuat *o, const SlrrQuat *a, const SlrrQuat 
 }
 
 // 0x567ea0 FUN_00567ea0: rotation matrix -> quaternion (largest-diagonal branch method)
-static inline void slrr_mat_to_quat(SlrrQuat *o, const SlrrMat34 *mm)
+static inline void mat_to_quat(Quat *o, const Mat34 *mm)
 {
     const float *p = mm->m;
     static const int nxt[3] = {1, 2, 0};
@@ -77,7 +77,7 @@ static inline void slrr_mat_to_quat(SlrrQuat *o, const SlrrMat34 *mm)
 }
 
 // 0x566c10 FUN_00566c10: o = a * b (3x3 part, row-vector convention as stored)
-static inline void slrr_mat_mul(SlrrMat34 *o, const SlrrMat34 *a, const SlrrMat34 *b)
+static inline void mat_mul(Mat34 *o, const Mat34 *a, const Mat34 *b)
 {
     const float *A = a->m, *B = b->m;
     o->m[0]  = A[0] * B[0] + B[4] * A[1] + A[2] * B[8];
@@ -92,7 +92,7 @@ static inline void slrr_mat_mul(SlrrMat34 *o, const SlrrMat34 *a, const SlrrMat3
 }
 
 // 0x567380 FUN_00567380: transpose of the 3x3 part (in place if o == src)
-static inline void slrr_mat_transpose(SlrrMat34 *o, const SlrrMat34 *s)
+static inline void mat_transpose(Mat34 *o, const Mat34 *s)
 {
     if (o == s) {
         float t;
@@ -107,7 +107,7 @@ static inline void slrr_mat_transpose(SlrrMat34 *o, const SlrrMat34 *s)
 }
 
 // 0x566830 FUN_00566830: 3x3 inverse (adjugate / determinant); unused 4th column left untouched
-static inline void slrr_mat_inverse(SlrrMat34 *o, const SlrrMat34 *s)
+static inline void mat_inverse(Mat34 *o, const Mat34 *s)
 {
     const float *p = s->m;
     float a = p[0], b = p[1], c = p[2], d = p[4], e = p[5], f = p[6], g = p[8], h = p[9], i = p[10];
@@ -123,7 +123,7 @@ static inline void slrr_mat_inverse(SlrrMat34 *o, const SlrrMat34 *s)
 
 // 0x5666d0 FUN_005666d0: Euler angles {a0,a1,a2} -> rotation matrix.
 // 0x570fcb is sin and 0x570e7e is cos (inferred from the -sin(a1) entry at m[6]); verify against the exe's CRT helpers.
-static inline void slrr_euler_to_mat(SlrrMat34 *o, const float ang[3])
+static inline void euler_to_mat(Mat34 *o, const float ang[3])
 {
     float sa = sinf(ang[0]), ca = cosf(ang[0]);
     float sb = sinf(ang[1]), cb = cosf(ang[1]);
