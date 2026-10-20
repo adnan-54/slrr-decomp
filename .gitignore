@@ -1,0 +1,8 @@
+# game binaries: copyrighted, never commit
+bin/
+*.exe
+*.dll
+# ghidra projects / rea caches
+*.gpr
+*.rep/
+.rea/
