@@ -412,3 +412,9 @@ Walks the `0x1001` (local) / `0x1019` (class name = static access) / `0x101b` (c
 - `simTime()` 0x4e5810 returns the float at `*PTR_DAT_005dadf0` (level-2 simulation time).
 - `timeWarp(F m)` 0x4e5880: if `m >= 0` calls `FUN_0047dfd0(m)` (sets sim time speed), returns `DAT_005fe10c` (previous/current warp).
 - `arraycopy` 0x4e5280: bounds check against both arrays' `length` field ("System.arraycopy: copy out of bounds"), then element-wise copy (temp buffer when src == dst).
+
+### java.util.resource.PhysicsRef (0x4e1470 create, 0x4e16a0 createBox, 0x4e1e40 setMatrix, 0x4e1c40 getPos)
+- Script arg 0 is the `PhysicsRef` Instance; `FUN_004ecc70(instance, DAT_007a2620)` converts it to the native handle (`DAT_007a2620` = the PhysicsRef script class). Null handle → "vm_physicsref_<method>: scripted resource %x not found in file ...".
+- `create(ResourceRef res, int, String)` / `createBox(res, sx, sy, sz, name)`: builds a physics body (`FUN_004f7b50` generic / `FUN_004f7d60(0, 5, hx, hy, hz, 0)` box with **half extents** = size*0.5), sets flag bit 0 at `body+0xb4`, then `FUN_004e8a50(handle, body, ...)` attaches it to the scripted resource (a linked list in `[res+0x78]`).
+- `body+0xb4` → physics state block with **two pose buffers of stride 0xd4** at `+0xa4 + idx*0xd4` (matrix) and `+0x64 + idx*0xd4` (position xyz), `idx = [state+0x20c]` (0/1). `setMatrix` writes the position into **both** buffers and the orientation (Ypr → matrix `FUN_005666d0/FUN_00567ea0`) into the active one, then `FUN_00504180(state)` (refresh). `getPos` reads the active buffer and allocates a `java.lang.Vector3` Instance, setting its three float fields by name (`FUN_004ed080`). So the physics thread/step is double-buffered against the render side.
+- Vector3/Ypr script objects are read field-by-field with `FUN_004ec980(instance, "x"/"y"/"z" | "yaw"/"pitch"/"roll")` and written with `FUN_004ed080`.
