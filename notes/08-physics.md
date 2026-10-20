@@ -54,3 +54,16 @@ Iterates the constraint-group list `world+0xe8` (each group: count at `+0x34/+0x
 
 ## Next
 `FUN_004fc610` (contact resolve), `FUN_004f9af0`, `FUN_004fa4d0/a900` (broad/narrow phase), the `FUN_005680d0`/`FUN_00566xxx` math helpers (matrix/quaternion library — name and reimplement first), and the vehicle code (~100 callers of `FUN_004eabc0` in 0x488000–0x4d5000).
+
+## Math helpers (reimplemented in `src/engine/slrr_math.h`)
+Matrices are 3 rows × stride 4 floats (`Mat34`, 12 floats), quaternions `{x,y,z,w}`.
+| exe | function |
+|---|---|
+| 0x5665c0 | quaternion → rotation matrix |
+| 0x5680d0 | quaternion normalize (zero → identity) |
+| 0x567b40 | quaternion product (7-multiply form) |
+| 0x567ea0 | matrix → quaternion (trace branch / largest diagonal) |
+| 0x566c10 | 3×3 multiply |
+| 0x567380 | 3×3 transpose (in place if same pointer) |
+| 0x566830 | 3×3 inverse via determinant (not yet ported) |
+| 0x5666d0 | Euler (yaw/pitch/roll) → rotation matrix using the x87 sin/cos helpers `0x570fcb`/`0x570e7e` (not yet ported: Ghidra lost the x87 result variables, port from disassembly) |
