@@ -29,5 +29,28 @@ Compound bodies: child world pose = parent pose ∘ local (`FUN_005030b0`, `0050
 ## Link to scripting
 `PhysicsRef.create/createBox/createSphere` build bodies via `FUN_004f7b50/4f7d60` (generic, box) and attach them to the scripted resource (`FUN_004e8a50`). Scripts reach positions through `FUN_004eabc0` (GameRef → physics body, resource type `0xa0000000`).
 
+
+
+## State vector (one of two per body, stride 0xd4, base `body+0x64`; offsets as float index `s[i]`)
+`s[0..2]` position · `s[3..5]` linear velocity · `s[6..8]` position offset added after integration · `s[9]` local time · `s[0x10..0x1b]` 3×4 orientation (rows at `+0xa4,+0xb4,+0xc4`) · `s[0x1c..0x1e]` angular velocity (`+0xd4`) · `s[0x1f..0x21]` angular momentum (`+0xe0`) · `s[0x25..0x28]` quaternion (`+0xf8`) · `s[0x3x]` inertia-frame copies. Flags word at `s[0xf]` (bit0 = dirty/valid, bit1).
+
+## Integrator `FUN_00506530(cur, next, dt)` (BodyDef = `body+0x5c`)
+- Compound child (`body flags & 4`): pose is the parent's pose ∘ local transform (no integration).
+- Else, if flag `0x100` is clear: **classic RK4** — derivative `FUN_00505c40(state, h, k_i)` (k1..k4 in globals `DAT_006059c0…`), combination `FUN_00504ca0(y, k, weight, out)` with weights 0.5, 0.5, 1 for the stages and **1/6, 1/3, 1/3, 1/6** for the final sum (`0x3e2aaaab`, `0x3eaaaaab`); then `pos += s[6..8]`, orientation re-orthonormalised (`FUN_005680d0`), quaternion refreshed (`FUN_005665c0`).
+- Flag `0x100` (kinematic/scripted): body def flag `0x200` → plain Euler (`pos += v·dt`, `ω` from `BodyDef+0x2c`·dt); otherwise one derivative step.
+- Optional extra angular damping when `BodyDef+0x9c < 0`: `1 + mass·coef·dt·100` on the angular momentum.
+- **Safety clamps (must be reproduced):** angular speed: `|ω|²·0.0025 > 1` ⇒ scale ω to `|ω|=20`; linear speed: `|v|² > 62500` ⇒ scale to **250 m/s**.
+
+## Force model `FUN_004f8460(body)` (recursive over children; `ECX` = world)
+- Skips bodies with flags `&0x81 != 1`, `BodyDef+0xb4 & 4` (no integration) or zero mass non-compound.
+- Clears bit0 of the *other* state's flags (`+0x174 - idx*0xd4`).
+- Linear drag: `BodyDef+0x98 < 0` ⇒ force `= coef · v`.
+- Gravity: if `world+0x78` set and body bit1 clear ⇒ force `= g_vec(world+0x1c4..0x1cc) / mass` (applied via `FUN_00505360`).
+- BodyDef flag `0x80`: extra constant acceleration `−BodyDef+0xa0 · world+0x364 · g_dir`.
+- BodyDef flag `0x800` with `world+0x80`: **ground/water-plane contact**: tests the body against `world+0x384` planes (stride 6 floats), plane at `world+0x368..` normal `+0x374..`; computes a plane-penetration contact (`FUN_0050f810/0050f8a0`), applies friction/restoring impulse with energy cap (kinetic energy before/after, `world+0x394/0x398` coefficients), and queues an event `FUN_0047d550(node, 0, 0x200, &contactInfo)` (collision event dispatched to script, type `0x200`).
+
+## Constraint solver `FUN_00502410`
+Iterates the constraint-group list `world+0xe8` (each group: count at `+0x34/+0x35`): per group virtual calls `+0x1c` (build Jacobian), `+0x20`, then assembles block-sparse matrices with `FUN_00569ea0/569cc0/569db0` (matrix alloc/mul/copy helpers = small linear-algebra library), solves, and applies results with vfunc `+0x24`. Hence a Lagrange-multiplier / LCP-style joint solver (joints = `ResourceType_Physics_Constraint`).
+
 ## Next
-Decompile `FUN_004f8460` (force model), `FUN_00502410`/`FUN_004fc610` (solver/contacts), `FUN_00506530` (integrator), and the vehicle code under the ~100 callers of `FUN_004eabc0` in 0x488000–0x4d5000.
+`FUN_004fc610` (contact resolve), `FUN_004f9af0`, `FUN_004fa4d0/a900` (broad/narrow phase), the `FUN_005680d0`/`FUN_00566xxx` math helpers (matrix/quaternion library — name and reimplement first), and the vehicle code (~100 callers of `FUN_004eabc0` in 0x488000–0x4d5000).
