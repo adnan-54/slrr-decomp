@@ -388,3 +388,27 @@ Walks the `0x1001` (local) / `0x1019` (class name = static access) / `0x101b` (c
 ### java.util.resource.SfxRef (2)
 - `nplay(Ljava.lang.Vector3;FFFII)I` → 0x4e4610
 - `stop(I)V` → 0x4e47d0
+
+## Native implementation conventions (decompiled: Math, System basics)
+- Every native takes the single `ctx` pointer (see above). `FUN_004b1af0(ctx, 0, &a, &b, ...)` (named `Native__getArgs`) unpacks the argument list into C locals by the registered signature (int/float/pointer slots, in order). The `0` is presumably the first-arg index.
+- Script errors from natives use the shared reporter: message prefix `vm_<class>_<method>: ...`, then ` in file "<script>" at line <n>` from `[vm+0x74]` / `[vm+0x70]` (this is the origin of the `vm_*` strings).
+- Natives are plain cdecl functions, many just a few instructions (some have no Ghidra function because they are tail-merged/undefined code, e.g. 0x4e5500, 0x4e5550, 0x4e5470; decompile via disassembly there).
+- Several registrations share one stub: `exit(String)`, `analyze(int)`, `analyze(float)` → 0x4e5260 (parse args, do nothing); `runFinalization`, `NetworkEngine.httpRequest[Async]` → 0x461910 (`return 0`, i.e. disabled); `Replay.writeFile` = `Debug.writeFile` → 0x4e30d0; `GroundRef.getRouteLength` = `findRoute` → 0x4ddc50.
+- **Quirk to preserve**: `Math.ln` and `Math.log10` share 0x4decf0 — both compute the *natural* log (errors on `x <= 0` with "vm_math_ln: incorrect argument %f").
+
+### java.lang.Math
+| method | impl | behaviour |
+|---|---|---|
+| `random()` | 0x4dee50 | CRT `rand()` & 0x7fff, mapped to `[0,1)` by `x * 3.051851e-05` (=1/32768); 0x7fff is decremented first so 1.0 is never returned |
+| `randomize()` | 0x4dee90 | `srand((int)timeGetTime-like ms clock FUN_00569730)` |
+| `setrandseed(int)` | 0x4deeb0 | `srand(seed)` |
+| `sqrt(F)` | 0x4deee0 | x87 `fsqrt` (no domain check) |
+| `exp(F)` / `pow(F,F)` / `atan2(F,F)` | 0x4decc0 / 0x4dee10 / 0x4dec90 | CRT `exp`, `pow`, `fpatan(a, b)` (arg order as pushed: y, x) |
+| `ln(F)`, `log10(F)` | 0x4decf0 | natural log; error for x ≤ 0 |
+
+### java.lang.System (partial)
+- `log(String)` 0x4e5700: writes the string to the game log (`FUN_005695c0`), `"<null>"` for null.
+- `gc()` 0x4e55b0 → `FUN_00559e30` (JVM garbage/finalize pass); `runFinalization()` 0x461910 returns 0.
+- `simTime()` 0x4e5810 returns the float at `*PTR_DAT_005dadf0` (level-2 simulation time).
+- `timeWarp(F m)` 0x4e5880: if `m >= 0` calls `FUN_0047dfd0(m)` (sets sim time speed), returns `DAT_005fe10c` (previous/current warp).
+- `arraycopy` 0x4e5280: bounds check against both arrays' `length` field ("System.arraycopy: copy out of bounds"), then element-wise copy (temp buffer when src == dst).
