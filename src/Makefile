@@ -10,11 +10,11 @@ BUILD := build
 LIB_SRC  := script/classfile.cpp script/vm.cpp script/natives.cpp \
             resource/rpk.cpp resource/rdb.cpp resource/manager.cpp \
             parts/cfg.cpp physics/shape.cpp physics/world.cpp \
-            app/boot.cpp
+            vehicle/vehicle.cpp app/boot.cpp
 LIB_OBJ  := $(LIB_SRC:%.cpp=$(BUILD)/%.o)
 LIB      := $(BUILD)/libengine.a
 
-TOOLS    := classdump rpkdump resman cfgdump physcheck vmboot
+TOOLS    := classdump rpkdump resman cfgdump physcheck vehiclecheck vmboot
 TOOL_BIN := $(TOOLS:%=$(BUILD)/%)
 TOOL_OBJ := $(TOOLS:%=$(BUILD)/tools/%.o)
 
@@ -58,6 +58,7 @@ check: all
 	cd .. && src/$(BUILD)/resman --selfcheck
 	cd .. && src/$(BUILD)/cfgdump --selfcheck
 	$(BUILD)/physcheck
+	$(BUILD)/vehiclecheck
 	cd .. && src/$(BUILD)/vmboot --selfcheck
 
 clean:
