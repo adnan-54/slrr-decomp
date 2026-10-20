@@ -48,10 +48,21 @@ Script setters write straight into the struct (the script's `WheelRef` is conver
 | `+0x4c` | damping rebound |
 | `+0x50` / `+0x54` / `+0x58` | suspension rest / min / max length (`setRestLen/MinLen/MaxLen`) |
 | `+0x5c` | `restLen + wheelRadius` (derived) ; `+0x60` = wheel radius |
-| every length setter | re-runs `FUN_004f4280(force, damp_bump, rest+r, min+r, max+r, damp_rebound, r)` = (re)configures the suspension spring-damper constraint |
+| every length setter | re-runs `FUN_004f4280(force, damp_bump, rest+r, min+r, max+r, damp_rebound, r)` — a plain setter on the wheel's spring object that stores the spring parameters (rebound defaults to 0.7·bump if <= 0, `max` defaults to rest if <= 0) |
 | `+0x64`,`+0x68` | friction (`setFriction`; also `+0x1f0`); `+0x6c`,`+0x70` = friction · `(1 − w²·0.6)` (min factor 0.1 when `w ≥ 1`, `w = [+0x15c]` = wear/damage factor) |
 | `+0x74` | rolling resistance (`setRollRes`) |
 | `+0xf0` | bearing friction (`setBearing`) |
 | `+0x1e8 .. +0x228` | **Pacejka coefficient array, 17 floats** (`setPacejka(i, v)`, `0 ≤ i ≤ 16`). Named setters alias slots: `setSliction` → [0], `setFriction` → [2], `setStiffness` → [4], `setMaxLoad` → [11] (`+0x214`), `setFrictn_x` → [12] (`+0x218`), `setLoadSmooth` → [14] (`+0x220`) |
 So the tyre model is a **Pacejka "magic formula"** parameter set per wheel, with load-dependent grip limited by max load; suspension is a spring/damper constraint with bump and rebound damping (rebound = 0.7 × bump by default).
 Other setters still to map: `setArm(7f)`, `setHub(10f)`, `setInstantCenter(6f)` (suspension geometry), `setPos/Ypr/Drive/Steer/Brake/HBrake/Width/OppWheel` and the `Chassis` natives (`setMaxSteer`, `setAckermann`, `setSteerWheel*`, `setBuck`, `setCooling`, `setTorque`, `getRPM`...).
+
+## `FUN_0049c8e0(car, dt)` = **Vehicle::update** (17 KB, 1717 lines of pseudo-code; read lines 1–340 so far)
+Called per car per physics tick (`param_1` = car, `ECX` = vehicle manager). Early outs: `car+0x2054 != 0` (disabled), `dt < 0.0001`. Root body of the car = `car+0x13ec` (follow `+0x20` while flag `&4`). Engine block `e = car+0x2050`.
+Observed in the first part (engine / thermal model):
+- State flags `car+0x70` (bit0 init'd, bit1, bit10 `0x400` = skip thermal, bit14 `0x4000` = engine running). On first update after the body becomes active (`body+0x58 & 0x80`) it seeds per-wheel force vectors (`wheel+0x140..0x154`) from the wheel contact data (`wheel+0x30` → contact-patch block; `FUN_004f3d30` = suspension/contact query).
+- **RPM**: engine angular speed `car+0x1e7c` (rad/s) → rpm `= ω · 9.549296` (`30/π`). Throttle `car+0x1de4`.
+- **Torque**: `FUN_004a1510(rpm, e)` and `FUN_004a2dd0(rpm, e)` evaluate the engine torque curve (arrays set in `Vehicle__refreshParameters`), scaled by `car+0x1e04` (damage/health factor) and (nitro) `car+0x1e08` via `FUN_004a2d40`. Over-rev: when `ω >= e[0xf0/4]` the limiter cuts torque; rev-limiter flag `car+0x1dfc`.
+- **Nitro**: `car+0x1df8` (active strength) and tank `car+0x1f5c`; consumes `strength · e[0xa58/4] · rpm · 0.0002 · dt`, adds extra torque (`·2000` to the heat term).
+- **Engine temperature** `car+0x1ec0` (°C): heat in `= (torque_work · dt) / engine_mass(car+0x1ebc)`; cooling coefficient `car+0x1ec8` (from `e[0xa5c]` + airflow term `e[0xa60]`, `e[0xa64]` · speed², with `FUN_004b0ff0(radiator health)`); `T -= |T − ambient(car+0x1ec4)| · coeff · dt · (T − ambient)`; above 100 °C the engine takes damage: `FUN_004afb50(damage = (T−100)² · dt · k)`; wear probability for overheating also depends on rpm⁸/maxrpm⁸ (`e[0x18]`), friction `e[0xf4/0xf8]` and `FUN_004afb50` returns whether a part failed — on failure torque factors `car+0x1e04/08` are reduced by `FUN_004b0ff0(health)`; at full damage (`≥1.0`) torque halves, friction ×50 and an event is queued (`FUN_004eb5c0`).
+- Output torque/inertia terms are accumulated into locals and applied to the drivetrain further down (to be read next: lines 340+ — differential/wheel loop `for i < manager+0x1fb4` with stride 0x2e4, gearbox, tyre forces).
+Names: `FUN_004a1510` torque-curve (positive), `FUN_004a2dd0` torque (alt/negative), `FUN_004afb50` damage roll, `FUN_004b0ff0` health→factor.
