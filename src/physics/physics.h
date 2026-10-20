@@ -1,0 +1,200 @@
+// Rigid-body physics core, ported from notes/08-physics.md and
+// notes/11-collision-shapes.md. Original addresses are quoted per block.
+// Generic engine naming: no game prefix; math types come from engine/math.h.
+#pragma once
+#include <stdint.h>
+#include <vector>
+
+#include "engine/math.h"
+
+struct Vec3 {
+    float x, y, z;
+};
+
+static inline Vec3 vec3(float x, float y, float z) { return Vec3{x, y, z}; }
+static inline Vec3 operator+(Vec3 a, Vec3 b) { return Vec3{a.x + b.x, a.y + b.y, a.z + b.z}; }
+static inline Vec3 operator-(Vec3 a, Vec3 b) { return Vec3{a.x - b.x, a.y - b.y, a.z - b.z}; }
+static inline Vec3 operator-(Vec3 a) { return Vec3{-a.x, -a.y, -a.z}; }
+static inline Vec3 operator*(Vec3 a, float s) { return Vec3{a.x * s, a.y * s, a.z * s}; }
+static inline Vec3 operator*(float s, Vec3 a) { return Vec3{a.x * s, a.y * s, a.z * s}; }
+static inline Vec3 &operator+=(Vec3 &a, Vec3 b) { a.x += b.x; a.y += b.y; a.z += b.z; return a; }
+static inline Vec3 &operator-=(Vec3 &a, Vec3 b) { a.x -= b.x; a.y -= b.y; a.z -= b.z; return a; }
+static inline float vec_dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+static inline Vec3 vec_cross(Vec3 a, Vec3 b)
+{
+    return Vec3{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+static inline float vec_length(Vec3 a) { return sqrtf(vec_dot(a, a)); }
+static inline Vec3 vec_normalize(Vec3 a, Vec3 fallback)
+{
+    float n = vec_length(a);
+    return n > 1e-8f ? a * (1.0f / n) : fallback;
+}
+
+// Row vector times matrix: world = R * local (rows of R are world axes).
+static inline Vec3 mat_vec(const Mat34 &m, Vec3 v)
+{
+    return Vec3{m.m[0] * v.x + m.m[1] * v.y + m.m[2] * v.z,
+                m.m[4] * v.x + m.m[5] * v.y + m.m[6] * v.z,
+                m.m[8] * v.x + m.m[9] * v.y + m.m[10] * v.z};
+}
+static inline Vec3 mat_tvec(const Mat34 &m, Vec3 v)
+{
+    return Vec3{m.m[0] * v.x + m.m[4] * v.y + m.m[8] * v.z,
+                m.m[1] * v.x + m.m[5] * v.y + m.m[9] * v.z,
+                m.m[2] * v.x + m.m[6] * v.y + m.m[10] * v.z};
+}
+
+struct Pose {
+    Vec3 pos{0.0f, 0.0f, 0.0f};
+    Quat rot{0.0f, 0.0f, 0.0f, 1.0f};
+};
+
+static inline Mat34 pose_rotation(const Pose &p)
+{
+    Quat q = p.rot;
+    quat_normalize(&q);
+    Mat34 m;
+    quat_to_mat(&m, &q);
+    return m;
+}
+
+// Shape kinds (notes/11 §1, shape+0x08).
+// Kinds 6/7 (convex .scx mesh) are not ported: no loader and no Poly__buildMesh.
+// Shape 8 is an engine extension standing in for the world ground/water plane
+// used by the documented body-flag 0x800 path (notes/08 §Force model); the exe
+// builds a temporary collider for it, not a scene shape.
+enum ShapeKind {
+    SHAPE_NONE = 0,
+    SHAPE_SPHERE = 1,
+    SHAPE_CAPSULE_X = 2,
+    SHAPE_CAPSULE_Y = 3,
+    SHAPE_CAPSULE_Z = 4,
+    SHAPE_BOX = 5,
+    SHAPE_MESH = 6,          // TODO: .scx loader + Poly__buildMesh, returns no contacts
+    SHAPE_MESH_NO_POLY = 7,  // skipped by Collide__bodyPair like shape 0
+    SHAPE_PLANE = 8,         // engine extension (see above)
+};
+
+struct Shape {
+    int type = SHAPE_NONE;
+    float radius = 0.0f;              // +0x10: sphere radius / capsule radius
+    float half_length = 0.0f;         // +0xb4: capsule half length
+    Vec3 half_extents{0.0f, 0.0f, 0.0f}; // +0xb4..+0xbc: box
+    Vec3 plane_point{0.0f, 0.0f, 0.0f};  // SHAPE_PLANE, shape-local
+    Vec3 plane_normal{0.0f, 1.0f, 0.0f}; // SHAPE_PLANE, shape-local, unit
+    float friction = 0.6f;            // +0x50
+    float restitution = 0.2f;         // +0x58
+
+    // notes/11 §1: broad-phase radius; primitives already carry the +0.05 slack.
+    float bounding_radius() const;
+};
+
+// True for kinds whose distance/contact query is ported below.
+bool shape_kind_resolved(int type);
+
+// Body definition (rigidbody_type, notes/11 §1).
+struct BodyDef {
+    float inv_mass = 0.0f;       // +0x2c; 0 = static
+    Mat34 inv_inertia{};         // +0x30: body-frame inverse inertia (3x3)
+    Shape shape;                 // +0x90
+    float linear_drag = 0.0f;    // +0x98 = -0.005 * mass
+    float angular_drag = 0.0f;   // +0x9c = -0.01 * mass
+    uint32_t flags = 0;          // +0xb4; bit2 = no integration
+};
+
+// Fills inv_mass/inv_inertia/drag from the shape (notes/11 §1 mass formulas).
+// Mesh kinds leave the inertia at zero (TODO).
+void compute_mass_props(BodyDef *def, float mass);
+
+struct RigidBody {
+    BodyDef def;
+    Vec3 pos{0.0f, 0.0f, 0.0f};
+    Quat rot{0.0f, 0.0f, 0.0f, 1.0f};  // state s[0x25..0x28]
+    Vec3 vel{0.0f, 0.0f, 0.0f};        // state s[3..5]
+    Vec3 angular_momentum{0.0f, 0.0f, 0.0f}; // state s[0x1f..0x21]; omega = I^-1 L
+    Vec3 pos_correction{0.0f, 0.0f, 0.0f};   // state s[6..8], applied after integration
+    Vec3 ext_force{0.0f, 0.0f, 0.0f};  // gravity/drag, applied every integration
+    Vec3 ext_torque{0.0f, 0.0f, 0.0f};
+    Vec3 force{0.0f, 0.0f, 0.0f};      // solver force, consumed by next integration
+    Vec3 torque{0.0f, 0.0f, 0.0f};     // solver torque, consumed by next integration
+    bool settled = false;              // state flags bit0 (sleep); no sleeping is decoded yet
+
+    Pose pose() const { return Pose{pos, rot}; }
+    Mat34 rotation() const;
+    Mat34 world_inv_inertia() const;
+    Vec3 angular_velocity() const;
+    Vec3 point_velocity(const Vec3 &p_local) const; // PhysBody__pointVelocity 0x5051c0-ish
+    void apply_impulse_at(const Vec3 &impulse, const Vec3 &p_local); // 0x505450
+    void apply_force_at(const Vec3 &f, const Vec3 &p_local);        // 0x5051e0
+
+    void set_sphere(float radius, float mass);
+    void set_box(const Vec3 &half_extents, float mass);
+    void set_capsule(int axis, float half_length, float radius, float mass);
+    void set_static_shape(const Shape &s);
+};
+
+// Contact query result in world space. separation is the surface distance
+// (negative = penetrating), normal points from B to A.
+struct ShapeHit {
+    Vec3 point_a{0.0f, 0.0f, 0.0f};
+    Vec3 point_b{0.0f, 0.0f, 0.0f};
+    Vec3 normal{0.0f, 1.0f, 0.0f};
+    float separation = 0.0f;
+    int feature_a = 0;
+    int feature_b = 0;
+};
+
+// Signed distance for the deepest feature pair of a resolved pair. Returns
+// false when the pair is unresolved or when the shapes are separated by more
+// than the contact slop (only overlap/near-contact witnesses are generated).
+bool shape_distance(const Shape &a, const Pose &pa, const Shape &b, const Pose &pb,
+                    ShapeHit *out);
+
+// Contact manifold for one pair, up to max_hits points (a box-box or box-plane
+// pair can yield four). Only features within 0.02 m of contact are emitted
+// (notes/11 §4). Unresolved kinds return 0.
+int collide_shapes(const Shape &a, const Pose &pa, const Shape &b, const Pose &pb,
+                   ShapeHit *hits, int max_hits);
+// Same query with a caller-chosen contact threshold: the exe adds pairs below
+// 0.02 m but keeps existing contacts alive until 0.05 m (notes/11 §4/§5).
+int collide_shapes_within(const Shape &a, const Pose &pa, const Shape &b, const Pose &pb,
+                          ShapeHit *hits, int max_hits, float slop);
+
+// c_collision (notes/11 §5). Modes 6 = new impact, 7 = resting.
+struct Contact {
+    RigidBody *a = nullptr;
+    RigidBody *b = nullptr;
+    Vec3 local_a{0.0f, 0.0f, 0.0f};   // +0x74
+    Vec3 local_b{0.0f, 0.0f, 0.0f};   // +0x80
+    Vec3 normal{0.0f, 1.0f, 0.0f};    // +0x8c, world, B -> A
+    Vec3 world_point{0.0f, 0.0f, 0.0f}; // +0x98
+    float separation = 0.0f;          // +0xa4, margins already subtracted
+    float friction = 0.6f;            // +0xac = min(muA, muB)
+    float restitution = 0.2f;         // +0xb0 = (eA + eB) / 2
+    int mode = 6;                     // +0x2c
+    float normal_impulse = 0.0f;      // +0xb8
+    float bias_force = 0.0f;          // +0xbc
+    float friction_force = 0.0f;      // +0xc0
+    int feature_a = 0;
+    int feature_b = 0;
+};
+
+// PhysicsWorld (notes/08). Fixed iteration order:
+//   apply forces per root body -> for each sub-iteration: re-integrate every
+//   root from the immutable start-of-step state, replay the accumulated
+//   impulses, refresh contacts, then resolve each body pair in list order
+//   (manifold block solve); stop when a pass reports no corrections (max 20).
+// The RHS is velocity-level (see resolve_pair): notes/11 §5's resting spring
+// bias is a force and is replaced by its position correction.
+struct World {
+    Vec3 gravity{0.0f, -9.81f, 0.0f}; // notes/11 §6 (PhysicsWorld__init 0x4fffb0)
+    float air_density = 1.2935f;      // +0x364, buoyancy path (body def flag 0x80) TODO
+    std::vector<RigidBody *> bodies;  // root bodies
+    std::vector<Contact> contacts;    // world+0x1d8
+    int last_iterations = 0;
+    unsigned unsupported_pairs = 0;   // pairs with a TODO shape kind, no contacts
+
+    void add_body(RigidBody *b);
+    int step(float dt);
+};

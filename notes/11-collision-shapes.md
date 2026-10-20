@@ -62,8 +62,22 @@ Header `"INVO"`, u32 version. Coordinates are **centimetres** (×0.01 on load). 
 Sample: FL_door.scx = v3, hdr 0x88, stride 64, **16 verts, 28 triangles** (closed hull: E = 42, features 86), AABB x −0.116..0.105, y −0.321..0.316, z −0.602..0.549 m. Link to data: the cfg line `body 0.003 0.001 0.023  0 0 0  36.000  cars\racers\Axis_data\meshes\_phys_FL_door.scx ;0x20` = body offset, rotation, mass 36 kg, shape file → type-9 rpk resource `0x20` whose `.rsd` holds `shape <path>.scx` / `mass` (see 01); the shape is a type-6 convex mesh, inertia from the hull, μ=0.6, e=0.2 defaults.
 
 ## 3. Distance queries
+**Resolved: the "kinds" 1/2/3 are V-Clip Voronoi feature kinds, not shape types.** The shape object itself has type 0..7 (§1); the pair dispatcher works on the cached Voronoi features of the shapes' polyhedra (built by `Phys__shapeInit`/`Poly__build*`, §2):
+- **1 = V (vertex)**, **2 = E (edge)**, **3 = F (face)**.
+
 Globals: `g_vclipState[2]` 0x60617c (state A,B), `g_vclipPoly[2]` 0x606174, `g_vclipFeature[2]` 0x606184 (current features), `g_vclipSwap` 0x6060e0 (**persistent** 0/1 index; handlers address A/B as `[swap]`/`[swap^1]` and the result normal is negated when swap==1). Pair key = `kind[swap]*0x100 + kind[swap^1]`; mixed pairs are normalised so `[swap]` holds the lower-dimensional feature (V before E before F).
 Outputs: points in each body's **local** frame, normal in world pointing **from B to A**, return = signed distance.
+
+Pair handler map (feature-kind key → validity test / distance routine):
+| key | test | distance | features |
+|---|---|---|---|
+| 0x101 | 0x50d050 | 0x50ce30 | V–V |
+| 0x102, 0x201 | 0x50bc90 | 0x50b870 | V–E |
+| 0x103, 0x301 | 0x50c660 | 0x50c400 | V–F |
+| 0x202 | 0x509f10 | 0x509130 | E–E (→ `Math__segSegClosest2` 0x509740) |
+| 0x203, 0x302 | 0x50aa60 + `VClip__clipEdge` | inline (0x50e2d0 frame transforms) | E–F |
+
+Handler parameters are the local feature data from §2: V = one vertex `p`; E = tail/head vertices (`dir = normalize(head−tail)`, `len = dir·(head−tail)`); F = plane point `q` and unit outward normal `n_f`, plus the face rotation R_F of the owning body.
 
 Distance primitives:
 - `VClip__distVV` 0x50ce30: d = ‖pA_w − pB_w‖, n = (pA_w − pB_w)/d.
@@ -94,7 +108,8 @@ Two drivers:
 Fields (`c_collision__init` 0x4f2770): `+0x2c` **mode** (6 = new impact, 7 = resting; `constraint__vf4_resolve` only acts on 6/7), `+0x34` rows = 1, `+0x38`/`+0x40` VecN {n, float*} (rhs / λ), `+0x48`/`+0x50` body A/B (ref links), `+0x58` optional resource instance (flag `+0xb4` bit0), `+0x64/+0x68` features, `+0x74` pA (A-local), `+0x80` pB (B-local), `+0x8c` normal (world, B→A), `+0x98` world point, `+0xa4` separation d (margins already subtracted), `+0xa8` extra, `+0xac` μ = min(μA, μB), `+0xb0` e = (eA+eB)/2 (0.5/0.5 if a body is missing), `+0xb8/+0xbc/+0xc0` accumulated normal impulse / bias force / friction force (reset when `DAT_006052ac`), `+0xc4` TOI, `+0xc8` = 1.0.
 `updateContacts` keeps each pair alive: re-evaluates `Phys__shapeDistance` on the previous states, drops it if d == 0 (invalid features) or d > rA+rB+0.05, wakes bodies and clears `world+0x39c` (= "converged" flag `world[0xe7]`) if d < rA+rB+0.02, refines by 10-step bisection if penetrating, then subtracts margins: `pA −= rA·(R_Aᵀn)`, `pB += rB·(R_Bᵀn)`, `d −= rA+rB`, and stores the world point.
 
-### Resolve `c_collision__resolve` 0x4f0dd0 (= vf4 for modes 6/7; called for every contact each sub-iteration)
+### Resolve `c_collision__resolve` 0x4f0dd0 (called for every contact each sub-iteration)
+Vtable slot 4 of both `constraint` and `c_collision` is the wrapper `constraint__vf4_resolve` **0x4f0db0**: `if (mode − 6u < 2) return c_collision__resolve(); else return 0;` — so mode 6/7 reaches 0x4f0dd0, the body of the routine below. (The earlier note's 0x4f0dd0 is the real body; do not confuse it with the wrapper.)
 Let dyn(X) = !(def.flags&4); skip if neither body is dynamic-and-not-0x80; d > 0.05 → 0. Compound children: pA/pB are lifted to the root frame through `child+0x1c` (offset +4, rows +0x20/+0x30/+0x40). Bodies with flag 0x20000: mode 6 only adds `1.1·body+0x18` to `+0xb8`, returns 0. dt = `g_physWorld+0xc`.
 ```
 vrel = vA(pA) − vB(pB)          // PhysBody__pointVelocity: v + ω×(R pA), from the *other* state (idx^1)
@@ -119,10 +134,99 @@ on nonzero return: clear other-state bit0 of both (wake), world+0x14++.
 ### Impact pass `PhysicsWorld__resolveImpacts` 0x4ffd20
 For every contact in mode 6: call vf4 (sum returned), clear both roots' flag 0x400/`+0x214`, queue script event type 1 (`Game__queueEvent(body+0x38, 0, 1, contact)`) for each body when its threshold `body+0x18` < accumulated impulse `+0xb8` or body flag 0x80 (also to the compound root), then **switch the contact to mode 7**.
 
-### `PhysicsWorld__solvePass` 0x502410 (the "joint solver")
-Walks `world+0xe8` (constraints; count `world+0x5c`, pruned by vf6 `isValid` in `pruneConstraints`). For each with rows `+0x34 ≠ 0`: vf7 (rhs → `*(+0x3c)`), vf8 (λ → `*(+0x44)`); N = Σrows; `world+0x3a0`, `+0x3a8` VecN(N) and `world+0x3b0` MatN(N×N) are sized; the per-constraint vectors are gathered into the world vectors (`VecN__copyBlock`) and scattered back; vf9 applies λ. **No global matrix solve happens** (the N×N matrix is allocated but unused) — each row is solved independently with the velocities from before the pass (Jacobi style).
-c_collision rows: vf7 `rhs`: both immovable → 0; mode 6: `vn < −0.2 → −(1+e)(vn+0.2)` (otherwise rhs left unchanged); other modes: `b = d`, if (a body's other-state bit0 clear) and d < 0.03 → `b = (0.03−d)·10`; if vn < −0.2: `b −= (vn+0.4)(1+e)` (sic). vf8: `λ = b/K` (K as above, 0 if both immovable). vf9: mode 6 → `applyImpulseAt(±λ n)`, else `applyForceAt(±(λ/dt) n)`.
-`constraint` base and `c_triggerspring` have vf7–vf9 = `guard_check_icall` (empty), so in practice only c_collision-type rows are solved here. **Open**: which objects are inserted into `world+0xe8` (no writer found yet; contacts go to `+0x1d8`); joint types from `typ_physics_constraint` resources are not identified.
+### World intrusive-list layout (resolved)
+All world lists are `TList` objects (`TList::vftable_TList` 0x59391c, dtor 0x493d00 → body 0x41fd90). A **`TListNode`** base is **0x24 bytes**: vtable +0, then **four independent doubly-linked link slots**, each `{next, prev}`: slot0 +0x04/+0x08, slot1 +0x0c/+0x10, slot2 +0x14/+0x18, slot3 +0x1c/+0x20. A **`TList`** is **0x4c bytes**: TList vtable +0; head sentinel TListNode at +0x04 (its vtable at +0x04, links +0x08..+0x27); tail sentinel TListNode at +0x28 (vtable +0x28, links +0x2c..+0x4b). Empty slot *k*: `head.next[k] = &tail`, `tail.prev[k] = &head`, `tail.next[k] = 0`, `head.prev[k] = 0`; the walk stops when a node's `next` is 0, i.e. the tail sentinel is never processed. `TList__dtor` 0x41fd90 unlinks each node from **all four** slots. World constructor `PhysicsWorld__ctor` 0x4f7050 builds nine such TLists; cleanup `FUN_004fabb0` drains some of them.
+
+For a list at base `B`, slot0: first = `*(B+8)`, tail sentinel = `B+0x28`, last = `*(B+0x30)`. All lists below use slot0 unless noted.
+
+| base | first / tail / last | counter | contents and operations |
+|---|---|---|---|
+| world+0x94 | +0x9c / +0xbc / +0xc4 | `+0x58` | **active controllers** (incl. `c_triggerspring`). Append `PhysicsWorld__addController` 0x4f7960 (`last->next=new; new->next=tail; new->prev=last; last=new; +0x58++`); ticked by `runControllers` 0x4ffca0 → `vf3`; if `vf3() < 0` unlink, `+0x58--`, `vf0(1)`. Cleanup drains it. |
+| world+0x12c | +0x134 / +0x154 / +0x15c | `+0x58` (observed; shared active+retired total is inferred) | **retired controllers**. `c_triggerspring` `vf3` appends itself here when it becomes invalid/static. Cleanup drains it. |
+| world+0xe0 | +0xe8 / +0x108 / +0x110 | `+0x5c` | **solver-pass list**. `PhysicsWorld__solvePass` 0x502410 walks slot0; `pruneConstraints` 0x4fa4d0 removes nodes whose `vf6` (vtable slot 6, offset +0x18) returns 0, `+0x5c--`, `vf0(1)`. **No producer found — see verdict below.** Cleanup does *not* drain it. |
+| world+0x178 | +0x180 / — / — | — | unknown; cleanup does not drain it. |
+| world+0x1d0 | +0x1d8 / +0x1f8 / +0x200 | `+0x60` (removed `+0x1c`) | **contact pairs** (`c_collision`). `addContact` 0x502830 appends; `updateContacts` 0x4f9af0 walks; cleanup drains (calls `vf+8`, unlinks, `vf0(1)`). |
+| world+0x21c | +0x224 / — / — | `+0x60`/`+0x1c` same as contacts | drained exactly like the contact list; semantics unknown (second contact/cache list). |
+| world+0x268 | +0x270 / — / — | `+0x68` | unknown; cleanup drains; each entry's `+0x3c` (= +0xf0) pointer has `+0x1c` cleared and `+0x40` (= +0x100) is passed to `FUN_004f6a80`. |
+| world+0x2b4 | +0x2bc / +0x2dc / +0x2e4 | `+0x64` | **trigger contacts** (`PhysicsWorld__addTriggerContact` 0x502d60; `removeTrigger` 0x4fb070). |
+| world+0x300 | +0x308 / +0x328 / +0x330 | — | unknown; cleanup drains via `FUN_004fb2a0` only if `world+0x70 > 0`. |
+
+### `PhysicsWorld__solvePass` 0x502410 (the "joint solver") — exact pass
+```
+solvePass(world):                    // ECX=world, 274 bytes
+  N = 0; off = 0
+  for (node = *(world+0xe8); node != 0 && *(node+4) != 0; node = *(node+4)):
+      if (node->rows (+0x34) == 0) continue
+      vf7(node)                      // vtable slot 7 (offset +0x1c): compute rhs into node+0x38 VecN
+      vf8(node)                      // slot 8 (offset +0x20): compute lambda into node+0x40 VecN
+      N += node->rows
+  if (N == 0) return
+  VecN__setSize(world+0x3a0, N)      // 0x569ea0
+  VecN__setSize(world+0x3a8, N)
+  MatN__setSize(world+0x3b0, N, N)   // 0x569cc0 — allocated, never filled or solved
+  off = 0
+  for node in list:                  // gather
+      if rows: copyBlock(dst=world+0x3a0, src=node+0x38, srcOff=0, count=rows, dstOff=off)
+               copyBlock(dst=world+0x3a8, src=node+0x40, srcOff=0, count=rows, dstOff=off)
+               off += rows
+  off = 0
+  for node in list:                  // scatter back + apply
+      if rows: copyBlock(dst=node+0x40, src=world+0x3a8, srcOff=off, count=rows, dstOff=0)
+               vf9(node)             // slot 9 (offset +0x24): apply lambda
+               off += rows
+```
+`VecN__copyBlock` is 0x569db0 (ECX = destination VecN; the pushed stack args in order are `src, srcOff, count, dstOff`). Rows/vectors live on the constraint base: `+0x34` rows (int), `+0x38` rhs VecN `{n, float*}`, `+0x40` lambda VecN `{n, float*}` (the float pointers are at +0x3c / +0x44).
+
+Ordering: **all** `vf7`/`vf8` (rhs and λ computation) run before **any** `vf9` (application), and each row computes against the velocities at pass start — a Jacobi / semi-implicit pass, not sequential impulses. The gathered rhs vector at `world+0x3a0` and the `N×N` matrix at `world+0x3b0` are never read; the λ vector at `+0x3a8` is copied out and back unchanged. **There is no global LCP/matrix solve.**
+
+`c_collision` is the only class with non-empty row vfuncs (`vf7` 0x4f2180, `vf8` 0x4f23a0, `vf9` 0x4f1fa0):
+```
+vf7 rhs:
+  A=+0x48, B=+0x50; if either is null: return (rhs unchanged)
+  pA=+0x74 (A-local), pB=+0x80, d=+0xa4, e=+0xb0, n=+0x8c
+  dyn(X) = !(defX.flags(+0xb4) & 4)
+  if (!dyn(A) || A.flags&0x80) && (!dyn(B) || B.flags&0x80): rhs = 0; return
+  vA = pointVelocity(pA); vB = pointVelocity(pB); vn = n·(vA − vB)
+  if mode != 6:                                  // resting/other
+      b = d
+      if ((prevState(A).flags & 1)==0 || (prevState(B).flags & 1)==0) && d < 0.03:
+          b = (0.03 − d) * 10
+      if vn < −0.2: b -= (vn + 0.4) * (1 + e)     // observed (decompiled as ((vn+0.2)+0.2)); note the 0.4, unlike vf4)
+      rhs = b
+  else:                                          // mode 6 = impact
+      if vn < −0.2: rhs = −(1 + e) * (vn + 0.2)
+      // else no store: rhs keeps its previous value (uncertain: VecN init state)
+vf8 lambda:
+  if either body null: return
+  if !(dyn(A) && !(A.flags&0x80)) && !(dyn(B) && !(B.flags&0x80)): lambda = 0; return
+  rA = R_A·pA, rB = R_B·pB                     // active state idx (+0x20c)
+  uA = IA⁻¹(rA×n), uB = IB⁻¹(rB×n)             // world inverse inertia at state+0xa4 = body+0x108... (rows +0x108/+0x118/+0x128)
+  K = n·(uA×rA + uB×rB) + invMassA + invMassB  // invMass = def+0x2c
+  lambda = rhs / K
+vf9 apply:
+  if either body null: return
+  lambda = *(VecN data)
+  dynA = !(defA.flags & 4), dynB = !(defB.flags & 4)   // body flag 0x80 is NOT tested here
+  if mode == 6: dynA ? applyImpulseAt(+lambda·n, pA); dynB ? applyImpulseAt(−lambda·n, pB)
+  else:         f = lambda / world.dt;
+                dynA ? applyForceAt(+f·n, pA); dynB ? applyForceAt(−f·n, pB)
+```
+The `prevState` flags are at `body + (idx^1)*0xd4 + 0xa0` (state flag word `s+0x3c`, bit0). `PhysBody__pointVelocity` reads the **other** state (`idx^1`) in vf7; `PhysBody__rotateToWorld` and the inertia used by vf8 read the **active** state (`+0x20c`).
+
+### Verdict: the joint solver is vestigial in 2.3.1
+- Only `c_collision` implements vf7/vf8/vf9. The base `constraint` and `c_triggerspring` have vf7–vf10 = 0x52f990 (`guard_check_icall`, decompiles to an empty function) and vf11–vf12 = 0x4f0da0 (`return 0`).
+- `c_collision__init` 0x4f2770 has only three callers: `addContact` 0x502830, `addTriggerContact` 0x502d60, `removeTrigger` 0x4fb070. `addContact` inserts the pair **only** into the contact list at world+0x1d0; trigger contacts use world+0x2b4.
+- A node has one link pair per slot, so a pair in the contact list (slot0) cannot simultaneously be in the solver list (also slot0). No code writes the solver list's last pointer `world+0x110` (searched `89/8b ?? 10 01 00 00`, `8d ?? 08 01 00 00`) and no code increments its counter `world+0x5c` (searched `83 ?? 5c 01`, `ff ?? 5c`, `89 ?? 5c` over 0x4e0000–0x50a000; only `pruneConstraints` decrements it). `world+0x5c` starts at 0.
+- Therefore **`solvePass` is a runtime no-op in this build**: the contact response actually used is the per-contact `vf4` → `c_collision__resolve` (0x4f0dd0) loop over the contact list `world+0x1d8` in `World::step`, and the spring/suspension behaviour is the `c_triggerspring` controller tick (below), not solver rows.
+- No hinge/slider/ball/fixed joint class exists in the RTTI table: under `constraint` only `c_collision` and `c_triggerspring` appear. Resource type 10 exists (`RESTYPE_PHYSICS_CONSTRAINT`, `ResourceType_Physics_Constraint` vftable 0x5a85a0), but its identified vtable methods are generic resource plumbing (vf10 0x520c70 calls helper 0x520ce0 and stores a float at +0x98; vf7 0x520dc0 toggles a resource flag), and no code path creating a joint object was found. **Uncertain**: a writer through an unidentified generic list helper cannot be excluded absolutely, but all direct evidence (counters, link fields, callers, class table) says the list is never populated and the pass never contributes.
+
+### `c_triggerspring` — spring/suspension controller (vftable 0x59dbb8; RTTI name; called `Suspension` by Ghidra)
+Not a solver-row constraint: it derives `constraint`/`controller`, lives in the world controller list, and is ticked via `vf3` by `runControllers` 0x4ffca0.
+- **ctor** 0x4915d0 (`RET 0x18`): zeroes dwords +4..+0x44, sets vftable 0x59dbb8, zeroes +0x94/+0x98, +0xac/+0xb0, +0xd0/+0xd4, then calls init 0x4f3f10. Object is **0x104 bytes** (allocated with `Mem__alloc(0x104)`).
+- **init** 0x4f3f10: builds a world attach point from the passed attach vector/local offset `(0, −L/2, 0)` transformed by the parent body's active state; creates a **sensor capsule child body** with `Physics__createBox(mass 0.01, type 3 = capsule along Y, a = L/2, b = 0.05, c = 0, mesh 0)` (constants 0x3c23d70a, 0x3d4ccccd), sets body flags `|= 0x40` (sensor/trigger), and adds it via `PhysicsWorld__addChildBody` 0x4f78d0. The sensor body is referenced from this+0x94 (unlink old via `RefLink__unlink` 0x501ca0, refcount++); `ResourceRef__set(body+0x38, *(this+0xc))` binds the resource instance.
+  Field values written (observed; names inferred): `+0x48 = L`; `+0x4c = 0.9`; `+0x50 = L` else 0.9 if `L ≤ 0`; `+0x54 = 0`; `+0x58 = L` else 0; `+0x5c = 800.0`; `+0x60 = 200.0`; `+0x64 = 140.0`; `+0x68 = L` else 0.9; `+0x70 = L/2`; `+0x6c`/`+0x74..+0x8c`/`+0x90` = 0; `+0xb4 = (+0x50)² + 0.1`; `+0xf0 = +0x50`; `+0x9c..+0xa4`, `+0xa8`, `+0xd8..+0xe0`, `+0xe4..+0xec`, `+0xf4`, `+0xf8` = 0. Finally registers itself: `addController(g_physWorld, this)` (world+0x94 slot0, world+0x58++).
+  Creation site: **0x4992e0** (car/wheel setup, one spring per create call): allocates 0x104, calls the ctor with the parent body, an attach context, a world attach point and direction `(0,−1,0)`, plus two floats read from the car record (`+0x5c`, `+0x64` of the wheel/part record). Function/field names there are inferred.
+- **tick `vf3`** 0x4f2d70: sensor = `[this+0x94]`; if null return 0. Other body = `[this+0xd0]`. If both bodies are invalid/static, unlink this from its current controller list and append it to the **retired** list at world+0x12c (tail `world+0x15c`), return 0. It maintains the current length against `+0xb4` (previous length²+0.1; `sqrt` gives the previous length), updating `+0xf0` (current length) and `+0xb4 = clamp_len² + 0.1`. It computes end points from the attach point `+0x6c/+0x70/+0x74` and a direction (globals `DAT_005dadd0/d4/d8`), with the lower end at `+0xd8..+0xe0 = attach − length·dir`, evaluates point velocities at both ends, and applies spring (`+0x5c` = 800, `+0x60` = 200), damper (`+0x64` = 140, `+0x4c` = 0.9) and bump-stop terms; a bump-stop branch triggers when current length `< +0x54` with negative compression velocity, computes an effective inverse mass from `def+0x2c` and applies `impulse/dt`. Forces go through `PhysBody__applyForceAt` at `+0xd8` on the sensor body and the opposite at `+0xb8` on the other body; the other state's bit0 is cleared (wake) and the roots woken. Outputs stored: `+0xf4` spring force, `+0xf8` relative velocity, `+0xfc` damper force, `+0x84..+0x8c` force vector, `+0xe4..+0xec`. **Uncertain**: exact per-term algebra and the physical names of `+0x48/+0x4c/+0x50/+0x54/+0x58/+0x60/+0x64/+0x68`; the vf3 body has only been read in assembly/summary form, not fully re-decompiled.
 
 ## 6. Other
 - `Collide__triggerTest` 0x4fbda0: bodies flagged 0x48 (triggers) → `closestFeatures` vs. the trigger shape; flag 8 → returns `d < r+0.02`; capsule edge vs. face orientation filter; creates trigger contacts via `FUN_00502d60` (list `world+0x2bc`, count `world+0x64`, event 0x20 to both scripts). `PhysicsWorld__removeTrigger` 0x4fb070 sends event 0x40 on separation.

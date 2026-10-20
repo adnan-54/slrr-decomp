@@ -13,3 +13,5 @@ obj/
 
 # local claude config (holds api keys)
 .claude/
+
+__pycache__/

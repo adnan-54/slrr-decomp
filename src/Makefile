@@ -1,0 +1,67 @@
+# Engine build: one static library + CLI tools. C++17, no deps.
+# CMake is not installed in the analysis container, so this is a plain Makefile.
+CXX      ?= g++
+AR       ?= ar
+CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wpedantic
+CPPFLAGS += -I.
+
+BUILD := build
+
+LIB_SRC  := script/classfile.cpp script/vm.cpp script/natives.cpp \
+            resource/rpk.cpp resource/rdb.cpp resource/manager.cpp \
+            parts/cfg.cpp physics/shape.cpp physics/world.cpp \
+            app/boot.cpp
+LIB_OBJ  := $(LIB_SRC:%.cpp=$(BUILD)/%.o)
+LIB      := $(BUILD)/libengine.a
+
+TOOLS    := classdump rpkdump resman cfgdump physcheck vmboot
+TOOL_BIN := $(TOOLS:%=$(BUILD)/%)
+TOOL_OBJ := $(TOOLS:%=$(BUILD)/tools/%.o)
+
+DEPS := $(LIB_OBJ:.o=.d) $(TOOL_OBJ:.o=.d)
+
+# Shipped samples (bin/ is never committed); used by `make check`.
+GAME := ../bin/the game
+SAMPLES := "$(GAME)/sl/Scripts/game/Init.class" \
+           "$(GAME)/cars/racers/Axis_data/scripts/Axis_FL_door.class"
+CORPUS := "$(GAME)/system/scripts/lang/Object.class" \
+          "$(GAME)/system/scripts/lang/Math.class" \
+          "$(GAME)/system/scripts/lang/Vector3.class" \
+          "$(GAME)/system/scripts/lang/Ypr.class" \
+          "$(GAME)/system/scripts/lang/System.class" \
+          "$(GAME)/system/scripts/lang/String.class" \
+          "$(GAME)/system/scripts/lang/Integer.class" \
+          "$(GAME)/system/scripts/lang/Float.class"
+
+# rpkdump --selfcheck takes the two shipped package pairs from the repo root.
+ROOT_CHECK := --selfcheck "bin/the game/system.rpk" "bin/the game/system.rdb" \
+              "bin/the game/cars/racers/Axis.rpk" "bin/the game/cars/racers/Axis.rdb"
+
+all: $(TOOL_BIN)
+
+$(BUILD)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
+
+$(LIB): $(LIB_OBJ)
+	$(AR) rcs $@ $^
+
+$(BUILD)/%: $(BUILD)/tools/%.o $(LIB)
+	$(CXX) $(CXXFLAGS) $< $(LIB) -o $@
+
+check: all
+	$(BUILD)/classdump --selfcheck $(SAMPLES)
+	$(BUILD)/classdump --corpus $(CORPUS)
+	$(BUILD)/classdump --natives-check ../analysis/natives.tsv
+	$(BUILD)/classdump --conformance "$(GAME)"
+	cd .. && src/$(BUILD)/rpkdump $(ROOT_CHECK)
+	cd .. && src/$(BUILD)/resman --selfcheck
+	cd .. && src/$(BUILD)/cfgdump --selfcheck
+	$(BUILD)/physcheck
+	cd .. && src/$(BUILD)/vmboot --selfcheck
+
+clean:
+	rm -rf $(BUILD)
+
+-include $(DEPS)
+.PHONY: all check clean

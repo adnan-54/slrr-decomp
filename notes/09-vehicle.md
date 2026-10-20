@@ -31,7 +31,7 @@ Runs when the car's script does not set `suspend_update`; calls the script `upda
 | `SFX_trans_fwd/rev`, `SFX_ignition` | sound resources (`FUN_0051fa40(res, 6, 0)` = request-load) |
 | `tank_nitro`, `consumption_nitro` | `e[0x293]`, `e[0x296]`; `car+0x1f5c` (nitro level) clamped to tank |
 | `drag_center` (Vector3), `C_drag` | `e[0x244..0x246]`, `e[0x247]` |
-Also: per-wheel records are `0x2e4` bytes at `[car+0x1414]`, count at `[manager+0x1fb4]`; per-wheel force accumulators (`+0x15c..0x170`) are zeroed each refresh and a 0x44-byte block is copied from `manager+0x2ec4`; wheel parts are looked up with `FUN_004c6fd0(car, 0x65 + i)`.
+Also: per-wheel records are `0x2e4` bytes; `car+0x1414` holds the array pointer (`W_i = *(car+0x1414) + i*0x2e4`, verified in `Chassis.getWheel 0x4b4150`), count at `[manager+0x1fb4]`; `Vehicle__refreshParameters` zeroes the per-wheel wear/damage fields (`+0x15c/+0x160` tyre, `+0x164/+0x168` brake, `+0x16c/+0x170` suspension; `0x4aece0..0x4aed1d`) and re-copies the 17-float Pacejka block from `manager+0x2ec4` (0x44 bytes, `0x4aed2d`); wheel parts are looked up with `FUN_004c6fd0(car, 0x65 + i)`.
 
 ## Where the rest is
 - Corrections: `FUN_004ac310` is **not** gearbox code — it is a native *registrar* (registers `Chassis`, `WheelRef`, `SfxTable`, `Vehicle`, `Part`, `DynoData` natives via `JVM::registerNative`; see `06-native-methods.md`). `FUN_0047f980` (prints `MaxSpeed/Speed/Time/Dist`, `FPS`, `Csuszas` = slip) is the **follow/chase camera + debug HUD** update, not the gearbox.
@@ -46,15 +46,17 @@ Script setters write straight into the struct (the script's `WheelRef` is conver
 | `+0x44` | spring `force` (`setForce`) |
 | `+0x48` | damping bump (`setDamping(f)` also sets `+0x4c = f·0.7`; `setDamping(b, r)` sets both) |
 | `+0x4c` | damping rebound |
-| `+0x50` / `+0x54` / `+0x58` | suspension rest / min / max length (`setRestLen/MinLen/MaxLen`) |
+| `+0x50` / `+0x54` / `+0x58` | suspension rest / **max** / **min** length (`setRestLen/MaxLen/MinLen`); create defaults `+0x38+0x3c` / `+0x38+0.1` / `−1` |
 | `+0x5c` | `restLen + wheelRadius` (derived) ; `+0x60` = wheel radius |
-| every length setter | re-runs `FUN_004f4280(force, damp_bump, rest+r, min+r, max+r, damp_rebound, r)` — `Suspension__configure` on the wheel's `c_triggerspring` object (`wheel+0x30`): `s+0x5c=k`, `s+0x60=bump`, `s+0x64=rebound` (0.7·bump if ≤ 0), `s+0x4c=rest`, `s+0x50=p4` (= `MinLen+r`, the ray/max-extension length; defaults to rest if ≤ 0), `s+0x54=p5` (= `MaxLen+r`, bump-stop length, clamped ≥ 0), `s+0x58=s+0x68=r` (if r ≤ 0: `+0x68=rest`, `+0x58=0`). See "Suspension object" below |
+| every length setter | re-runs `FUN_004f4280(force, damp_bump, rest+r, max+r, min+r, damp_rebound, r)` — `Suspension__configure` on the wheel's `c_triggerspring` object (`wheel+0x30`): `s+0x5c=k`, `s+0x60=bump`, `s+0x64=rebound` (0.7·bump if ≤ 0), `s+0x4c=rest`, `s+0x50=param4` (= `W+0x54` max length + r, the ray length; if ≤ 0 → rest), `s+0x54=param5` (= `W+0x58` min length + r, bump stop; if ≤ 0 → 0), `s+0x58=s+0x68=param7=r` (if r ≤ 0: `+0x68=rest`, `+0x58=0`). See "Suspension object" below |
 | `+0x64`,`+0x68` | friction (`setFriction`; also `+0x1f0`); `+0x6c`,`+0x70` = friction · `(1 − w²·0.6)` (min factor 0.1 when `w ≥ 1`, `w = [+0x15c]` = wear/damage factor) |
 | `+0x74` | rolling resistance (`setRollRes`) |
 | `+0xf0` | bearing friction (`setBearing`) |
 | `+0x1e8 .. +0x228` | **Pacejka coefficient array, 17 floats** (`setPacejka(i, v)`, `0 ≤ i ≤ 16`). Named setters alias slots: `setSliction` → [0], `setFriction` → [2], `setStiffness` → [4], `setMaxLoad` → [11] (`+0x214`), `setFrictn_x` → [12] (`+0x218`), `setLoadSmooth` → [14] (`+0x220`) |
 So the tyre model is a **Pacejka "magic formula"** parameter set per wheel, with load-dependent grip limited by max load; suspension is a spring/damper constraint with bump and rebound damping (rebound = 0.7 × bump by default).
-Other setters still to map: `setArm(7f)`, `setHub(10f)`, `setInstantCenter(6f)` (suspension geometry), `setPos/Ypr/Drive/Steer/Brake/HBrake/Width/OppWheel` and the `Chassis` natives (`setMaxSteer`, `setAckermann`, `setSteerWheel*`, `setBuck`, `setCooling`, `setTorque`, `getRPM`...).
+
+Verified setter targets (all decompiled): `setFriction` 0x4b6420 writes `W+0x64`, `W+0x68` **and slot 2** (`W+0x1f0`), then recomputes `W+0x6c/+0x70` with `f = 1 − wear²·0.6` (0.1 at wear ≥ 1); `setSliction` 0x4b6fd0 writes slot 0 (`W+0x1e8`); `setStiffness` 0x4b7050 slot 4 (`W+0x1f8`); `setMaxLoad` 0x4b6950 slot 11; `setFrictn_x` 0x4b6500 slot 12; `setLoadSmooth` 0x4b6870 slot 14; `setPacejka` 0x4b6a90 any slot `0..16`; `setRollRes` 0x4b6f90 `W+0x74`; `setBearing` 0x4b6080 `W+0xf0`; `setDrive` 0x4b6330 `W+0xcc` and `W+0xe0`.
+Other setters still to map: `setArm(7f)`, `setHub(10f)`, `setInstantCenter(6f)` (suspension geometry), `setPos/Ypr/Steer/Brake/HBrake/Width/OppWheel` and the `Chassis` natives (`setMaxSteer`, `setAckermann`, `setSteerWheel*`, `setBuck`, `setCooling`, `setTorque`, `getRPM`...).
 
 ## `FUN_0049c8e0(car, dt)` = **Vehicle::update** (17 KB, 1717 lines of pseudo-code; first-pass summary — the complete, corrected walk-through is in "Vehicle::update — full order of operations" below)
 Called per car per physics tick (`param_1` = car, `ECX` = vehicle manager). Early outs: `car+0x2054 != 0` (disabled), `dt < 0.0001`. Root body of the car = `car+0x13ec` (follow `+0x20` while flag `&4`). Engine block `e = car+0x2050`.
@@ -105,7 +107,7 @@ If `car+0x70 & 4` (frozen/placed): `Vehicle__resetWheelsFrozen 0x497e60` (ω = 0
 - Tyre cooling (as above).
 - **Wheel-average speed** `car+0x1e78 = Σ(−W+0xc0 · W+0xc4 · W+0xe0) / Σ|W+0xe0|` over wheels with `S`, `W+0xe0 > 0.001`, `|W+0xc4| > 0.001` (`W+0xc4` = per-wheel drive ratio/sign from the car template; its inverse maps the shaft back to the wheel).
 - **Viscous differential**: for the same wheels, `target = (−1/W+0xc4)·car+0x1e78`, `Δ = target − ω_i`, `step = min(|Δ|·5·lock(e+0xa38)·dt, 1)·Δ`, `ω_i += step`, `W+0x148 += r·step`.
-- **Anti-roll bars**: `n = e+0x48` (≤ 8), records at `e+0x4c` of 16 bytes `{int wheelA, int wheelB, float k, float c}`. If both springs carry load (`S+0xf4 > 0`): `F = ((S_A+0xf0 − r_A) − (S_B+0xf0 − r_B))·k + (S_A+0xf8 − S_B+0xf8)·c`; `S_A+0x90 = −F`, `S_B+0x90 = +F` (consumed by the spring solver as an extra force).
+- **Anti-roll bars**: `n = e+0x48` (≤ 8), records at `e+0x4c` of 16 bytes `{int wheelA, int wheelB, float k, float c}`. If both springs carry load (`S+0xf4 > 0`): `F = ((S_A+0xf0 − r_A) − (S_B+0xf0 − r_B))·k + (S_A+0xf8 − S_B+0xf8)·c`; `S_A+0x90 = −F`, `S_B+0x90 = +F` (consumed by the spring solver as an extra force; template count is 0, so inert in shipped data).
 - **Contact slip velocity** (not asleep): `W+0x140 = Rᵀ·(groundVel(S) − pointVel(B, S+0xd8))`, `W+0x148 += W+0xc0·r` (so `W+0x148` = longitudinal slip speed `v_z + ωr`), zero if `S+0x50 ≤ S+0xf0`.
 
 ### 3. Clutch / gearbox coupling (engine ↔ driveshaft)
@@ -169,7 +171,7 @@ F_lat  = F·sx/σ ;  F_long = F·sz/σ
 //   s = |κ/(κ'−κ)| ; Δω *= s ; F_long *= s
 W+0x154 = σ ; W+0x150 = α ; W+0x14c = κ ; ω += Δω ; W+0x148 += Δω·r
 W+0x158 = Mz = p2·Fz·1.49·sin(−2.3·atan(Bα·α − (atan(Bα·α) − Bα·α)))   with Bα = 15.2/(−2.3·1.49)
-          // fixed-coefficient aligning-torque curve (constants DAT_005da8f8..920); stored only (steering feedback), not applied here
+          // fixed-coefficient aligning-torque curve (constants DAT_005da8f8..920); stored only — no consumer exists (not applied, not read by FFB/steering)
 f   = (F_lat, 0, vz·Fz·p13·0.01 − F_long)    // contact frame: x lateral, y normal, z forward
 ```
 Pacejka slot map `W+0x1e8 + 4·i`: `p0 C` (`setSliction`), `p1 μ/load`, `p2 μ` (overwritten per tick), `p3/p4/p5` BCD (`p4` = `setStiffness`), `p6/p7/p8` E, `p9/p10` Sh, `p11` max load (`setMaxLoad`), `p12` longitudinal scale (`setFrictn_x`), `p13` rolling resistance (overwritten per tick), `p14` load smoothing (`setLoadSmooth`), `p15/p16` load-dependent stiffness. The 17 defaults are copied from `M+0x2ec4` (0x44 bytes) on create and on every `refreshParameters`.
@@ -215,22 +217,47 @@ Pacejka slot map `W+0x1e8 + 4·i`: `p0 C` (`setSliction`), `p1 μ/load`, `p2 μ`
 | `+0x8/+0xc` | nitro torque table (from `+0x1e0`, or the normal table if absent) |
 | `+0x10` | shifting state (`getShifting`); `+0x14` from engine def `+0x1c0` |
 | `+0x18` maxRPM, `+0x1c` RPM_limit, `+0x20` gears (int), `+0x24..0x40` ratio[8], `+0x44` rearend_ratio | |
-| `+0x48` | anti-roll bar count; `+0x4c..0xcb` 8 × `{int a, int b, float k, float c}` |
-| `+0xcc` ClutchF, `+0xd0` starter_torque, `+0xd4/+0xd8` torque multipliers (`setTorque`), `+0xdc` brake factor, `+0xe0` handbrake factor, `+0xe4` engine_inertia, `+0xe8` drivetrain inertia, `+0xec` base wheel inertia, `+0xf0` idle ω (rad/s), `+0xf4/+0xf8` friction fwd/rev | |
+| `+0x48` | anti-roll bar count (template default 0); `+0x4c..0xcb` 8 × `{int wheelA, int wheelB, float k, float c}` (16-byte stride), copied 0x80 bytes by `EngineBlock__clone`; no writer besides the template found — see below |
+| `+0xcc` ClutchF, `+0xd0` starter_torque, `+0xd4/+0xd8` torque multipliers (`setTorque`), `+0xe4` engine_inertia, `+0xe8` drivetrain inertia, `+0xec` base wheel inertia, `+0xf0` idle ω (rad/s), `+0xf4/+0xf8` friction fwd/rev | template defaults 500.0 / 50.0 / 200.0, 300.0 / 10.0 / 1000.0 / 50.0 / 83.86 rad/s / 1e-4, 0.03; `refreshParameters` overwrites `+0xe4` (script field `engine_inertia`) and `+0xd0/+0xd4/+0xd8/+0xcc/+0xf0/+0xf4/+0xf8` |
+| `+0xdc` brake-torque factor, `+0xe0` handbrake factor | `type_car__vf1 0x49ab20` seeds 100.0 / 200.0, multiplies the car-type per-wheel template brake/handbrake bases (`M+0x1fd8` / `M+0x1fdc`, stride 0xc8) by them once, then resets both to 1.0; `EngineBlock__clone` copies them; the only reader found is the brake formula (§4); no other writer |
+| `+0xa34/+0xa3c/+0xa40/+0xa44` | steerhelp / ABS / ASR / ESP values, set by the cfg parser with car flags `0x200/0x80/0x100/0x4000000`; template defaults 1.0 / 0 / 0 / 0 |
 | `+0x808/80c/810` | rpm_trans_fwd/rev, sfx_starter_rpm |
 | `+0x910..+0x91c` | drag_center (Vector3), C_drag |
 | `+0xa20` | max steer (`setMaxSteer`); `+0xa28/+0xa2c` steering-wheel params (`setSteerWheel`, `setSteerWheelRadius` → `+0xa28`); `+0xa30` Ackermann |
-| `+0xa38` | differential lock (viscous coupling rate) |
+| `+0xa38` | differential lock (viscous coupling rate); template default 0.1, cfg `difflock` (value > 0 else 0.1); per-tick rate multiplier in §2 |
 | `+0xa4c` tank_nitro, `+0xa58` consumption_nitro, `+0xa5c/a60/a64` cooling (`setCooling`) |
 | `+0xc30` | engine definition (`DynoData` native, 0x1ec bytes) |
-Not yet traced: who writes `+0xdc`, `+0xe0`, `+0xe8`, `+0xec`, `+0xa38` and the anti-roll records (they come from the template/part scripts, not from `refreshParameters`).
+
+### Engine-block template writers (resolved, 2026-10)
+The offsets previously listed as unknown (`+0xdc/+0xe0/+0xe8/+0xec/+0xa38`) are **engine-block fields**, not wheel fields: the wheel record is only 0x2e4 bytes and has no `+0xa38`; its same-numbered fields are unrelated (`W+0xdc` effective handbrake base, `W+0xe0` drive share, `W+0xe8` spin angle, `W+0xec` inverse inertia). Their writers: `W+0xdc` ← template `[-0x25]` in `createCar` and the brake-wear rescale (§4); `W+0xe0` ← template `[-0x27]`, `setDrive 0x4b6330`, `Vehicle__applyTuningOverrides`; `W+0xe8` ← spin integration (§5); `W+0xec` ← effective-inertia computation (§2, `0.1/I_w`).
+- `type_car__vf1 0x49ab20` initializes the manager's default block `M+0x2ebc`; `EngineBlock__clone 0x4b0910` copies it into each car. `Vehicle__refreshParameters 0x4aebf0` then overwrites only the script-driven fields above; it does **not** touch `+0xdc/+0xe0/+0xe8/+0xec/+0xa38/+0x48/+0x4c..0xcb`.
+- `+0xdc/+0xe0`: seeded 100.0 / 200.0; the same routine multiplies the car-type per-wheel template brake base at `M+0x1fd8` and handbrake base at `M+0x1fdc` (stride 0xc8 = 0x32 floats) by them once, then resets both multipliers to 1.0. Clones therefore carry 1.0 while `W+0xd0/+0xd4` already bake the 100×/200×. Read only in the brake formula (§4).
+- `+0xe8` drivetrain inertia = 1000.0 and `+0xec` base wheel inertia = 50.0 are template constants copied by the clone; no cfg key or other writer found.
+- `+0xe4` engine inertia = template 10.0, overwritten from the car script field `engine_inertia` by `refreshParameters`.
+- `+0xa38` difflock = template 0.1, overwritten by cfg `difflock` (value > 0 else 0.1).
+- Anti-roll: `type_car__vf1` sets only the count `+0x48 = 0` and never touches `+0x4c..0xcb`; the engine ctor `FUN_004904c0` does not initialize them either, and no cfg key/native/other writer was found. The records are copied 0x80 bytes by the clone. With the shipped default count 0 the §2 loop is inert; treat the feature as legacy/unreachable unless a modded template sets the count (no such source found).
+- `Vehicle__applyTuningOverrides 0x498020` writes `W+0xe0`/`W+0xcc` (front/rear drive override), scales `W+0x64/+0x68`, and multiplies `e+0xd4/+0xd8` by `car+0x1f88`; it does not write `e+0xdc/+0xe0`.
+- `EngineBlock__clone 0x4b0910` copies `+0x00..0x14`, ratios `+0x20`, rearend `+0x44`, anti-roll count (`[0x12]` = `+0x48`) + 0x80 bytes from `+0x4c`, `+0xcc..+0xf8` (including `+0xdc,+0xe0,+0xe4,+0xe8,+0xec`), and `+0xa38` (`[0x28e]`).
+
+### Car cfg parser (`type_car__vf14 0x4a2e60`)
+Text key/value parser inside the car-type script (compare helper `0x57c11e`, scan helper `0x569380`; the decompiler renders the compare result as a float 0-test). Keys handled here:
+| key | effect on `car` / `e` |
+|---|---|
+| `abs` | value > 0: set flag `0x80`, `e+0xa3c = 1/value`; else clear flag |
+| `asr` | value > 0: set flag `0x100`, `e+0xa40 = 1/value`; else clear flag |
+| `esp` | value > 0: set flag `0x4000000`, `e+0xa44 = value`; else clear flag and zero `W+0xfc` for every wheel |
+| `difflock` | value > 0: `e+0xa38 = value`; else `e+0xa38 = 0.1` |
+| `steerhelp` | value > 0: clear flag `0x200`, `e+0xa34 = value`; else set flag `0x200`, `e+0xa34 = 0` |
+| `cruise` | value > 0: set flag `0x1000`, `FUN_004ebd90(car, 0x400000, 0)`; else clear flag, `FUN_004e8820(car, 0x400000)` |
+| `damage_multiplier` | `car+0x1f54 = value` (parser default 1.0) |
+The same parser also handles an integer key at `0x59b738` → `car+0x1f40` and `pickup` (not decoded). Consumers of flags `0x80/0x100/0x200/0x4000000/0x1000` are not in `Vehicle::update`.
 
 ## Wheel record (0x2e4) — fields used by `Vehicle::update` and the remaining setters
 | offset | meaning |
 |---|---|
 | `+0x30` | suspension object `S` |
 | `+0x38/+0x3c/+0x40` | template lengths (create: `+0x50 = +0x38 + +0x3c`, `+0x54 = +0x38 + 0.1`, `+0x58 = −1`) |
-| `+0x44/48/4c` | k / bump / rebound (script copies); `+0x50/54/58` rest / MinLen / MaxLen; `+0x5c` rest + r; `+0x60` radius (`setRadius` reconfigures the spring) |
+| `+0x44/48/4c` | k / bump / rebound (script copies); `+0x50/54/58` rest / **MaxLen** / **MinLen**; `+0x5c` rest + r; `+0x60` radius (`setRadius` reconfigures the spring) |
 | `+0x64/+0x68` base friction, `+0x6c/+0x70` effective (tyre wear); `+0x74` rolling resistance (default 0.015) |
 | `+0x78..0x80` | hub position, car frame (`setPos` = slot position + offset; also shifts both instant centres and re-poses the spring `FUN_004f4380(pos, W+0x110)`) |
 | `+0x84..0x8c` | template vector; `+0x90..0xbc` orientation 3×4 (`setYpr`, Euler→matrix), copied to `+0x110..0x13c` |
@@ -239,7 +266,7 @@ Not yet traced: who writes `+0xdc`, `+0xe0`, `+0xe8`, `+0xec`, `+0xa38` and the 
 | `+0xe4` | 0 (create); `+0xe8` spin angle (rad); `+0xec` inverse effective inertia ×0.1 |
 | `+0xf0` | bearing friction (`setBearing`); `+0xf4` wobble amplitude; `+0xf8`, `+0x100` flags (`&0x20` used by `getWheelDamage`); `+0xfc` extra brake drag |
 | `+0x140..0x148` | contact slip velocity (body frame; `z` includes `+ωr`) |
-| `+0x14c` κ, `+0x150` α, `+0x154` σ, `+0x158` aligning torque Mz |
+| `+0x14c` κ, `+0x150` α, `+0x154` σ, `+0x158` Mz | per-wheel outputs of §6; only κ/α are read back (previous-tick relaxation state); σ and Mz are write-only (no WheelRef getter, no FFB/steering consumer found) |
 | `+0x15c/+0x160` | tyre wear / rate; `+0x164/+0x168` brake wear / rate; `+0x16c/+0x170` suspension damage / rate |
 | `+0x174` tyre heat capacity (30000), `+0x178` tyre temp (20), `+0x17c` ambient (20), `+0x180` cooling (1/600) |
 | `+0x184` brake heat capacity (50000), `+0x188` brake temp (20), `+0x18c` ambient (20), `+0x190` cooling (0.001) |
@@ -260,17 +287,54 @@ Not yet traced: who writes `+0xdc`, `+0xe0`, `+0xe8`, `+0xec`, `+0xa38` and the 
 | `+0x6c..0x74` | mount point (chassis local); suspension axis `DAT_005dadd0..d8` = (0,1,0), contact-patch lateral axis `DAT_005dadc4..cc` = (1,0,0) |
 | `+0x84..0x8c` | extra force vector (cleared each solve); `+0x90` extra scalar force (anti-roll) |
 | `+0x94` chassis body; `+0x9c/+0xa0/+0xa4` contact patch (`setCPatch`); `+0xac` ground material (`+0x50` friction, `+0x54` rolling resistance) | |
-| `+0xb4` | ray hit distance² (reset to `max² + 0.1` = no hit); `+0xb8..0xc0` contact point on the ground body; `+0xc4..0xcc` ground normal (world); `+0xd0` ground body (0 = static world) |
+| `+0xb4` | ray hit distance² (reset to `max² + 0.1` = no hit); `+0xb8..0xc0` contact point on the ground body; `+0xc4..0xcc` ground normal (world); `+0xd0` ground body (0 = no ground body / ray miss; static ground is a real body with flag `4`) |
 | `+0xd8..0xe0` | contact point (chassis local) = mount − len·axis; `+0xe4..0xec` normal force vector |
 | `+0xf0` current length = min(√hit², max); `+0xf4` load `F = S+0x90 − (c·2v + (len − rest)·k)` with `c` = rebound if `v ≥ 0` else bump; `+0xf8` suspension velocity; `+0xfc` damper work `|c·2v·Δlen|` | |
-Below the bump stop and compressing, an extra impulse `−v / (effective mass) / dt` is added. `Wheel__contactQuery 0x4f3d30` = `S.groundVelocity`: velocity of the ground body at `S+0xb8` (0 if `S+0xd0 == 0`); `0x4f3d20` returns `S+0xd8`.
+
+**Solver order** (`c_triggerspring__vf3 0x4f2d70`; no direct callers — its address is vtable slot `+0xc` at `0x59dbb8`, the force callback run by the physics pass):
+1. If the chassis is unusable/asleep (`def+0xb4` bit2 set or `body+0x58` bit7 set, `def = *(body+0x5c)`) **and** the ground is absent/static (`def+0xb4` bit4) or asleep (`body+0x58` bit7), unlink the spring and re-queue it on the world sleep list (`g_physWorld+0x154/0x15c`); return 0.
+2. No ground (`S+0xd0 == 0`) or ray miss (`S+0x50² ≤ S+0xb4`): `S+0xf0 = S+0x50`, `S+0xf4 = 0`, `S+0xb4 = S+0x50² + 0.1`, clear `S+0x84..0x90`; return 0.
+3. `len = min(√(S+0xb4), S+0x50)` → `S+0xf0`; `S+0xb4 = S+0x50² + 0.1`; previous length kept in a local. Contact point `S+0xd8..e0 = mount(S+0x6c..0x74) − len·axis` (axis `(0,1,0)`, `DAT_005dadd0..d8`).
+4. Point velocities: chassis body (`S+0x94`) at `S+0xd8`, ground body at `S+0xb8`.
+5. Gate: if the ground normal (`S+0xc4..cc`) projected on the chassis up-axis is negative, zero the load and return.
+6. `v = S+0xf8` = relative suspension velocity; the sign is such that `v < 0` = compression (consistent with the bump-stop branch). Compression `Δ = len − prevLen`.
+7. Damper `c = S+0x64` (rebound) if `2v ≥ 0`, else `S+0x60` (bump); damper work `S+0xfc = |c·2v·Δ|`; load `S+0xf4 = S+0x90 − (c·2v + (len − S+0x4c)·S+0x5c)`.
+8. `S+0xf4 < 0` → `S+0xf4 = 0`, clear `S+0x84..0x90`, return 0.
+9. Bump stop: if `len < S+0x54` and `v < 0`, add the normal impulse `−v / (effective inverse mass) / dt` to the force (effective mass sums the chassis and ground inverse-mass/inertia terms along the normal; a static ground contributes only the chassis).
+10. Total force = `(load + bump impulse)` along the chassis up-axis (`R·(0,1,0)`, `DAT_005dadd0..d8`). A Gram-Schmidt correction then removes its component along the ground-plane projection of the chassis forward axis (`R·(0,0,1)`, `DAT_005daddc..e4`), so the spring does not push the car forward/backward. If `S+0xa0 ≠ 0` the application point shifts laterally by `S+0xa4 − S+0x9c·clamp(n.x/S+0xa0, ±1)` along `(1,0,0)` (`S+0x9c/+0xa0/+0xa4` = contact-patch params, `DAT_005dadc4..cc`).
+11. Apply with `PhysBody__applyForceAt` at the (shifted) contact point, clear body state bit0 and wake the root; apply the reaction `−F` at the ground point unless the ground body is static/kinematic (`ground+0x5c+0xb4 & 4`). Store the normal projection of the load vector in `S+0xe4..ec`, clear `S+0x84..0x90`, return 1.
+
+**Wheel vertical state.** There is none: no wheel body and no wheel vertical DOF is integrated. The raycast fills `S+0xb4` / `S+0xd0..cc` before the solve (writer not located; physics trigger/ray pass), the solver turns the current hit distance into `S+0xf0` and applies forces to the chassis body, and the physics world integrates the chassis `PhysBody` (`0x5001c0`/`0x506530`). Wheel vertical position is derived as chassis transform + `S+0xd8`.
+
+**Configure call sites.** `Suspension__configure 0x4f4280` is called by `setForce 0x4b6380` (writes `W+0x44`), `setMaxLen 0x4b68b0` (writes `W+0x54`), `setMinLen 0x4b6990` (writes `W+0x58`), `setRadius`, `setRestLen`, and the wobble re-configure in `Vehicle::update`, always with `(k=W+0x44, damping=W+0x48, rest+r=W+0x5c, max+r=W+0x54+r, min+r=W+0x58+r, rebound=W+0x4c, radius=r)`.
+
+`Wheel__contactQuery 0x4f3d30` = `S.groundVelocity`: velocity of the ground body at `S+0xb8` (0 if `S+0xd0 == 0`, i.e. no ground body); `0x4f3d20` returns `S+0xd8` and is called from `Vehicle::update`, `0x4af540` (skid-mark particle emitter) and `0x4af830` (skid sound) — neither of the last two applies suspension forces.
 
 ## Natives decoded in this pass
 - `Chassis`: `getRPM` = `car+0x1e80·9.549296`; `setRPM(f)` → `car+0x1e7c` (raw); `getTorque(rpm, n)` = `torqueCurve(rpm)·car+0x1e04·(1−n) + nitroCurve(rpm)·car+0x1e08·n`; `setTorque(f)` → `e+0xd4 = e+0xd8 = f` and refresh factors; `setCooling(a=10,b=50,c=0.01)`; `setMaxSteer` → `e+0xa20`; `setAckermann` → `e+0xa30`; `setSteerWheel(a,b)` → `e+0xa28/0xa2c`; `setSteerWheelRadius` → `e+0xa28`; `setBuck(id, handle, a, b, c, f)` creates/updates/removes a bucking record (`+0x24 id, +0x28 a, +0x2c b, +0x30 c, +0x34 f, +0x38 state=1, +0x3c now`; `handle>0` with `a,b ≤ 0` deletes); `forceUpdate` = `refreshParameters`; `getShifting` = `e+0x10`; `getNitroing` = flag `0x800`; `getEngineTemp` = `+0x1ec0`; `getNitro` = `+0x1f5c`; `getMileage` = `+0x2250`; `getAIparam_float(0..5)` = throttle, brake, handbrake, steer, clutch, nitro; `get/setOSD(i)` read/write a global HUD/OSD table (`+0x1b0c..0x1b60`, cases 4 and 9 are speed/rpm-scaled needles); `getWheelDamage(i)` formats 10 floats (hub pos, Euler, `S+0xf4`, 1, 1, `S+0xf8`) when `W+0x100 & 0x20`.
 - `WheelRef`: offsets in the wheel table above (`setDrive`, `setSteer`, `setBrake`, `setHBrake`, `setBearing`, `setArm`, `setHub`, `setInstantCenter`, `setOppWheel`, `setWidth`, `setPos`, `setYpr`, `setRadius`, `setRollRes`, `setFriction`).
 - `DynoData.calcDyno(steps)` (`0x4cba80`): builds a 0x1ec-byte engine definition from script fields (`cylinders`, bore/stroke ×0.5, valve timing `time_in/out_open/close`, `time_burn`, spark `time_spark_*`, turbo `rpm_turbo_*`, `P_turbo_max/waste`, `mixture_H/ratio`, `max_air/fuel_consumption`, `intercooling` (×293.15 K), `nitro_H`, `nitro_cooling`, `maxRPM`), runs a thermodynamic engine model (`FUN_004f5980`, `FUN_004f59f0`, table builder `FUN_004f4640(step = maxRPM/steps)`), writes `torquetable`, `HPtable`, `torquetable2` (nitro), `Displacement`, `Compression`, `maxTorque`, `RPM_maxTorque`, `maxHP`, `RPM_maxHP` back to the script. `getTorque(rpm)`/`getHP(rpm)` linearly interpolate `+0x1dc`/`+0x1e4` with step `+0x1d0` (int) and count `+0x1d4`. This same struct is the `e+0xc30` engine definition used by `refreshParameters`. (The thermodynamic model itself is not decoded yet → candidate for `notes/10-engine-dyno.md`.)
 
+## Tyre force / Pacejka — second pass (address-verified)
+
+**No standalone tyre routine.** The complete per-wheel force evaluation is inline in `Vehicle::update` (`0x49eac7..0x49fb14`). `FUN_004f3d30` (contact/ground-velocity helper, see "Suspension object") has exactly one caller, `Vehicle::update`; `FUN_004f3d20` returns `S+0xd8` and is called from `Vehicle::update`, `0x4af540`, `0x4af830`.
+
+**Slot map, writers, defaults.** Wheel `W` is `*(car+0x1414) + i*0x2e4` (verified in `Chassis.getWheel 0x4b4150`; WheelRef natives receive `W` directly). The 17 floats `p0..p16` live at `W+0x1e8+4i`. Verified writers: `setPacejka(i,v)` 0x4b6a90 (`i` 0..16), `setSliction` 0x4b6fd0 → p0/`+0x1e8`, `setFriction` 0x4b6420 → `W+0x64=W+0x68=W+0x1f0` (p2) plus effective `+0x6c/+0x70` (tyre wear: ×`1−w²·0.6`, min 0.1; corrects the "setFriction writes no slot" claim in notes/13), `setStiffness` 0x4b7050 → p4/`+0x1f8`, `setMaxLoad` 0x4b6950 → p11/`+0x214`, `setFrictn_x` 0x4b6500 → p12/`+0x218`, `setLoadSmooth` 0x4b6870 → p14/`+0x220`. p0 is the magic-formula shape factor C; the shipped `Tyre.java` passes `sliction` (dynamic/static ratio, ~0.695–0.76) to it and the `Wheel.java` fallback calls `setSliction(1.0)`, so C < 1 normally and the lateral force saturates below D (observed behaviour, not documented intent).
+
+**p2/p13 are live per-tick scratch.** Inside the force pass, with `gm = S+0xac`: `W+0x1f0 = gm.friction(gm+0x50) * W+0x6c` and `W+0x21c = gm.rollres(gm+0x54) + W+0x74` (stores at `0x49ef68`, `0x49ef7a`). The formula reads them at `0x49f048` (D), `0x49f3fe` (Mz) and `0x49f431` (rolling-resistance force). So `setFriction`'s p2 write, any script `setPacejka(2/13,…)`, and the flat-tyre `W+0x21c = 0.4` (`0x49d860`) are overwritten on the next force-pass evaluation; the 0.4 survives only while that pass is skipped (airborne, unloaded, or no ground material).
+
+**Formula/provenance checks.** §6 was checked against the asm (`0x49ef9e..0x49f135`); the code forms `B·x` with `x = σ + p9·Fz + p10`, and p4 load-dependent smoothing runs only when p16 > 0 (default 0 ⇒ off). The 17 defaults are `.data 0x5da8b0` = `{1.4, 0, 1.49, 0, 15.2, 0, -0.0, 0, -1.0, 0, 0, 8000, 1.0, 0.015, 0.4, 0, 0}`; `type_car__vf1` copies it to `M+0x2ec4` (0x49bbd4..0x49bc3c), `createCar` copies `M+0x2ec4` to each `W+0x1e8` (memcpy at 0x499c38), and `refreshParameters` re-copies it (0x4aed2d). `FUN_0048fe00` also writes nine slots (0,2,4,11,12,13,14,15,16) into `M+0x2ec4` from a 9×`%f` string (format 0x59da68); it is reached only through the .data callback pointer 0x5da65c, so its caller/source remains unresolved (uncertain). The script defaults match `bin/the game/parts/scripts/rgearpart/reciprocatingrgearpart/Wheel.java` and `Tyre.java`.
+
+**Aligning torque re-check.** The Mz block (`0x49f30a..0x49f410`) reads fixed floats, not wheel slots: `0x5da8f8=-2.3`, `0x5da900=1.49`, `0x5da908=15.2`, `0x5da918=-1.0`, `0x5da920=0.0` (the last is **0.0**, not 8000; refs are only 0x49f32e/0x49f3e4 to 0x5da8f8 and 0x49f393 to 0x5da920). Hence `Bα = 15.2/(−2.3·1.49)`, `inner = 2·Bα·α − atan(Bα·α)`, `Mz = p2·Fz·1.49·sin(−2.3·atan(inner))`, stored in `W+0x158` only (not applied to the body). **Consumers: none found.** Write sites: `Vehicle__createCar 0x4992e0` wheel constructor zero, the per-tick store at `0x49f410`, and the airborne/unloaded zero at `0x49fb0a`. No WheelRef native exposes it; every `+0x158` read examined belongs to a different structure (car records/lists/heap nodes), and no steering/FFB code reads the wheel slot. Mz is dead/diagnostic state, not force feedback.
+
+**p15/p16 (load-dependent stiffness).** The only use is `if (p16 > 0) p4 = p4·(p15+p16)/(p16+Fz)`; p4 is saved on the stack and restored after the wheel (`0x49faca`). Shipped defaults p15 = p16 = 0 disable it. The branches at `0x49f3fe` (Mz, uses per-tick p2) and `0x49f431` (rolling resistance, uses per-tick p13) are outside the p16 branch and are fully accounted for in §6 and above.
+
+**Drivetrain split.** Re-confirmed from §3: per-wheel shaft correction `((ω_shaft_new − ω_shaft_old)/D)·W+0xe0·(−1/W+0xc4)`, `D = Σ|W+0xe0|`; `setDrive` writes `W+0xcc` (base) and `W+0xe0` (effective share); `Vehicle__applyTuningOverrides` can rewrite both from `car+0x1f8c/+0x1f90`.
+
 ## Open questions
-- Writers of `e+0xdc/0xe0/0xe8/0xec/0xa38`, the anti-roll records, and the wheel template values (`W+0xc4` drive ratio/sign) — probably the car-type config/template in the manager (`M+0x81c·4`, 200-byte per-wheel records) and part scripts.
-- `S+0xf8`, `+0xfc` exact sign conventions; the bit0 (asleep) clear site; `FUN_00497520` (per-part wear tick) and `AeroForce__apply` kinds in detail.
-- Whether `+0x158` (aligning torque) feeds the steering / force feedback (`FFB_strength` globals).
+- Source of the car-type per-wheel template `M+0x2070 + i·0xc8` (`Vehicle__createCar` copies fields from it, including `W+0xc4` drive ratio/sign). Which package/script fills it before `type_car__vf1` scales the brake/handbrake bases is not traced.
+- Anti-roll record initialization/source: no writer found; count 0 in the shipped template makes the feature unreachable. Also unverified whether the allocator zeroes `e+0x4c..0xcb`.
+- Writer of the suspension raycast results (`S+0xb4`, `S+0xd0..cc`) — outside the solver, in the physics trigger/ray pass.
+- Writer/intent of the `S+0x84..0x8c` extra force vector (the solver orthogonalizes it against the normal).
+- The bit0 (asleep) clear site; `FUN_00497520` (per-part wear tick); `AeroForce__apply` kinds; consumers of the ABS/ASR/ESP/steerhelp/cruise flags (`0x80/0x100/0x4000000/0x200/0x1000`) — none are in `Vehicle::update`.
+- `S+0xf8` sign is inferred from the damper/bump-stop branches (`v < 0` = compression); worth confirming at runtime.

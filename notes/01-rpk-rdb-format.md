@@ -98,3 +98,17 @@ Game-object subtypes: `Config`, `Dummy`, `game`, `native`(parent of `camera`, `C
 - Script syntax notes: Java-like with resource literals `pkgname:0xHEXr` (package-name prefix, hex local id, `r` suffix), `String.cut`, `Integer.getHex`, `System.trace`, `runDLL(module, fn, sig, args)` (matches the `libcall.dll` string in the exe).
 - The commented-out "simple RPK generator" confirms the .rdb conventions: `typeof 8`, `superid` hex, `typeid` hex, 8-digit zero-padded filename, `script <path>.class` in the .rsd.
 - `Init.class` is **not** a JVM class: magic `54 55 46 41` ("TUFA"), u32 4, u32 0x24f9d (size?), then a `CONS` section (u32 len 0x836, u32 count 0x7b = 123 constants, strings like `java.game.Init`). A custom bytecode format for the exe's own VM; not decoded.
+
+## Refinements verified by the C++ parser
+
+The parser in `src/resource/` (`rpkdump --selfcheck`, both sample pairs) confirmed the above and refined these points:
+
+1. `.rdb` `.res` filenames are **not** resource ids. system.rdb mostly uses the 8-digit lowercase-hex typeid (28/33; some differ), Axis.rdb mostly uses sequence/copy-pasted numbers (1/340 equals the typeid; 14 duplicate names, e.g. five `00000900` blocks). Resolve by the `typeid` field.
+2. `rprop` type codes are signed and can be negative: -30 `rendertype` (`ins_render`), -126 `gametype` (`ins_game`), besides 0/1/5/82/114.
+3. `.rdb` contains banner/comment and blank lines outside `<FILE ...>` blocks (Axis.rdb has a commented CUSTOM DOOR section between blocks). Ignore all text outside blocks.
+4. `external_links` lines are directory paths with a trailing backslash (`cars\\racers\\`), not `.rpk` names: strip `.rpk` from the rpk entry and add `\` (case-insensitive) to compare. Sub-package index = line number (1..n); `z` and `tail` are 0.
+5. Binary payloads do not round-trip through the text `.rdb`: system.rpk id 4 (`ins_game`) carries 8 NUL bytes in the data area while its `.rsd` block is empty. All other text `.rsd` contents equal the rpk data bytes (32 system + 340 Axis), including CRLF.
+6. Zero-size records may point at EOF (offset == file size; 9 in system.rpk). Bounds must allow `off == size` when `size == 0`; non-empty records require `table_end <= off` and `off+size <= file size`.
+7. Both sample data areas are contiguous (no gaps, no overlaps) from `table_end` to EOF, and `table_end = 0x10 + n*0x40 + 16 + blob_size`. Header `x1`/`x2`: system 1/0x20, Axis 0/0x154 (still unused); every sub-package `index` is 1..n in order and `tail` is 0.
+
+Self-check: `rpkdump --selfcheck` opens both pairs, asserts counts/bounds/no overrun, cross-checks `.res`/`.rsd` against the archive, and asserts part `0x000000D2` resolves to the "FL door" part (`.rdb` alias is `FL`; "FL door" is the label from the referenced `FL_door.cfg`).
