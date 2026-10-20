@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract the native-method table registered by FUN_004d5fb0 (calls to JVM::registerNative 0x55c690).
+"""Extract the native-method table: every call to JVM::registerNative (0x55c690) in .text.
 Usage: natives.py <exe> <out.json>"""
 import struct, sys, json, re
 exe, out = sys.argv[1], sys.argv[2]
@@ -21,7 +21,7 @@ def cstr(va):
     if f is None: return None
     e = d.index(b'\0', f)
     return d[f:e].decode('latin1')
-START, END, REG = 0x4d5fb0, 0x4d8484+0x200, 0x55c690
+START, END, REG = 0x401000, 0x591f00, 0x55c690   # whole .text: all registrars (0x4ac310, 0x4c6570, 0x4d2550, 0x4d5fb0)
 f0, f1 = off(START), off(END)
 res = []
 i = f0

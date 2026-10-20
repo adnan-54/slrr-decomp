@@ -428,3 +428,152 @@ Walks the `0x1001` (local) / `0x1019` (class name = static access) / `0x101b` (c
   4. finds the type's script entry (`FUN_00468b00`), calls its native `construct` (vtable slot +0xc) and, for scripted creation, spawns a script thread named `THRD-CREATE` that calls the script constructor with the instance wrapped as `Value`;
   5. **places the object in the spatial hierarchy**: `FUN_00503c20(obj)` then `while (FUN_00503de0(obj));` (corrected: not a simulation step). `FUN_00503de0` walks the object's parent chain (`+0x24` parent container, children as doubly linked list at `+0x50/+0x58` of the parent), tests containment with the object's bounds (`+0xb0` shape kind: 0 → `FUN_00516640`, 1 → `FUN_00516450`, 2 = none; `+0xb4` bounds data) and re-parents it to the smallest container (flag `0x20/0x30` at `+0x84` stops climbing; child must have `+0x7c == 1`, no matching `+0x80` id) — i.e. a scene-graph/zone tree. Returns 1 while the parent changed so the caller repeats. Then `FUN_004e9ac0`/`FUN_004ee1a0`/`FUN_00488080` post-creation notifications.
 - `FUN_00518880(packageIdAndLocalId, ...)` (thiscall on the resource manager): if the high 16 bits of the id name a registered package (< `[mgr+0x166740]`) it makes sure the package is loaded (`FUN_0051e310`), then `FUN_00518410(...)` builds the `ResourceInstance` and `FUN_0051f790(0)` finalizes. `FUN_005188e0` = same without a parent.
+
+## Additional registrars
+`JVM::registerNative` (0x55c690) has four callers: 0x4d5fb0 (core `java.*`, above), 0x4ac310 (vehicle), 0x4c6570 and 0x4d2550. `tools/natives.py` scans all of .text: **422 natives** in total (`analysis/natives.tsv`).
+
+### java.game.GameLogic (1)
+- `kismajomCheck([Ljava.lang.String;)I` -> 0x4debd0
+
+### java.game.Navigator (1)
+- `updateNavigator(Ljava.util.resource.GameRef;I)V` -> 0x4df470
+
+### java.game.Painter (3)
+- `paintPart(Ljava.util.resource.GameRef;I)V` -> 0x4e0800
+- `doPaint(Ljava.util.resource.GameRef;IIIFFI)V` -> 0x4e0560
+- `xPaint(Ljava.util.resource.GameRef;)V` -> 0x4e07c0
+
+### java.game.Vehicle (3)
+- `getHorn()I` -> 0x4b2ae0
+- `hasCrime()F` -> 0x4b4370
+- `getSpeedSquare()F` -> 0x4e6960
+
+### java.game.parts.DynoData (5)
+- `newNative()V` -> 0x4cc3b0
+- `deleteNative()V` -> 0x4cc150
+- `calcDyno(F)F` -> 0x4cba80
+- `getTorque(FF)F` -> 0x4cc2b0
+- `getHP(FF)F` -> 0x4cc1b0
+
+### java.game.parts.Part (29)
+- `getSlots()I` -> 0x4cced0
+- `getSlotID(I)I` -> 0x4ccaa0
+- `getSlotIndex(I)I` -> 0x4ccbf0
+- `partOnSlot(I)Ljava.game.parts.Part;` -> 0x4cd600
+- `slotIDOnSlot(I)I` -> 0x4ce770
+- `getSlotDamage(I)Ljava.lang.String;` -> 0x4ccd10
+- `setSlotDamage(ILjava.lang.String;)V` -> 0x4cdc30
+- `setSlotPos(ILjava.lang.Vector3;Ljava.lang.Ypr;)V` -> 0x4cddc0
+- `getCarRef()Ljava.game.parts.Part;` -> 0x4cc550
+- `getWear()F` -> 0x4cd1d0
+- `setWear(F)F` -> 0x4ce390
+- `setMaxWear(F)V` -> 0x4cd740
+- `getTear()F` -> 0x4ccfc0
+- `setTear(F)F` -> 0x4ce0e0
+- `disableSlot(II)V` -> 0x4ce4a0
+- `isSlotDisabled(I)I` -> 0x4ce660
+- `getTexture()I` -> 0x4cd0d0
+- `setTexture(I)I` -> 0x4ce1f0
+- `getMesh()I` -> 0x4cc8a0
+- `setMesh(I)I` -> 0x4cd840
+- `getRenderType()I` -> 0x4cc9a0
+- `setRenderType(I)I` -> 0x4cd9e0
+- `getLogo()I` -> 0x4cc6e0
+- `getCar()I` -> 0x4cc640
+- `getWheelID()I` -> 0x4cd2e0
+- `getMass()F` -> 0x4cc7d0
+- `setSfxLoopParams(FF)I` -> 0x4cdb80
+- `flap(I)I` -> 0x4cc440
+- `install_OK(Ljava.util.resource.GameRef;ILjava.util.resource.GameRef;ILjava.lang.Vector3;)[I` -> 0x4cd3a0
+
+### java.game.parts.SfxTable (3)
+- `getItems()I` -> 0x4b5a90
+- `clear()V` -> 0x4b5a60
+- `addItem(Ljava.util.resource.ResourceRef;FFFFF)V` -> 0x4b5980
+
+### java.game.parts.WheelRef (35)
+- `getPos()Ljava.lang.Vector3;` -> 0x4b5b90
+- `getYpr()Ljava.lang.Ypr;` -> 0x4b5e40
+- `getDrive()F` -> 0x4b5b10
+- `getSteer()F` -> 0x4b5e00
+- `getRadius()F` -> 0x4b5dc0
+- `getBrake()F` -> 0x4b5ad0
+- `getHBrake()F` -> 0x4b5b50
+- `setPos(Ljava.lang.Vector3;)V` -> 0x4b6af0
+- `setYpr(Ljava.lang.Ypr;)V` -> 0x4b70e0
+- `setDrive(F)V` -> 0x4b6330
+- `setSteer(F)V` -> 0x4b7010
+- `setRadius(F)V` -> 0x4b6e50
+- `setWidth(F)V` -> 0x4b7090
+- `setCPatch(FFF)V` -> 0x4b6150
+- `setFriction(F)V` -> 0x4b6420
+- `setFrictn_x(F)V` -> 0x4b6500
+- `setSliction(F)V` -> 0x4b6fd0
+- `setStiffness(F)V` -> 0x4b7050
+- `setRollRes(F)V` -> 0x4b6f90
+- `setBearing(F)V` -> 0x4b6080
+- `setMaxLoad(F)V` -> 0x4b6950
+- `setLoadSmooth(F)V` -> 0x4b6870
+- `setPacejka(IF)V` -> 0x4b6a90
+- `setForce(F)V` -> 0x4b6380
+- `setDamping(F)V` -> 0x4b6280
+- `setDamping(FF)V` -> 0x4b61d0
+- `setRestLen(F)V` -> 0x4b6ef0
+- `setMinLen(F)V` -> 0x4b6990
+- `setMaxLen(F)V` -> 0x4b68b0
+- `setBrake(F)V` -> 0x4b60c0
+- `setHBrake(F)V` -> 0x4b6540
+- `setArm(FFFFFFF)V` -> 0x4b5f50
+- `setHub(FFFFFFFFFF)V` -> 0x4b65d0
+- `setInstantCenter(FFFFFF)V` -> 0x4b6790
+- `setOppWheel(I)V` -> 0x4b6a30
+
+### java.game.parts.bodypart.Chassis (39)
+- `getAngvel()Ljava.lang.Vector3;` -> 0x4b24f0
+- `getMaterialIndex()I` -> 0x4b2cb0
+- `getMaxSteer()F` -> 0x4b3110
+- `setMaxSteer(F)V` -> 0x4b5030
+- `getShifting()I` -> 0x4b39b0
+- `getNitroing()I` -> 0x4b3680
+- `getEngineTemp()F` -> 0x4b29d0
+- `getAIparam_float(I)F` -> 0x4b2220
+- `getAIparam_int(I)I` -> 0x4b23c0
+- `setAIparam_float(IF)V` -> 0x4b4b70
+- `setAIparam_int(II)V` -> 0x4b4d00
+- `getRPM()F` -> 0x4b3780
+- `setRPM(F)V` -> 0x4b51f0
+- `getTorque(FF)F` -> 0x4b3ab0
+- `setTorque(F)V` -> 0x4b52e0
+- `getMass()F` -> 0x4b2b90
+- `getCM()Ljava.lang.Vector3;` -> 0x4b2680
+- `getMin()Ljava.lang.Vector3;` -> 0x4b3220
+- `getMax()Ljava.lang.Vector3;` -> 0x4b2dc0
+- `setHornSFX(Ljava.util.resource.ResourceRef;FI)V` -> 0x4b4f40
+- `setNitroSFX(Ljava.util.resource.ResourceRef;F)V` -> 0x4b5130
+- `setCooling(FFF)V` -> 0x4b4e30
+- `forceUpdate()V` -> 0x4b5890
+- `getMileage()F` -> 0x4b1f30
+- `setMileage(F)V` -> 0x4b4670
+- `setBuck(IIFFFF)I` -> 0x4b4410
+- `setSfxExhaustMinVol(F)V` -> 0x4b4710
+- `setSteerWheelRadius(F)V` -> 0x4b4ad0
+- `setSteerWheel(FF)V` -> 0x4b4a20
+- `setAckermann(F)V` -> 0x4b47b0
+- `getSfxTable(I)Ljava.game.parts.SfxTable;` -> 0x4b3890
+- `getWheels()I` -> 0x4b4280
+- `getWheel(I)Ljava.game.parts.WheelRef;` -> 0x4b4150
+- `getWheelPos(I)Ljava.lang.Vector3;` -> 0x4b3e40
+- `getWheelDamage(I)Ljava.lang.String;` -> 0x4b3c50
+- `setWheelDamage(ILjava.lang.String;)V` -> 0x4b5480
+- `setOSD(IF)V` -> 0x4b4850
+- `getOSD(I)F` -> 0x4b1fd0
+- `getNitro()F` -> 0x4b3570
+
+### java.io.Controller (7)
+- `user_Add(IIIFFFF)I` -> 0x4d3cb0
+- `user_Del(III)I` -> 0x4d3db0
+- `user_SetAxisSmooth(IFFFFF)I` -> 0x4d4080
+- `user_SetAxisSpeed(IF)V` -> 0x4d4180
+- `user_Reset()V` -> 0x4d3f10
+- `user_GetAxisVal(I)F` -> 0x4d3e60
+- `user_SetAxisForce(IFF)V` -> 0x4d3fb0
