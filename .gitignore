@@ -6,3 +6,7 @@ bin/
 *.gpr
 *.rep/
 .rea/
+
+# build output
+obj/
+*.pdb

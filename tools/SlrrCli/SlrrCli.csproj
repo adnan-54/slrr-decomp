@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<!-- CLI over SlrrLib.Core (the headless build of the community SlrrLib). The library lives in the ignored bin/ folder;
+	     override with -p:SlrrLibDir=/path/to/SlrrLib if it moves. -->
+	<PropertyGroup>
+		<OutputType>Exe</OutputType>
+		<TargetFramework>net10.0</TargetFramework>
+		<SlrrLibDir Condition="'$(SlrrLibDir)'==''">$(MSBuildThisFileDirectory)../../bin/tools/SlrrLib</SlrrLibDir>
+		<Nullable>disable</Nullable>
+		<ImplicitUsings>disable</ImplicitUsings>
+	</PropertyGroup>
+	<ItemGroup>
+		<ProjectReference Include="$(SlrrLibDir)/SlrrLib.Core.csproj" />
+	</ItemGroup>
+</Project>

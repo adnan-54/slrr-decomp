@@ -92,3 +92,9 @@ Game-object subtypes: `Config`, `Dummy`, `game`, `native`(parent of `camera`, `C
 - Header u32s after record_count (x1, x2) and the exact meaning of count_a vs count_b.
 - The record float at +0x0a.
 - `FUN_00518880` (registration) and how `typeof` selects the C++ `ResourceType_*` class.
+
+## Init.java / Init.class (script entry point; read from the sample, not the exe)
+- `package java.game; class Init extends GameType` (author comments mark it as the RAXAT v2.3.1 modded source). Constructor order: `Frontend.init()` → loading screen with resource literal `frontend:0x000003EBr` → precache 3 menu `SfxRef`s → `Sound.init()` → `Input.initControllers(this, "save/controls/active_control_set")` → apply `Config.restart_*` video settings (same `restart_apply` / `restart_video_*` keys `FUN_004ed680` reads natively) → `new GameLogic()` (loads MainMenu.class) → optional debug OSD. `finalize()` tears down Input/Frontend. Likely what the exe's `GameInit` call (`FUN_00523c80(..., "GameInit")` in the main loop) ends up instantiating (**inferred**, not traced).
+- Script syntax notes: Java-like with resource literals `pkgname:0xHEXr` (package-name prefix, hex local id, `r` suffix), `String.cut`, `Integer.getHex`, `System.trace`, `runDLL(module, fn, sig, args)` (matches the `libcall.dll` string in the exe).
+- The commented-out "simple RPK generator" confirms the .rdb conventions: `typeof 8`, `superid` hex, `typeid` hex, 8-digit zero-padded filename, `script <path>.class` in the .rsd.
+- `Init.class` is **not** a JVM class: magic `54 55 46 41` ("TUFA"), u32 4, u32 0x24f9d (size?), then a `CONS` section (u32 len 0x836, u32 count 0x7b = 123 constants, strings like `java.game.Init`). A custom bytecode format for the exe's own VM; not decoded.
