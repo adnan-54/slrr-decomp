@@ -5,3 +5,5 @@ Sample script: bin/Init.class + bin/Init.java (game/Init, script entry point, co
 Sample cfg: bin/FL_door.cfg (car part config from cars/racers/Axis_data/scripts: render/mesh/body/slot/attach). Use it to find and verify the exe cfg parser.
 Sample script: bin/Axis_FL_door.class + .java (smallest pair, part script for bin/FL_door.cfg). Start .class format decoding here.
 Sample car package: bin/Axis.rpk + bin/Axis.rdb (cars/racers/Axis, same car as FL_door.cfg and Axis_FL_door.class). Cross-check: cfg resource IDs (e.g. part 0x000000D2 "FL door") should resolve through this rpk/rdb.
+
+Resume point: read CHECKPOINT.md first (state, environment, next steps); run tools/checkpoint.sh to verify the setup.
