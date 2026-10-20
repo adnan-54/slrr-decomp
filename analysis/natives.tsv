@@ -65,7 +65,7 @@ fn	class	method	signature
 0x4decf0	java.lang.Math	ln	(F)F
 0x4decf0	java.lang.Math	log10	(F)F
 0x4decc0	java.lang.Math	exp	(F)F
-0x5a3a68	java.lang.Math	pow	None
+0x4dee10	java.lang.Math	pow	(FF)F
 0x4dec90	java.lang.Math	atan2	(FF)F
 0x4de990	java.io.Input	getAxis	(II)F
 0x4de9c0	java.io.Input	getDeviceName	(I)Ljava.lang.String;
@@ -83,11 +83,11 @@ fn	class	method	signature
 0x4df100	java.io.MouseCursor	getPickedPos	(Ljava.lang.Vector3;)Ljava.lang.Vector3;
 0x4df3b0	java.io.MouseCursor	getPos	(Ljava.lang.Vector3;)Ljava.lang.Vector3;
 0x4d9830	java.io.File	open	(I)I
-0x5a3f68	java.io.File	close	None
+0x4d93b0	java.io.File	close	()V
 0x4d9520	java.io.File	delete	(Ljava.lang.String;)I
 0x4d94f0	java.io.File	copy	(Ljava.lang.String;Ljava.lang.String;)I
 0x4d9800	java.io.File	move	(Ljava.lang.String;Ljava.lang.String;)I
-0x5a404c	java.io.File	None	exists
+0x4d9550	java.io.File	exists	(Ljava.lang.String;)I
 0x4d9af0	java.io.File	write	(I)I
 0x4d9af0	java.io.File	write	(F)I
 0x4d9b50	java.io.File	write	(Ljava.util.resource.ResourceRef;)I
@@ -137,12 +137,12 @@ fn	class	method	signature
 0x4e6ab0	java.render.Viewport	activate	(I)V
 0x4e6c50	java.render.Viewport	deactivate	()V
 0x4e6db0	java.render.Viewport	getAspect	()F
-0x5a4d60	java.render.Viewport	None	getWidth
+0x4e6ee0	java.render.Viewport	getWidth	()F
 0x4e6df0	java.render.Viewport	getHeight	()F
 0x4e6e90	java.render.Viewport	getTop	()F
 0x4e6e40	java.render.Viewport	getLeft	()F
 0x4e6fb0	java.render.Viewport	unproject	(Ljava.lang.Vector3;I)Ljava.lang.Vector3;
-0x5a4e68	java.render.Viewport	resize	None
+0x4e6f30	java.render.Viewport	resize	(FFFF)V
 0x4e5d80	java.render.Text	setScale	(FF)V
 0x4e5cd0	java.render.Text	setDefaultColor	(I)V
 0x4e58d0	java.render.Text	getDefaultColor	()I
@@ -160,7 +160,7 @@ fn	class	method	signature
 0x4d8d00	java.util.resource.Animation	setFade	(F)V
 0x4d89e0	java.util.resource.Animation	getPos	()F
 0x4d8c90	java.util.resource.Animation	seek	(F)V
-0x5a5364	java.util.resource.Animation	None	play
+0x4d8c30	java.util.resource.Animation	play	()V
 0x4d8b70	java.util.resource.Animation	loopPlay	()V
 0x4d8bd0	java.util.resource.Animation	pause	()V
 0x4e0ad0	java.util.resource.ParticleSystem	init	(Ljava.util.resource.ResourceRef;Ljava.util.resource.RenderRef;Ljava.lang.String;)V
@@ -204,7 +204,7 @@ fn	class	method	signature
 0x4e32e0	java.util.resource.ResourceRef	duplicate	(Ljava.util.resource.ResourceRef;)V
 0x4e4210	java.util.resource.ResourceRef	scaleMesh	(FFF)V
 0x4da620	java.util.resource.GameRef	create	(Ljava.util.resource.GameRef;Ljava.util.resource.GameRef;Ljava.lang.String;Ljava.lang.String;)Ljava.lang.GameType;
-0x5a6208	java.util.resource.GameRef	None	create_native
+0x4da7e0	java.util.resource.GameRef	create_native	(Ljava.util.resource.GameRef;Ljava.util.resource.GameRef;Ljava.lang.String;Ljava.lang.String;)V
 0x4daa40	java.util.resource.GameRef	getFlags	()I
 0x4db900	java.util.resource.GameRef	setFlags	(I)V
 0x4da5e0	java.util.resource.GameRef	clearFlags	(I)V
@@ -220,7 +220,7 @@ fn	class	method	signature
 0x4dbf20	java.util.resource.GameRef	setState	(Ljava.lang.Vector3;Ljava.lang.Ypr;Ljava.lang.Vector3;Ljava.lang.Vector3;)V
 0x4db3b0	java.util.resource.GameRef	isEmpty	()I
 0x4db460	java.util.resource.GameRef	isScripted	(Ljava.lang.String;)I
-0x5a680c	java.util.resource.GameRef	getScriptInstance	None
+0x4daf90	java.util.resource.GameRef	getScriptInstance	()Ljava.lang.Object;
 0x4db7f0	java.util.resource.GameRef	setActiveCollision	()V
 0x4e3330	java.util.resource.GameRef	getDetail	()F
 0x4e3a80	java.util.resource.GameRef	getPos	(Ljava.lang.Vector3;)Ljava.lang.Vector3;
@@ -265,7 +265,7 @@ fn	class	method	signature
 0x4e29f0	java.util.resource.RenderRef	setLight	(III)V
 0x4e2950	java.util.resource.RenderRef	setFlare	(Ljava.util.resource.ResourceRef;IFFII)V
 0x4e2eb0	java.util.resource.RenderRef	setType	(Ljava.util.resource.ResourceRef;)V
-0x5a1568	java.util.resource.RenderRef	getTypeID	None
+0x4e23b0	java.util.resource.RenderRef	getTypeID	()I
 0x4e3330	java.util.resource.RenderRef	getDetail	()F
 0x4e25d0	java.util.resource.RenderRef	lineCreate	(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;)I
 0x4e24f0	java.util.resource.RenderRef	lineAdd	(Ljava.lang.Vector3;Ljava.lang.Vector3;IF)V
@@ -298,6 +298,6 @@ fn	class	method	signature
 0x461910	java.net.NetworkEngine	httpRequestAsync	(Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;Ljava.util.resource.GameRef;Ljava.lang.String;)I
 0x4e4c80	java.util.Steam	initAPI	()I
 0x4e4d40	java.util.Steam	neutralize	()V
-0x5a2268	java.util.Steam	getPackage	None
+0x4e4c10	java.util.Steam	getPackage	(I)Ljava.lang.String;
 0x4e4e00	java.util.Steam	setAchievement	(Ljava.lang.String;)V
 0x4e4d50	java.util.Steam	resetAchievements	()V

@@ -30,18 +30,17 @@ while i < f1:
         rel = struct.unpack_from('<i', d, i+1)[0]
         va = START + (i-f0)
         if va+5+rel == REG:
-            # collect preceding push imm32 (0x68)
+            # layout: 4 x (68 imm32), pushed right-to-left, with one `mov ecx,[vm]` (8b 0d imm32) somewhere between
             pushes = []
-            j = i-1
-            # walk back scanning 5-byte pushes, skipping other short insns
             k = i
-            while len(pushes) < 4 and k > f0 and i-k < 60:
-                k -= 1
-                if d[k] == 0x68 and k+5 <= i:
-                    pushes.append(struct.unpack_from('<I', d, k+1)[0])
-                    k -= 0  # continue scanning
-            # pushes are collected last-to-first: fn? order (cdecl-ish thiscall: last arg pushed first)
+            for n in range(4):
+                if d[k-6:k-4] == b'\x8b\x0d':
+                    k -= 6
+                if d[k-5] != 0x68: pushes = []; break
+                k -= 5
+                pushes.append(struct.unpack_from('<I', d, k+1)[0])   # walking back: class first
             res.append((va, pushes))
+            if not pushes: print('MISS', hex(va), d[i-24:i+5].hex(' '))
     i += 1
 tbl = []
 for va, p in res:
