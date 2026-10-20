@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "engine/math.h"
+#include "game/runtime.h"
 #include "script/vm.h"
 
 namespace {
@@ -646,6 +647,599 @@ bool object_hashcode(Vm &, const Args &a, Value *out, std::string *err)
 }
 
 
+// ---- java.util.resource.ResourceRef / GameRef / java.lang.GameType ---------
+
+Runtime *game_rt()
+{
+    return Runtime::active();
+}
+
+bool need_rt(const char *who, std::string *err)
+{
+    if (game_rt()) return true;
+    *err = std::string(who) + ": no active game runtime";
+    return false;
+}
+
+Runtime::Handle *value_handle(const Value &v)
+{
+    Runtime *rt = game_rt();
+    if (!rt || v.kind != Value::Obj || !v.obj) return nullptr;
+    return rt->handle(v.obj);
+}
+
+Runtime::Resource *value_resource(const Value &v)
+{
+    Runtime::Handle *h = value_handle(v);
+    return h ? h->target : nullptr;
+}
+
+bool receiver_object(const char *who, const Args &a, Object **out, std::string *err)
+{
+    if (!want(who, a, 1, err)) return false;
+    return get_o(who, a[0], out, err);
+}
+
+std::string value_string(const Args &a, size_t i)
+{
+    return i < a.size() && a[i].kind == Value::Str ? a[i].s : std::string();
+}
+
+// Wrapper objects for getParent/getFirstChild and friends. The exe returns
+// null when the field is null and logs when the handle itself is missing.
+bool wrap_resource(Runtime::Resource *r, Value *out, std::string *err)
+{
+    *out = Value::make_null();
+    if (!r) return true;
+    Object *o = game_rt()->wrap(r, err);
+    if (!o) {
+        if (err->empty()) *err = "resource wrapper creation failed";
+        return false;
+    }
+    *out = Value::make_obj(o);
+    return true;
+}
+
+Object *new_point(Vm &vm, const char *cls, const float v[3], bool ypr, std::string *err)
+{
+    ClassState *cs = vm.find_class(cls);
+    if (!cs) {
+        *err = std::string(cls) + " is not loaded";
+        return nullptr;
+    }
+    Object *o = vm.new_object(cs, err);
+    if (!o) return nullptr;
+    bool ok = ypr ? ypr_write(vm, o, v, err) : vec_write(vm, o, v, err);
+    return ok ? o : nullptr;
+}
+
+bool read_vec_arg(Vm &vm, const char *who, const Value &v, float out[3], std::string *err)
+{
+    out[0] = out[1] = out[2] = 0.0f;
+    if (v.kind == Value::Null) return true;  // setMatrix/setState zero defaults
+    Object *o;
+    if (!get_o(who, v, &o, err)) return false;
+    return vec_read(vm, o, out, err);
+}
+
+bool read_ypr_arg(Vm &vm, const char *who, const Value &v, float out[3], std::string *err)
+{
+    out[0] = out[1] = out[2] = 0.0f;
+    if (v.kind == Value::Null) return true;
+    Object *o;
+    if (!get_o(who, v, &o, err)) return false;
+    return ypr_read(vm, o, out, err);
+}
+
+// 0x4e4080: allocate the 0x10-byte ref node and attach it to the instance.
+bool rr_new_native(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("ResourceRef.newNative", err)) return false;
+    Object *o;
+    if (!receiver_object("ResourceRef.newNative", a, &o, err)) return false;
+    game_rt()->attach(o);
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e3220: unlink from the RI handle list, free the node, detach.
+bool rr_delete_native(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("ResourceRef.deleteNative", err)) return false;
+    Object *o;
+    if (!receiver_object("ResourceRef.deleteNative", a, &o, err)) return false;
+    game_rt()->detach(o);
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e43a0 -> FUN_0051f9b0: unresolved ids clear the handle (the exe drops the
+// old link, then only rebinds when FUN_005183a0 returns an instance).
+bool rr_set_id(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("ResourceRef.set", err)) return false;
+    Object *o;
+    if (!receiver_object("ResourceRef.set", a, &o, err)) return false;
+    int32_t id;
+    if (!want("ResourceRef.set", a, 2, err) ||
+        !get_i("ResourceRef.set", a[1], &id, err))
+        return false;
+    Runtime::Handle *h = game_rt()->handle(o);
+    if (h) game_rt()->bind(h, (uint32_t)id);
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e4350 -> FUN_0040cac0: copy the argument RI (id = RI+0x80); a null or
+// unbound argument clears the receiver.
+bool rr_set_ref(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("ResourceRef.set", err)) return false;
+    Object *o;
+    if (!receiver_object("ResourceRef.set", a, &o, err)) return false;
+    if (!want("ResourceRef.set", a, 2, err)) return false;
+    Runtime::Handle *h = game_rt()->handle(o);
+    if (h) {
+        Runtime::Handle *src = value_handle(a[1]);
+        if (src)
+            game_rt()->bind(h, src->target);
+        else
+            game_rt()->bind(h, (Runtime::Resource *)nullptr);
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e43e0: RI ? RI+0x7c : 0. A missing handle logs and returns 0.
+bool rr_type(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("ResourceRef.type", err)) return false;
+    Object *o;
+    if (!receiver_object("ResourceRef.type", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    *out = Value::make_int(r ? (int32_t)r->type : 0);
+    return true;
+}
+
+// 0x4e3cd0: ref node +8.
+bool rr_id(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("ResourceRef.id", err)) return false;
+    Object *o;
+    if (!receiver_object("ResourceRef.id", a, &o, err)) return false;
+    Runtime::Handle *h = game_rt()->handle(o);
+    *out = Value::make_int(h ? (int32_t)h->id : 0);
+    return true;
+}
+
+// 0x4e36b0: parent RI @ +0x24, id @ +0x80; the record super chain here.
+bool rr_get_parent_id(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("ResourceRef.getParentID", err)) return false;
+    Object *o;
+    if (!receiver_object("ResourceRef.getParentID", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    *out = Value::make_int(r ? (int32_t)r->parent_id : 0);
+    return true;
+}
+
+// 0x4e37c0/FUN_004ea740: wrap the parent RI; null when there is none.
+bool rr_get_parent(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("ResourceRef.getParent", err)) return false;
+    Object *o;
+    if (!receiver_object("ResourceRef.getParent", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    return wrap_resource(r ? r->parent : nullptr, out, err);
+}
+
+// 0x4e3c00/FUN_004ea900: RI+0xfc world-tree root; null when the field is null.
+bool rr_get_wt_root(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("ResourceRef.getWTRoot", err)) return false;
+    Object *o;
+    if (!receiver_object("ResourceRef.getWTRoot", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    return wrap_resource(r ? r->world_root : nullptr, out, err);
+}
+
+// 0x4e3510/FUN_004e9b30: first child RI @ +0x30.
+bool rr_get_first_child(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("ResourceRef.getFirstChild", err)) return false;
+    Object *o;
+    if (!receiver_object("ResourceRef.getFirstChild", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    Runtime::Resource *c = r && !r->children.empty() ? r->children[0] : nullptr;
+    return wrap_resource(c, out, err);
+}
+
+// 0x4e35e0/FUN_004ea610: next sibling RI @ +0x4.
+bool rr_get_next_child(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("ResourceRef.getNextChild", err)) return false;
+    Object *o;
+    if (!receiver_object("ResourceRef.getNextChild", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    return wrap_resource(r ? r->next_sibling : nullptr, out, err);
+}
+
+// ---- java.util.resource.GameRef -------------------------------------------
+
+// 0x4daa40: RI+0x84. No missing-handle error in the exe; returns 0.
+bool gr_get_flags(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.getFlags", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.getFlags", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    *out = Value::make_int(r ? (int32_t)r->flags : 0);
+    return true;
+}
+
+// 0x4db900: RI+0x84 |= flags; bit 0x10 also pokes the world-tree update.
+// shortcut: only the stored mask is modeled (no world-tree dispatcher).
+bool gr_set_flags(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.setFlags", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.setFlags", a, &o, err)) return false;
+    int32_t flags;
+    if (!want("GameRef.setFlags", a, 2, err) ||
+        !get_i("GameRef.setFlags", a[1], &flags, err))
+        return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (r) r->flags |= (uint32_t)flags;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4da5e0: RI+0x84 &= ~flags.
+bool gr_clear_flags(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.clearFlags", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.clearFlags", a, &o, err)) return false;
+    int32_t flags;
+    if (!want("GameRef.clearFlags", a, 2, err) ||
+        !get_i("GameRef.clearFlags", a[1], &flags, err))
+        return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (r) r->flags &= ~(uint32_t)flags;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e3890: missing handle/id logs and returns null; otherwise a new Vector3.
+bool gr_get_pos(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.getPos", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.getPos", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (!r) {
+        *out = Value::make_null();
+        return true;
+    }
+    Object *v = new_point(vm, "java.lang.Vector3", r->pos, false, err);
+    if (!v) return false;
+    *out = Value::make_obj(v);
+    return true;
+}
+
+// 0x4dac40: FUN_004ea660 orientation, returned as Ypr.
+bool gr_get_ori(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.getOri", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.getOri", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (!r) {
+        *out = Value::make_null();
+        return true;
+    }
+    Object *v = new_point(vm, "java.lang.Ypr", r->ori, true, err);
+    if (!v) return false;
+    *out = Value::make_obj(v);
+    return true;
+}
+
+// 0x4db050: FUN_0047c640(handle, 3, &v) (GII_VEL).
+bool gr_get_vel(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.getVel", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.getVel", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (!r) {
+        *out = Value::make_null();
+        return true;
+    }
+    Object *v = new_point(vm, "java.lang.Vector3", r->vel, false, err);
+    if (!v) return false;
+    *out = Value::make_obj(v);
+    return true;
+}
+
+// 0x4e3a80/0x4dae20/0x4db240: fill the supplied object and return it; a missing
+// handle logs and returns null (the argument is untouched).
+bool gr_get_pos_out(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.getPos", err)) return false;
+    Object *o, *v;
+    if (!receiver_object("GameRef.getPos", a, &o, err) ||
+        !want("GameRef.getPos", a, 2, err) ||
+        !get_o("GameRef.getPos", a[1], &v, err))
+        return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (!r) {
+        *out = Value::make_null();
+        return true;
+    }
+    if (!vec_write(vm, v, r->pos, err)) return false;
+    *out = Value::make_obj(v);
+    return true;
+}
+
+bool gr_get_ori_out(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.getOri", err)) return false;
+    Object *o, *v;
+    if (!receiver_object("GameRef.getOri", a, &o, err) ||
+        !want("GameRef.getOri", a, 2, err) ||
+        !get_o("GameRef.getOri", a[1], &v, err))
+        return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (!r) {
+        *out = Value::make_null();
+        return true;
+    }
+    if (!ypr_write(vm, v, r->ori, err)) return false;
+    *out = Value::make_obj(v);
+    return true;
+}
+
+bool gr_get_vel_out(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.getVel", err)) return false;
+    Object *o, *v;
+    if (!receiver_object("GameRef.getVel", a, &o, err) ||
+        !want("GameRef.getVel", a, 2, err) ||
+        !get_o("GameRef.getVel", a[1], &v, err))
+        return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (!r) {
+        *out = Value::make_null();
+        return true;
+    }
+    if (!vec_write(vm, v, r->vel, err)) return false;
+    *out = Value::make_obj(v);
+    return true;
+}
+
+// 0x4e3330: detail float at RI+0x9c for instance/render resources, else 0.
+bool gr_get_detail(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.getDetail", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.getDetail", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    float d = 0.0f;
+    if (r && (r->type == 1 || r->type == 3)) d = r->detail;
+    *out = Value::make_float(d);
+    return true;
+}
+
+// 0x4db3b0: no RI or type != 8 -> 1. Type resources are empty when the record
+// carries no data.
+// shortcut: typed-data presence approximated by record/rsd data; upgrade when
+// game-object typed data loading is modeled.
+bool gr_is_empty(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.isEmpty", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.isEmpty", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    int32_t empty = 1;
+    if (r && r->type == 8) {
+        bool has_data = r->record &&
+                        (r->record->data_size > 0 || (r->db && !r->db->rsd.empty()));
+        empty = has_data ? 0 : 1;
+    }
+    *out = Value::make_int(empty);
+    return true;
+}
+
+// 0x4db460: instance -> typed+0x50 script instance; type 8 -> type's script
+// class, then the class chain check (FUN_00549d60). Null name skips the check.
+bool gr_is_scripted(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.isScripted", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.isScripted", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    const std::string *name = nullptr;
+    if (a.size() > 1 && a[1].kind == Value::Str) name = &a[1].s;
+    std::string cls;
+    int32_t scripted = 0;
+    if (r && r->type == 1 && r->script) {
+        scripted = 1;
+        cls = r->script_class;  // the instance was made from the type's class
+    } else if (r && r->type == 8 && !r->script_class.empty()) {
+        scripted = 1;
+        cls = r->script_class;
+    }
+    if (scripted && name) scripted = game_rt()->class_is_a(cls, *name) ? 1 : 0;
+    *out = Value::make_int(scripted);
+    return true;
+}
+
+// 0x4daf90: script instance of an instance, or one made for a type.
+bool gr_get_script_instance(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.getScriptInstance", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.getScriptInstance", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    Object *s = game_rt()->script_instance(r);
+    *out = s ? Value::make_obj(s) : Value::make_null();
+    return true;
+}
+
+// 0x4da620: receiver handle required; type defaults to DAT_005fde50 in the exe
+// (not modeled); a zero parent id short-circuits to null. createScripted binds
+// the receiver handle to the new instance and returns its script instance.
+bool gr_create(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.create", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.create", a, &o, err)) return false;
+    if (!want("GameRef.create", a, 5, err)) return false;
+    Runtime *rt = game_rt();
+    Runtime::Handle *h = rt->handle(o);
+    *out = Value::make_null();
+    if (!h) return true;
+    Runtime::Resource *parent = value_resource(a[1]);
+    Runtime::Resource *type = value_resource(a[2]);
+    if (!parent || parent->id == 0 || !type) return true;
+    Runtime::Resource *inst = rt->instantiate(type, parent, value_string(a, 4),
+                                              value_string(a, 3), true, err);
+    if (!inst) return false;
+    rt->bind(h, inst);
+    if (inst->script) *out = Value::make_obj(inst->script);
+    return true;
+}
+
+// 0x4da7e0: createNativeScripted, no script instance, receiver rebound.
+bool gr_create_native(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.create_native", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.create_native", a, &o, err)) return false;
+    if (!want("GameRef.create_native", a, 5, err)) return false;
+    Runtime *rt = game_rt();
+    Runtime::Handle *h = rt->handle(o);
+    *out = Value::make_null();
+    if (!h) return true;
+    Runtime::Resource *parent = value_resource(a[1]);
+    Runtime::Resource *type = value_resource(a[2]);
+    if (!parent || parent->id == 0 || !type) return true;
+    Runtime::Resource *inst = rt->instantiate(type, parent, value_string(a, 4),
+                                              value_string(a, 3), false, err);
+    if (!inst) return false;
+    rt->bind(h, inst);
+    return true;
+}
+
+// 0x4dbbe0: FUN_004ec210, resource-tree reparent.
+bool gr_set_parent(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.setParent", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.setParent", a, &o, err)) return false;
+    if (!want("GameRef.setParent", a, 2, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (r) game_rt()->reparent(r, value_resource(a[1]));
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4dbd00: position from a Vector3.
+bool gr_set_pos(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.setPos", err)) return false;
+    Object *o, *v;
+    if (!receiver_object("GameRef.setPos", a, &o, err) ||
+        !want("GameRef.setPos", a, 2, err) ||
+        !get_o("GameRef.setPos", a[1], &v, err))
+        return false;
+    float pos[3];
+    if (!vec_read(vm, v, pos, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (r)
+        for (int i = 0; i < 3; i++) r->pos[i] = pos[i];
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4db950: pos + ori; null arguments default to zeros (FUN_004eb3f0).
+bool gr_set_matrix(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.setMatrix", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.setMatrix", a, &o, err) ||
+        !want("GameRef.setMatrix", a, 3, err))
+        return false;
+    float pos[3], ori[3];
+    if (!read_vec_arg(vm, "GameRef.setMatrix", a[1], pos, err) ||
+        !read_ypr_arg(vm, "GameRef.setMatrix", a[2], ori, err))
+        return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (r) {
+        for (int i = 0; i < 3; i++) {
+            r->pos[i] = pos[i];
+            r->ori[i] = ori[i];
+        }
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4dbf20: position, orientation, linear and angular velocity (12 floats).
+bool gr_set_state(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.setState", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.setState", a, &o, err) ||
+        !want("GameRef.setState", a, 5, err))
+        return false;
+    float pos[3], ori[3], vel[3], ang[3];
+    if (!read_vec_arg(vm, "GameRef.setState", a[1], pos, err) ||
+        !read_ypr_arg(vm, "GameRef.setState", a[2], ori, err) ||
+        !read_vec_arg(vm, "GameRef.setState", a[3], vel, err) ||
+        !read_vec_arg(vm, "GameRef.setState", a[4], ang, err))
+        return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (r) {
+        for (int i = 0; i < 3; i++) {
+            r->pos[i] = pos[i];
+            r->ori[i] = ori[i];
+            r->vel[i] = vel[i];
+            r->ang[i] = ang[i];
+        }
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4dc510: typeID 0 uses the receiver's own type; otherwise the id is
+// resolved as a game type. The receiver handle ends up on the new instance.
+// shortcut: the exe's default ground/container (RI+0x1d4) is not modeled, so a
+// null parent yields a parentless instance.
+bool gt_create_native_instance(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameType.createNativeInstance", err)) return false;
+    Object *o;
+    if (!receiver_object("GameType.createNativeInstance", a, &o, err)) return false;
+    int32_t type_id;
+    if (!want("GameType.createNativeInstance", a, 5, err) ||
+        !get_i("GameType.createNativeInstance", a[2], &type_id, err))
+        return false;
+    Runtime *rt = game_rt();
+    Runtime::Handle *h = rt->handle(o);
+    *out = Value::make_null();
+    if (!h) return true;
+    Runtime::Resource *type =
+        type_id ? rt->resolve((uint32_t)type_id) : h->target;
+    if (!type) return true;
+    Runtime::Resource *inst =
+        rt->instantiate(type, value_resource(a[1]), value_string(a, 4),
+                        value_string(a, 3), false, err);
+    if (!inst) return false;
+    rt->bind(h, inst);
+    return true;
+}
+
 }  // namespace
 
 namespace natives {
@@ -956,50 +1550,50 @@ const std::vector<Entry> &table()
     {"java.lang.GameType", "registerCallback", "(I)V", nullptr, true},
     {"java.lang.GameType", "unregisterCallback", "(I)V", nullptr, true},
     {"java.lang.GameType", "unregisterCallbacks", "()V", nullptr, true},
-    {"java.lang.GameType", "createNativeInstance", "(Ljava.util.resource.GameRef;ILjava.lang.String;Ljava.lang.String;)V", nullptr, true},
-    {"java.util.resource.ResourceRef", "deleteNative", "()V", nullptr, true},
-    {"java.util.resource.ResourceRef", "newNative", "()V", nullptr, true},
-    {"java.util.resource.ResourceRef", "set", "(I)V", nullptr, true},
-    {"java.util.resource.ResourceRef", "set", "(Ljava.util.resource.ResourceRef;)V", nullptr, true},
+    {"java.lang.GameType", "createNativeInstance", "(Ljava.util.resource.GameRef;ILjava.lang.String;Ljava.lang.String;)V", gt_create_native_instance, true},
+    {"java.util.resource.ResourceRef", "deleteNative", "()V", rr_delete_native, true},
+    {"java.util.resource.ResourceRef", "newNative", "()V", rr_new_native, true},
+    {"java.util.resource.ResourceRef", "set", "(I)V", rr_set_id, true},
+    {"java.util.resource.ResourceRef", "set", "(Ljava.util.resource.ResourceRef;)V", rr_set_ref, true},
     {"java.util.resource.ResourceRef", "load", "()V", nullptr, true},
     {"java.util.resource.ResourceRef", "unload", "()V", nullptr, true},
     {"java.util.resource.ResourceRef", "destroy", "()V", nullptr, true},
-    {"java.util.resource.ResourceRef", "type", "()I", nullptr, true},
-    {"java.util.resource.ResourceRef", "id", "()I", nullptr, true},
-    {"java.util.resource.ResourceRef", "getParentID", "()I", nullptr, true},
-    {"java.util.resource.ResourceRef", "getParent", "()Ljava.util.resource.ResourceRef;", nullptr, true},
-    {"java.util.resource.ResourceRef", "getWTRoot", "()Ljava.util.resource.ResourceRef;", nullptr, true},
-    {"java.util.resource.ResourceRef", "getFirstChild", "()Ljava.util.resource.ResourceRef;", nullptr, true},
-    {"java.util.resource.ResourceRef", "getNextChild", "()Ljava.util.resource.ResourceRef;", nullptr, true},
+    {"java.util.resource.ResourceRef", "type", "()I", rr_type, true},
+    {"java.util.resource.ResourceRef", "id", "()I", rr_id, true},
+    {"java.util.resource.ResourceRef", "getParentID", "()I", rr_get_parent_id, true},
+    {"java.util.resource.ResourceRef", "getParent", "()Ljava.util.resource.ResourceRef;", rr_get_parent, true},
+    {"java.util.resource.ResourceRef", "getWTRoot", "()Ljava.util.resource.ResourceRef;", rr_get_wt_root, true},
+    {"java.util.resource.ResourceRef", "getFirstChild", "()Ljava.util.resource.ResourceRef;", rr_get_first_child, true},
+    {"java.util.resource.ResourceRef", "getNextChild", "()Ljava.util.resource.ResourceRef;", rr_get_next_child, true},
     {"java.util.resource.ResourceRef", "makeTexture", "(Ljava.util.resource.ResourceRef;Ljava.lang.String;)V", nullptr, true},
     {"java.util.resource.ResourceRef", "makeSound", "(Ljava.util.resource.ResourceRef;Ljava.lang.String;)V", nullptr, true},
     {"java.util.resource.ResourceRef", "cache", "()V", nullptr, true},
     {"java.util.resource.ResourceRef", "precache", "()V", nullptr, true},
     {"java.util.resource.ResourceRef", "duplicate", "(Ljava.util.resource.ResourceRef;)V", nullptr, true},
     {"java.util.resource.ResourceRef", "scaleMesh", "(FFF)V", nullptr, true},
-    {"java.util.resource.GameRef", "create", "(Ljava.util.resource.GameRef;Ljava.util.resource.GameRef;Ljava.lang.String;Ljava.lang.String;)Ljava.lang.GameType;", nullptr, true},
-    {"java.util.resource.GameRef", "create_native", "(Ljava.util.resource.GameRef;Ljava.util.resource.GameRef;Ljava.lang.String;Ljava.lang.String;)V", nullptr, true},
-    {"java.util.resource.GameRef", "getFlags", "()I", nullptr, true},
-    {"java.util.resource.GameRef", "setFlags", "(I)V", nullptr, true},
-    {"java.util.resource.GameRef", "clearFlags", "(I)V", nullptr, true},
-    {"java.util.resource.GameRef", "getPos", "()Ljava.lang.Vector3;", nullptr, true},
-    {"java.util.resource.GameRef", "getOri", "()Ljava.lang.Ypr;", nullptr, true},
-    {"java.util.resource.GameRef", "getVel", "()Ljava.lang.Vector3;", nullptr, true},
+    {"java.util.resource.GameRef", "create", "(Ljava.util.resource.GameRef;Ljava.util.resource.GameRef;Ljava.lang.String;Ljava.lang.String;)Ljava.lang.GameType;", gr_create, true},
+    {"java.util.resource.GameRef", "create_native", "(Ljava.util.resource.GameRef;Ljava.util.resource.GameRef;Ljava.lang.String;Ljava.lang.String;)V", gr_create_native, true},
+    {"java.util.resource.GameRef", "getFlags", "()I", gr_get_flags, true},
+    {"java.util.resource.GameRef", "setFlags", "(I)V", gr_set_flags, true},
+    {"java.util.resource.GameRef", "clearFlags", "(I)V", gr_clear_flags, true},
+    {"java.util.resource.GameRef", "getPos", "()Ljava.lang.Vector3;", gr_get_pos, true},
+    {"java.util.resource.GameRef", "getOri", "()Ljava.lang.Ypr;", gr_get_ori, true},
+    {"java.util.resource.GameRef", "getVel", "()Ljava.lang.Vector3;", gr_get_vel, true},
     {"java.util.resource.GameRef", "getInfo", "(II)I", nullptr, true},
     {"java.util.resource.GameRef", "getInfo", "(ILjava.lang.String;)I", nullptr, true},
     {"java.util.resource.GameRef", "queueEvent", "(Ljava.util.resource.ResourceRef;ILjava.lang.String;)V", nullptr, true},
-    {"java.util.resource.GameRef", "setParent", "(Ljava.util.resource.ResourceRef;)V", nullptr, true},
-    {"java.util.resource.GameRef", "setPos", "(Ljava.lang.Vector3;)V", nullptr, true},
-    {"java.util.resource.GameRef", "setMatrix", "(Ljava.lang.Vector3;Ljava.lang.Ypr;)V", nullptr, true},
-    {"java.util.resource.GameRef", "setState", "(Ljava.lang.Vector3;Ljava.lang.Ypr;Ljava.lang.Vector3;Ljava.lang.Vector3;)V", nullptr, true},
-    {"java.util.resource.GameRef", "isEmpty", "()I", nullptr, true},
-    {"java.util.resource.GameRef", "isScripted", "(Ljava.lang.String;)I", nullptr, true},
-    {"java.util.resource.GameRef", "getScriptInstance", "()Ljava.lang.Object;", nullptr, true},
+    {"java.util.resource.GameRef", "setParent", "(Ljava.util.resource.ResourceRef;)V", gr_set_parent, true},
+    {"java.util.resource.GameRef", "setPos", "(Ljava.lang.Vector3;)V", gr_set_pos, true},
+    {"java.util.resource.GameRef", "setMatrix", "(Ljava.lang.Vector3;Ljava.lang.Ypr;)V", gr_set_matrix, true},
+    {"java.util.resource.GameRef", "setState", "(Ljava.lang.Vector3;Ljava.lang.Ypr;Ljava.lang.Vector3;Ljava.lang.Vector3;)V", gr_set_state, true},
+    {"java.util.resource.GameRef", "isEmpty", "()I", gr_is_empty, true},
+    {"java.util.resource.GameRef", "isScripted", "(Ljava.lang.String;)I", gr_is_scripted, true},
+    {"java.util.resource.GameRef", "getScriptInstance", "()Ljava.lang.Object;", gr_get_script_instance, true},
     {"java.util.resource.GameRef", "setActiveCollision", "()V", nullptr, true},
-    {"java.util.resource.GameRef", "getDetail", "()F", nullptr, true},
-    {"java.util.resource.GameRef", "getPos", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", nullptr, true},
-    {"java.util.resource.GameRef", "getOri", "(Ljava.lang.Ypr;)Ljava.lang.Ypr;", nullptr, true},
-    {"java.util.resource.GameRef", "getVel", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", nullptr, true},
+    {"java.util.resource.GameRef", "getDetail", "()F", gr_get_detail, true},
+    {"java.util.resource.GameRef", "getPos", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", gr_get_pos_out, true},
+    {"java.util.resource.GameRef", "getOri", "(Ljava.lang.Ypr;)Ljava.lang.Ypr;", gr_get_ori_out, true},
+    {"java.util.resource.GameRef", "getVel", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", gr_get_vel_out, true},
     {"java.util.resource.GroundRef", "setWater", "(FFF)V", nullptr, true},
     {"java.util.resource.GroundRef", "setWater", "(Ljava.lang.Vector3;Ljava.lang.Vector3;FF)V", nullptr, true},
     {"java.util.resource.GroundRef", "addWaterLimit", "(Ljava.lang.Vector3;Ljava.lang.Vector3;)V", nullptr, true},

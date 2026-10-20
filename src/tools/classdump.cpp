@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+#include "game/runtime.h"
+#include "resource/manager.h"
 #include "script/classfile.h"
 #include "script/natives.h"
 #include "script/vm.h"
@@ -1327,6 +1329,445 @@ static void vm_corpus_tests(int argc, char **argv, Checker &c)
     }
 }
 
+// ---- game runtime object/id layer -----------------------------------------
+
+// The selfcheck samples live under <game>/sl/...; derive the game root so the
+// runtime check can open the shipped packages next to them.
+static std::string game_root(int argc, char **argv)
+{
+    const std::string needle = "the game";
+    for (int i = 0; i < argc; i++) {
+        std::string p = argv[i];
+        size_t at = p.find(needle);
+        if (at != std::string::npos) return p.substr(0, at + needle.size());
+    }
+    return std::string();
+}
+
+static void runtime_tests(const std::string &game, Checker &c)
+{
+    std::printf("game runtime object/id layer\n");
+    static const char *kCreateSig =
+        "(Ljava.util.resource.GameRef;Ljava.util.resource.GameRef;"
+        "Ljava.lang.String;Ljava.lang.String;)Ljava.lang.GameType;";
+    static const char *kCreateNativeSig =
+        "(Ljava.util.resource.GameRef;Ljava.util.resource.GameRef;"
+        "Ljava.lang.String;Ljava.lang.String;)V";
+    static const char *kGTISig =
+        "(Ljava.util.resource.GameRef;ILjava.lang.String;Ljava.lang.String;)V";
+
+    ResourceManager rm;
+    std::string err;
+    bool ok = rm.open((game + "/system.rpk").c_str(), (game + "/system.rdb").c_str(), &err);
+    c.check(ok, "runtime: open system package" + (ok ? std::string() : ": " + err));
+    if (!ok) return;
+    ok = rm.open((game + "/cars/racers/Axis.rpk").c_str(),
+                 (game + "/cars/racers/Axis.rdb").c_str(), &err);
+    c.check(ok, "runtime: open Axis package" + (ok ? std::string() : ": " + err));
+    if (!ok) return;
+
+    // Only the classes the runtime check needs (the record `script` refs alone
+    // do not pull in the engine-side resource classes).
+    static const char *kFiles[] = {
+        "system\\scripts\\lang\\Object.class",
+        "system\\scripts\\lang\\Native.class",
+        "system\\scripts\\lang\\GameType.class",
+        "system\\scripts\\lang\\Vector3.class",
+        "system\\scripts\\lang\\Ypr.class",
+        "system\\scripts\\util\\resource\\ResourceRef.class",
+        "system\\scripts\\util\\resource\\GameRef.class",
+        "system\\scripts\\util\\resource\\GroundRef.class",
+        "cars\\racers\\Axis_data\\scripts\\Axis_FL_door.class",
+    };
+    ClassPath cp;
+    for (const char *rel : kFiles) {
+        std::string path = rm.resolve_path(rel);
+        bool loaded = !path.empty() && cp.add_file(path, &err);
+        c.check(loaded, std::string("runtime: load ") + rel +
+                            (loaded ? std::string()
+                                    : ": " + (path.empty() ? "not found" : err)));
+    }
+    cp.link();
+
+    Vm vm;
+    for (const ClassUnit *u : cp.units()) vm.add_class(u);
+    natives::install(vm);
+    Runtime rt(rm, &vm, &cp);
+    rt.activate();
+
+    ClassEntry *rr_entry = cp.find("java.util.resource.ResourceRef");
+    ClassEntry *gr_entry = cp.find("java.util.resource.GameRef");
+    ClassEntry *gt_entry = cp.find("java.lang.GameType");
+    const ClassUnit *rr_unit = rr_entry ? rr_entry->unit : nullptr;
+    const ClassUnit *gr_unit = gr_entry ? gr_entry->unit : nullptr;
+    const ClassUnit *gt_unit = gt_entry ? gt_entry->unit : nullptr;
+    c.check(rr_unit && gr_unit && gt_unit, "runtime: resource classes loaded");
+    if (!rr_unit || !gr_unit || !gt_unit) {
+        rt.deactivate();
+        return;
+    }
+
+    // ---- package id resolution and super chain ----
+    std::vector<ResourceHit> hits = rm.lookup(0xD2);
+    c.check(hits.size() == 1 && hits[0].package == &rm.package(1),
+            "runtime: 0xD2 resolves only in the Axis package");
+    Runtime::Resource *fl = rt.resolve(0xD2);
+    c.check(fl != nullptr, "runtime: resolve 0xD2");
+    if (!fl) {
+        rt.deactivate();
+        return;
+    }
+    c.check(fl->type == 8, "runtime: 0xD2 is RESTYPE_GAME (8)");
+    c.check(rt.type_name(fl->type) == "typ_game_object", "runtime: type name typ_game_object");
+    c.check(fl->name == "FL", "runtime: 0xD2 record name FL");
+    c.check(fl->script_class == "java.game.cars.Axis_FL_door",
+            "runtime: 0xD2 script class");
+    c.check(fl->parent_id == 7 && fl->parent && fl->parent->id == 7,
+            "runtime: 0xD2 super id 0x7");
+    c.check(fl->parent && fl->parent->name == ">Stock", "runtime: super is >Stock");
+    c.check(fl->parent && fl->parent->parent_id == 0x0004f242 &&
+                fl->parent->parent == nullptr,
+            "runtime: external super stays unresolved");
+    std::vector<ChainLink> links;
+    ok = rt.chain(fl, &links, &err);
+    c.check(ok && links.size() == 3, "runtime: chain has three links" +
+                                         (ok ? std::string() : ": " + err));
+    c.check(ok && links.size() == 3 && links[0].id == 0xD2 && links[1].id == 7 &&
+                links[2].id == 0x0004f242 && links[2].external,
+            "runtime: chain FL -> >Stock -> external parts.rpk");
+    std::string chain_err;
+    c.check(!rt.chain(nullptr, &links, &chain_err) && !chain_err.empty(),
+            "runtime: chain of a missing resource fails");
+    Runtime::Resource *sys7 = rt.resolve(7);
+    c.check(sys7 && sys7->name == "res_mesh" && sys7->type == 5,
+            "runtime: id 7 without a base resolves in the first package");
+    c.check(rt.resolve(7, &rm.package(1)) == fl->parent,
+            "runtime: id 7 with the Axis base resolves >Stock");
+    c.check(rt.resolve(0x0004f242) == nullptr,
+            "runtime: id in an unopened sub-package does not resolve");
+    c.check(rt.resolve(0) == nullptr, "runtime: id 0 does not resolve");
+
+    // ---- ResourceRef natives, driven through the VM ----
+    ClassState *rr_state = vm.find_class("java.util.resource.ResourceRef");
+    const MethodInfo *rr_ctor = find_method_sig(*rr_unit, "<init>", "()");
+    c.check(rr_state && rr_ctor, "runtime: ResourceRef() constructor present");
+    auto new_ref = [&]() -> Object * {
+        if (!rr_state || !rr_ctor) return nullptr;
+        Object *o = vm.new_object(rr_state, &err);
+        Value r;
+        if (!o || !vm.invoke(*rr_unit, *rr_ctor, o, {}, &r, &err)) return nullptr;
+        return o;
+    };
+    Value out;
+    bool ran;
+    Object *ref = new_ref();
+    c.check(ref != nullptr, "runtime: ResourceRef() runs newNative" +
+                                (ref ? std::string() : ": " + err));
+    c.check(ref && rt.handle(ref) && rt.handle(ref)->target == nullptr &&
+                rt.handle(ref)->id == 0,
+            "runtime: a fresh ref has an empty handle");
+    if (ref) {
+        ran = call_instance(vm, *rr_unit, "set", "(I)V", ref, {vi(0xD2)}, &out, &err);
+        c.check(ran, "runtime: ref.set(0xD2)" + (ran ? std::string() : ": " + err));
+        c.check(rt.handle(ref) && rt.handle(ref)->target == fl &&
+                    rt.handle(ref)->id == 0xD2,
+                "runtime: set(int) binds the handle");
+        c.check(fl->refs == 1, "runtime: 0xD2 refcount 1");
+        ran = call_instance(vm, *rr_unit, "type", "()I", ref, {}, &out, &err);
+        expect_int(c, ran, out, 8, "runtime: ref.type()", err);
+        ran = call_instance(vm, *rr_unit, "id", "()I", ref, {}, &out, &err);
+        expect_int(c, ran, out, 0xD2, "runtime: ref.id()", err);
+        ran = call_instance(vm, *rr_unit, "getParentID", "()I", ref, {}, &out, &err);
+        expect_int(c, ran, out, 7, "runtime: ref.getParentID()", err);
+        ran = call_instance(vm, *rr_unit, "getParent",
+                            "()Ljava.util.resource.ResourceRef;", ref, {}, &out, &err);
+        Object *parent_obj = out.kind == Value::Obj ? out.obj : nullptr;
+        c.check(ran, "runtime: ref.getParent()" + (ran ? std::string() : ": " + err));
+        c.check(parent_obj && rt.handle(parent_obj) &&
+                    rt.handle(parent_obj)->target == fl->parent &&
+                    rt.handle(parent_obj)->id == 7,
+                "runtime: getParent wraps the super");
+        c.check(fl->parent->refs == 1, "runtime: >Stock refcount 1");
+        c.check(ran && call_instance(vm, *rr_unit, "getWTRoot",
+                                     "()Ljava.util.resource.ResourceRef;", ref, {}, &out,
+                                     &err) &&
+                    out.kind == Value::Null,
+                "runtime: getWTRoot of a plain record is null");
+        c.check(call_instance(vm, *rr_unit, "getFirstChild",
+                              "()Ljava.util.resource.ResourceRef;", ref, {}, &out, &err) &&
+                    out.kind == Value::Null,
+                "runtime: getFirstChild of a plain record is null");
+    }
+
+    Object *ref2 = new_ref();
+    if (ref && ref2) {
+        ran = call_instance(vm, *rr_unit, "set", "(Ljava.util.resource.ResourceRef;)V",
+                            ref2, {Value::make_obj(ref)}, &out, &err);
+        c.check(ran, "runtime: ref2.set(ref)" + (ran ? std::string() : ": " + err));
+        c.check(rt.handle(ref2) && rt.handle(ref2)->target == fl &&
+                    rt.handle(ref2)->id == 0xD2,
+                "runtime: set(ResourceRef) copies the target");
+        c.check(fl->refs == 2, "runtime: 0xD2 refcount 2");
+        ran = call_instance(vm, *rr_unit, "deleteNative", "()V", ref, {}, &out, &err);
+        c.check(ran, "runtime: ref.deleteNative()" +
+                         (ran ? std::string() : ": " + err));
+        c.check(rt.handle(ref) == nullptr, "runtime: deleteNative detaches the handle");
+        c.check(fl->refs == 1, "runtime: 0xD2 refcount back to 1");
+    }
+
+    // ---- GameRef natives ----
+    Object *gr = rt.wrap(fl, &err);
+    c.check(gr != nullptr, "runtime: wrap 0xD2 as GameRef" +
+                                (gr ? std::string() : ": " + err));
+    if (!gr) {
+        rt.deactivate();
+        return;
+    }
+    c.check(rt.handle(gr) && rt.handle(gr)->target == fl &&
+                rt.handle(gr)->id == 0xD2,
+            "runtime: GameRef wrapper binds 0xD2");
+    ran = call_instance(vm, *gr_unit, "getFlags", "()I", gr, {}, &out, &err);
+    expect_int(c, ran, out, 0, "runtime: getFlags", err);
+    ran = call_instance(vm, *gr_unit, "setFlags", "(I)V", gr, {vi(0x10)}, &out, &err);
+    c.check(ran, "runtime: setFlags(0x10)" + (ran ? std::string() : ": " + err));
+    c.check(fl->flags == 0x10, "runtime: flags stored");
+    ran = call_instance(vm, *gr_unit, "clearFlags", "(I)V", gr, {vi(0x10)}, &out, &err);
+    c.check(ran, "runtime: clearFlags(0x10)" + (ran ? std::string() : ": " + err));
+    c.check(fl->flags == 0, "runtime: flags cleared");
+
+    auto make_pt = [&](const char *cls, float a, float b, float cc, const char *fa,
+                       const char *fb, const char *fc) -> Object * {
+        ClassState *cs = vm.find_class(cls);
+        if (!cs) {
+            err = std::string(cls) + " is not registered";
+            return nullptr;
+        }
+        Object *o = vm.new_object(cs, &err);
+        if (!o || !vm.set_instance_field(o, fa, vf(a), &err) ||
+            !vm.set_instance_field(o, fb, vf(b), &err) ||
+            !vm.set_instance_field(o, fc, vf(cc), &err))
+            return nullptr;
+        return o;
+    };
+    Object *pos = make_pt("java.lang.Vector3", 1.0f, 2.0f, 3.0f, "x", "y", "z");
+    Object *vel = make_pt("java.lang.Vector3", 4.0f, 5.0f, 6.0f, "x", "y", "z");
+    Object *ang = make_pt("java.lang.Vector3", 0.1f, 0.2f, 0.3f, "x", "y", "z");
+    Object *ori = make_pt("java.lang.Ypr", 0.5f, 0.25f, 0.125f, "y", "p", "r");
+    c.check(pos && vel && ang && ori, "runtime: Vector3/Ypr fixtures" +
+                                          (pos && vel && ang && ori
+                                               ? std::string()
+                                               : ": " + err));
+    if (pos && vel && ang && ori) {
+        ran = call_instance(vm, *gr_unit, "setPos", "(Ljava.lang.Vector3;)V", gr,
+                            {Value::make_obj(pos)}, &out, &err);
+        c.check(ran && fl->pos[0] == 1.0f && fl->pos[1] == 2.0f && fl->pos[2] == 3.0f,
+                "runtime: setPos updates the instance position");
+        ran = call_instance(vm, *gr_unit, "getPos", "()Ljava.lang.Vector3;", gr, {},
+                            &out, &err);
+        float x = 0.0f, y = 0.0f, z = 0.0f;
+        bool got = ran && out.kind == Value::Obj &&
+                   obj_float(vm, out.obj, "x", &x, &err) &&
+                   obj_float(vm, out.obj, "y", &y, &err) &&
+                   obj_float(vm, out.obj, "z", &z, &err);
+        c.check(got && x == 1.0f && y == 2.0f && z == 3.0f,
+                "runtime: getPos returns the position");
+
+        ran = call_instance(vm, *gr_unit, "setMatrix",
+                            "(Ljava.lang.Vector3;Ljava.lang.Ypr;)V", gr,
+                            {Value::make_obj(pos), Value::make_obj(ori)}, &out, &err);
+        c.check(ran && fl->ori[0] == 0.5f && fl->ori[1] == 0.25f && fl->ori[2] == 0.125f,
+                "runtime: setMatrix updates the orientation");
+        c.check(call_instance(vm, *gr_unit, "getOri", "()Ljava.lang.Ypr;", gr, {}, &out,
+                            &err) &&
+                    out.kind == Value::Obj &&
+                    obj_float(vm, out.obj, "y", &y, &err) && y == 0.5f,
+                "runtime: getOri returns the orientation");
+
+        ran = call_instance(vm, *gr_unit, "setState",
+                            "(Ljava.lang.Vector3;Ljava.lang.Ypr;Ljava.lang.Vector3;"
+                            "Ljava.lang.Vector3;)V",
+                            gr,
+                            {Value::make_obj(pos), Value::make_obj(ori),
+                             Value::make_obj(vel), Value::make_obj(ang)},
+                            &out, &err);
+        c.check(ran && fl->vel[0] == 4.0f && fl->vel[2] == 6.0f && fl->ang[1] == 0.2f,
+                "runtime: setState stores velocities");
+        ran = call_instance(vm, *gr_unit, "getVel", "()Ljava.lang.Vector3;", gr, {},
+                            &out, &err);
+        got = ran && out.kind == Value::Obj &&
+              obj_float(vm, out.obj, "x", &x, &err) &&
+              obj_float(vm, out.obj, "z", &z, &err);
+        c.check(got && x == 4.0f && z == 6.0f, "runtime: getVel returns the velocity");
+
+        Object *fill = make_pt("java.lang.Vector3", 0.0f, 0.0f, 0.0f, "x", "y", "z");
+        ran = call_instance(vm, *gr_unit, "getPos",
+                            "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", gr,
+                            {Value::make_obj(fill)}, &out, &err);
+        c.check(ran && out.kind == Value::Obj && out.obj == fill &&
+                    obj_float(vm, fill, "y", &y, &err) && y == 2.0f,
+                "runtime: getPos(out) fills and returns the argument");
+        Object *fill_ori = make_pt("java.lang.Ypr", 0.0f, 0.0f, 0.0f, "y", "p", "r");
+        ran = call_instance(vm, *gr_unit, "getOri",
+                            "(Ljava.lang.Ypr;)Ljava.lang.Ypr;", gr,
+                            {Value::make_obj(fill_ori)}, &out, &err);
+        c.check(ran && out.kind == Value::Obj && out.obj == fill_ori &&
+                    obj_float(vm, fill_ori, "r", &z, &err) && z == 0.125f,
+                "runtime: getOri(out) fills and returns the argument");
+        Object *fill_vel = make_pt("java.lang.Vector3", 0.0f, 0.0f, 0.0f, "x", "y", "z");
+        ran = call_instance(vm, *gr_unit, "getVel",
+                            "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", gr,
+                            {Value::make_obj(fill_vel)}, &out, &err);
+        c.check(ran && out.kind == Value::Obj && out.obj == fill_vel &&
+                    obj_float(vm, fill_vel, "y", &y, &err) && y == 5.0f,
+                "runtime: getVel(out) fills and returns the argument");
+    }
+
+    // GameRef.class does not declare getDetail (natives.tsv lists the shared
+    // 0x4e3330 address under both GameRef and RenderRef), so it cannot be
+    // reached through a GameRef unit; the row stays implemented for parity.
+    ran = call_instance(vm, *gr_unit, "isEmpty", "()I", gr, {}, &out, &err);
+    expect_int(c, ran, out, 0, "runtime: a data-bearing type is not empty", err);
+    ran = call_instance(vm, *gr_unit, "isScripted", "(Ljava.lang.String;)I", gr,
+                        {Value::make_str("java.game.cars.Axis_FL_door")}, &out, &err);
+    expect_int(c, ran, out, 1, "runtime: isScripted(exact class)", err);
+    ran = call_instance(vm, *gr_unit, "isScripted", "(Ljava.lang.String;)I", gr,
+                        {Value::make_str("java.game.parts.bodypart.FrontDoor")}, &out,
+                        &err);
+    expect_int(c, ran, out, 1, "runtime: isScripted(super class)", err);
+    ran = call_instance(vm, *gr_unit, "isScripted", "(Ljava.lang.String;)I", gr,
+                        {Value::make_str("java.lang.Native")}, &out, &err);
+    expect_int(c, ran, out, 0, "runtime: isScripted(unrelated class)", err);
+    ran = call_instance(vm, *gr_unit, "isScripted", "(Ljava.lang.String;)I", gr,
+                        {Value::make_null()}, &out, &err);
+    expect_int(c, ran, out, 1, "runtime: isScripted(null) skips the class check", err);
+    ran = call_instance(vm, *gr_unit, "getScriptInstance", "()Ljava.lang.Object;", gr,
+                        {}, &out, &err);
+    c.check(ran && out.kind == Value::Obj && fl->script && out.obj == fl->script,
+            "runtime: getScriptInstance of a type creates its script object");
+
+    // ---- instances: create / create_native / world tree ----
+    Object *recv_a = rt.wrap(fl, &err);
+    ran = recv_a && call_instance(vm, *gr_unit, "create", kCreateSig, recv_a,
+                                  {Value::make_obj(gr), Value::make_obj(gr),
+                                   Value::make_str(""), Value::make_str("A")},
+                                  &out, &err);
+    c.check(ran, "runtime: create A" + (ran ? std::string() : ": " + err));
+    Runtime::Resource *inst_a = rt.handle(recv_a) ? rt.handle(recv_a)->target : nullptr;
+    c.check(inst_a && inst_a->instance && inst_a->type == 1 && inst_a->name == "A",
+            "runtime: create binds a game instance");
+    c.check(inst_a && inst_a->parent == fl && fl->children.size() == 1 &&
+                fl->children[0] == inst_a,
+            "runtime: instance joins the parent children");
+    c.check(ran && out.kind == Value::Obj && inst_a && inst_a->script &&
+                out.obj == inst_a->script && out.obj != recv_a,
+            "runtime: create returns the script instance");
+    c.check(inst_a && inst_a->script_class == "java.game.cars.Axis_FL_door",
+            "runtime: instance keeps the type script class");
+    c.check(inst_a && inst_a->refs == 1, "runtime: instance refcount 1");
+    std::string inst_chain_err;
+    c.check(inst_a && !rt.chain(inst_a, &links, &inst_chain_err) &&
+                !inst_chain_err.empty(),
+            "runtime: chain of an instance fails");
+    if (inst_a) {
+        ran = call_instance(vm, *gr_unit, "getScriptInstance", "()Ljava.lang.Object;",
+                            recv_a, {}, &out, &err);
+        c.check(ran && out.kind == Value::Obj && out.obj == inst_a->script,
+                "runtime: getScriptInstance returns the created script");
+        ran = call_instance(vm, *gr_unit, "isEmpty", "()I", recv_a, {}, &out, &err);
+        expect_int(c, ran, out, 1, "runtime: an instance is empty by the type test", err);
+    }
+
+    Object *recv_b = rt.wrap(fl, &err);
+    ran = recv_b && call_instance(vm, *gr_unit, "create", kCreateSig, recv_b,
+                                  {Value::make_obj(gr), Value::make_obj(gr),
+                                   Value::make_str(""), Value::make_str("B")},
+                                  &out, &err);
+    c.check(ran, "runtime: create B" + (ran ? std::string() : ": " + err));
+    Runtime::Resource *inst_b = rt.handle(recv_b) ? rt.handle(recv_b)->target : nullptr;
+    c.check(fl->children.size() == 2 && fl->children[1] == inst_b,
+            "runtime: second instance appends to the siblings");
+    c.check(rt.handle(recv_b) && rt.handle(recv_b)->id == inst_b->id,
+            "runtime: instance id is exposed by the handle");
+
+    ran = call_instance(vm, *rr_unit, "getFirstChild",
+                        "()Ljava.util.resource.ResourceRef;", gr, {}, &out, &err);
+    Object *child_a = out.kind == Value::Obj ? out.obj : nullptr;
+    c.check(ran && child_a && rt.handle(child_a) &&
+                rt.handle(child_a)->target == inst_a,
+            "runtime: getFirstChild returns A");
+    ran = child_a && call_instance(vm, *rr_unit, "getNextChild",
+                                   "()Ljava.util.resource.ResourceRef;", child_a, {},
+                                   &out, &err);
+    Object *child_b = out.kind == Value::Obj ? out.obj : nullptr;
+    c.check(ran && child_b && rt.handle(child_b) &&
+                rt.handle(child_b)->target == inst_b,
+            "runtime: getNextChild returns B");
+    c.check(inst_a && inst_a->refs == 2, "runtime: A refcount 2 after wrappers");
+
+    Object *recv_d = rt.wrap(fl, &err);
+    ran = recv_d && child_a &&
+          call_instance(vm, *gr_unit, "create", kCreateSig, recv_d,
+                        {Value::make_obj(child_a), Value::make_obj(gr),
+                         Value::make_str(""), Value::make_str("D")},
+                        &out, &err);
+    c.check(ran, "runtime: create D under A" + (ran ? std::string() : ": " + err));
+    Runtime::Resource *inst_d = rt.handle(recv_d) ? rt.handle(recv_d)->target : nullptr;
+    c.check(inst_d && inst_d->parent == inst_a && inst_d->world_root == inst_a,
+            "runtime: world-tree root of a nested instance");
+    ran = call_instance(vm, *rr_unit, "getWTRoot",
+                        "()Ljava.util.resource.ResourceRef;", recv_d, {}, &out, &err);
+    Object *root = out.kind == Value::Obj ? out.obj : nullptr;
+    c.check(ran && root && rt.handle(root) && rt.handle(root)->target == inst_a,
+            "runtime: getWTRoot returns the top instance");
+
+    Object *recv_n = rt.wrap(fl, &err);
+    ran = recv_n && call_instance(vm, *gr_unit, "create_native", kCreateNativeSig,
+                                  recv_n,
+                                  {Value::make_obj(gr), Value::make_obj(gr),
+                                   Value::make_str(""), Value::make_str("N")},
+                                  &out, &err);
+    Runtime::Resource *inst_n = rt.handle(recv_n) ? rt.handle(recv_n)->target : nullptr;
+    c.check(ran && inst_n && inst_n->instance && inst_n->script == nullptr,
+            "runtime: create_native makes no script instance");
+    ran = call_instance(vm, *gr_unit, "isScripted", "(Ljava.lang.String;)I", recv_n,
+                        {Value::make_null()}, &out, &err);
+    expect_int(c, ran, out, 0, "runtime: a native instance is not scripted", err);
+
+    // ---- GameType.createNativeInstance ----
+    Object *recv_g = rt.wrap(fl, &err);
+    ran = recv_g && call_instance(vm, *gt_unit, "createNativeInstance", kGTISig,
+                                  recv_g,
+                                  {Value::make_null(), vi(0), Value::make_str(""),
+                                   Value::make_str("T")},
+                                  &out, &err);
+    Runtime::Resource *inst_t = rt.handle(recv_g) ? rt.handle(recv_g)->target : nullptr;
+    c.check(ran && inst_t && inst_t->instance && inst_t->type == 1 &&
+                inst_t->parent == nullptr,
+            "runtime: createNativeInstance(0) uses the receiver type");
+    Object *recv_g2 = rt.wrap(fl, &err);
+    ran = recv_g2 && call_instance(vm, *gt_unit, "createNativeInstance", kGTISig,
+                                   recv_g2,
+                                   {Value::make_obj(gr), vi(0xD2), Value::make_str(""),
+                                    Value::make_str("T2")},
+                                   &out, &err);
+    Runtime::Resource *inst_t2 = rt.handle(recv_g2) ? rt.handle(recv_g2)->target : nullptr;
+    c.check(ran && inst_t2 && inst_t2->parent == fl &&
+                inst_t2->script_class == "java.game.cars.Axis_FL_door",
+            "runtime: createNativeInstance(typeID) resolves and parents");
+
+    // ---- subsystem natives stay explicit stubs ----
+    ran = call_instance(vm, *gr_unit, "getInfo", "(II)I", gr, {vi(0), vi(0)}, &out,
+                        &err);
+    c.check(!ran && err.find("not implemented (stub)") != std::string::npos,
+            "runtime: engine subsystem native remains an explicit stub");
+
+    // 0xD2 is still held by ref2 and gr; all other wrappers moved to instances.
+    c.check(fl->refs == 2, "runtime: final 0xD2 refcount 2");
+    c.check(fl->parent && fl->parent->refs == 1, "runtime: final >Stock refcount 1");
+
+    rt.deactivate();
+}
+
 // ---- conformance -----------------------------------------------------------
 
 static bool ends_with(const std::string &s, const char *suffix)
@@ -1533,6 +1974,9 @@ static int selfcheck(int argc, char **argv)
     for (int i = 0; i < argc; i++)
         selfcheck_file(argv[i], c);
     vm_synthetic_tests(c);
+    std::string game = game_root(argc, argv);
+    if (!game.empty()) runtime_tests(game, c);
+    else std::printf("game runtime: skipped (no game root in the sample paths)\n");
     std::printf("selfcheck: %s (%d failure(s))\n", c.failures ? "FAILED" : "PASSED",
                 c.failures);
     return c.failures ? 1 : 0;

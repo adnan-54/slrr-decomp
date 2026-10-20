@@ -10,7 +10,7 @@ BUILD := build
 LIB_SRC  := script/classfile.cpp script/vm.cpp script/natives.cpp \
             resource/rpk.cpp resource/rdb.cpp resource/manager.cpp \
             parts/cfg.cpp physics/shape.cpp physics/world.cpp \
-            vehicle/vehicle.cpp app/boot.cpp
+            vehicle/vehicle.cpp app/boot.cpp game/runtime.cpp
 LIB_OBJ  := $(LIB_SRC:%.cpp=$(BUILD)/%.o)
 LIB      := $(BUILD)/libengine.a
 
