@@ -67,3 +67,11 @@ Matrices are 3 rows × stride 4 floats (`Mat34`, 12 floats), quaternions `{x,y,z
 | 0x567380 | 3×3 transpose (in place if same pointer) |
 | 0x566830 | 3×3 inverse (adjugate/determinant) |
 | 0x5666d0 | Euler → rotation matrix (SSE code; `0x570fcb`=sin, `0x570e7e`=cos inferred) |
+
+## Contacts (corrected naming)
+- **`FUN_004f9af0` = narrow-phase / contact refresh** (ECX = world). Walks the contact-pair list `world+0x1d8` (doubly linked, sentinel-terminated; each node is a polymorphic pair object: vfunc `+0x18` "still valid?", `+8` unlink; world counters `+0x60` live pairs, `+0x1c` removed). Pair fields: `+0x48` body A, `+0x50` body B, `+0x58` optional override shape (shape at `+0x2c`), `+0x64/+0x68` contact points, `+0x74..` local points, `+0x8c` normal, `+0xa4` last distance. Uses the *previous* state of each body (`idx^1`) and the root body's definition flag `(~BodyDef+0xb4 >> 2) & 1` (≠ "no integration") to decide whether the pair matters.
+  - Calls the shape-distance routine **`FUN_0050d9d0(stateA, stateB, shapeA, shapeB, outPtA, outPtB, ..., outNormal)`** → signed separation. Shapes have a margin/radius at `+0x10`. A pair is dropped when `dist > rA + rB + 0.05`.
+  - If `dist < rA + rB + 0.02` the pair is in contact: clears bit0 of the other-state flags of both root bodies (wake/dirty).
+  - If penetrating (`dist <= rA + rB`) it runs a **10-step bisection in time** (`FUN_00506c00(prev, cur, out, t)` interpolates both bodies between previous and current state; `t` starts 0.5, step 0.25, halves each time) to find the time of first touch, stores resulting contact points/normal, then offsets the points by the radii along the normal (`±rA`, `+rB`) and stores the final distance in `+0xa4`.
+- `FUN_004fa4d0`: prunes constraint objects in `world+0xe8` whose vfunc `+0x18` says dead (counter `world+0x5c`).
+- **`FUN_004fc610` is not a contact solver**: it walks the global collision-event list `DAT_00605230`, checks each with `FUN_004f9750`, bumps `world+0x50`, and **dispatches collision events to the owning script objects** (`FUN_0040cac0`, `FUN_004e9ac0`, `FUN_004edf80`; at most 16 distinct targets per call, de-duplicated), then frees the nodes; returns the sum of `FUN_004ee460` results (events handled). So collision response lives in the script layer via these events, plus the constraint solver above.
