@@ -75,3 +75,14 @@ Matrices are 3 rows × stride 4 floats (`Mat34`, 12 floats), quaternions `{x,y,z
   - If penetrating (`dist <= rA + rB`) it runs a **10-step bisection in time** (`FUN_00506c00(prev, cur, out, t)` interpolates both bodies between previous and current state; `t` starts 0.5, step 0.25, halves each time) to find the time of first touch, stores resulting contact points/normal, then offsets the points by the radii along the normal (`±rA`, `+rB`) and stores the final distance in `+0xa4`.
 - `FUN_004fa4d0`: prunes constraint objects in `world+0xe8` whose vfunc `+0x18` says dead (counter `world+0x5c`).
 - **`FUN_004fc610` is not a contact solver**: it walks the global collision-event list `DAT_00605230`, checks each with `FUN_004f9750`, bumps `world+0x50`, and **dispatches collision events to the owning script objects** (`FUN_0040cac0`, `FUN_004e9ac0`, `FUN_004edf80`; at most 16 distinct targets per call, de-duplicated), then frees the nodes; returns the sum of `FUN_004ee460` results (events handled). So collision response lives in the script layer via these events, plus the constraint solver above.
+
+## Shape distance dispatcher `FUN_0050d9d0` (observed)
+`dist = shapeDistance(stateA, stateB, shapeA, shapeB, &ptA, &ptB, &outPtA?, &outPtB?, &normal)`; shapes are polymorphic records whose first dword is a **shape kind** (1, 2 or 3). `key = kindA*0x100 + kindB`; for mixed pairs the arguments are swapped (`DAT_006060e0` = swap flag, result normal negated afterwards). Lazily initialises each shape's cached data (`FUN_00507ce0`, flag bit0 at shape+0x14/+0x34).
+| key | handler (test / distance) |
+|---|---|
+| 0x101 | `0x50d050` / `0x50ce30` |
+| 0x102, 0x201 | `0x50bc90` / `0x50b870` |
+| 0x103, 0x301 | `0x50c660` / `0x50c400` |
+| 0x202 | `0x509f10` / `0x509130` (returns *squared* distance → `sqrt`, negated if inside) |
+| 0x203, 0x302 | `0x50aa60` then segment/plane clip code (`0x50e2d0` transforms points between the two bodies' frames) |
+Returns signed separation (negative = penetration); unknown kind pairs return 0. `FUN_00506c00(a, b, out, t)` = state interpolation (`pos = a·t + b·(1-t)`, quaternion slerp `FUN_005681c0`, matrix rebuilt, time lerped). `FUN_004f9750(body)` = collision-event filter: body not flagged `0x200000`, speed² ≤ 10000 (100 m/s), and some attached game object (type `0xa0000000`) with physics data whose flags `&0xa0 == 0`.
