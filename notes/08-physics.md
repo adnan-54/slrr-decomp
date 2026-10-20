@@ -9,7 +9,7 @@ Main loop (`FUN_0047d760`, `notes/00-overview.md`) → every >15 ms `FUN_0047e05
 1. `world[1] += dt` (accumulator); if `< 0.0001` return 0. On `DAT_006052ac` set, clear `+0xb8..0xc0` of every constraint in the list at `world[0x76]` (reset flag).
 2. `world[1] -= dt`, `world[3] = dt`, step counter `DAT_006028e0++`, zero iteration counters `world[4]`, `[5]`, `[0xb]`.
 3. For every **root body** (children of `world[0x21]` via `+0x24` first child / `+0x28` next sibling): `FUN_004f8460(body)` (apply forces/gravity/aero/vehicle model), then `FUN_004ffca0()`, `FUN_0047be30(dt)` (script/pre-step callbacks), then `FUN_005001c0(body, dt)` (integrate), `FUN_004fa4d0()` (broad phase / contact generation setup).
-4. **Sub-iteration loop (max 0x13 = 19 iterations)**: `world[4]++`; `world[0xe7] = 1` (= "converged"); `FUN_00502410()` (solve pass); if not converged `FUN_004f9af0()` and call vfunc `+0x10` on each constraint in the `world[0x76]` list (sum of returned counts); `FUN_005040f0()`, `FUN_004fc610()` (contact resolve; timed by `FUN_0056a230/0056a260` perf counters into `DAT_006052b4/b8`), `FUN_004ffd20()` (convergence check); re-integrate roots (`FUN_005001c0`); loop until `world[0xe7]==0` converged or 19 iterations.
+4. **Sub-iteration loop (corrected, see `11-collision-shapes.md`)**: `world[4]++`; `world[0xe7] = 1` ("converged"); `PhysicsWorld__solvePass` (0x502410, per-row constraints of `world+0xe8`); then `PhysicsWorld__updateContacts` (0x4f9af0, may clear `world[0xe7]` when a contact gets within 0.02); if still converged → go straight to the event phase; else sum `vf4` (`c_collision__resolve`) over the contact list `world+0x1d8`: sum==0 → `world[0xe7]=1` and event phase, sum≠0 → keep iterating (event phase only at iteration 19). Event phase: run `PhysicsWorld__purgeEvents` (0x5040f0), `PhysicsWorld__dispatchCollisionEvents` (0x4fc610; perf counters into `DAT_006052b4/b8`) and, if events were dispatched, `PhysicsWorld__resolveImpacts` (0x4ffd20, mode-6 impacts → mode 7; non-zero ⇒ `world[0xe7]=0`). Every sub-iteration re-integrates all roots from the start-of-step state (`PhysBody__integrateTree`). Exit when `world[0xe7]≠0` or `world[4] > 19` (≤ 20 iterations).
 5. Finish: `FUN_004fa900()`, `FUN_00502530(body)` for each root, `world[0] += dt` (simulated time), running average of iteration count `DAT_006028e4 += (iters - DAT_006028e4) * 0.1`, return 1.
 
 ## Body layout (`FUN_005001c0`, `504180`, `5030b0`)
@@ -20,8 +20,9 @@ Main loop (`FUN_0047d760`, `notes/00-overview.md`) → every >15 ms `FUN_0047e05
 | `+0x24` / `+0x28` | first child / next sibling |
 | `+0x50` | linked game/scene node; `+0x54` spatial (bounds) node (`FUN_00504180` writes AABB: kind=1, center, half extents = |Δpos|/2 + radius, from both state buffers) |
 | `+0x58` | flags: bit0 active, bit2 child-of-compound, bit4 compound parent (mass-weighted centre, `m = r²·3.14`), bit7 excluded |
-| `+0x5c` | body definition: `+0x2c` mass-ish (0 → static, not integrated), `+0x90 -> +0xc` bounding radius, `+0xb4` flags (bit2 = no integration) |
-| `+0x64 + i*0xd4` | state *i* position (xyz), `+0xa4..` 3×4 orientation rows, `+0xf8` quaternion; state stride **0xd4**; two states, active index `+0x20c`; `^1` is the previous/other buffer |
+| `+0x5c` | body definition `rigidbody_type`: `+0x2c` **inverse mass** (0 → static), `+0x30` inverse body inertia (3×4), `+0x60` inertia, `+0x90` shape (`+0xc` bounding radius, `+0x10` margin), `+0x98/+0x9c` linear/angular drag (−0.005·m, −0.01·m), `+0xa0` volume, `+0xb4` flags (bit2 = no integration) — see 11 §1 |
+| `+0x18` / `+0x210` / `+0x214` | impact-event impulse threshold / earliest contact TOI / that contact (flag 0x400) |
+| `+0x64 + i*0xd4` | state *i* position (xyz), body-relative `+0xa4..` = state `+0x40..` 3×4 orientation rows, body `+0x108..` = state `+0xa4..` world inverse inertia, `+0xf8` quaternion; state stride **0xd4**; two states, active index `+0x20c`; `^1` is the previous/other buffer |
 | `FUN_00506530(cur, prev, dt)` | integrates state (called with active and the other buffer) |
 
 Compound bodies: child world pose = parent pose ∘ local (`FUN_005030b0`, `005001c0` bit2 path).
@@ -46,11 +47,11 @@ Compound bodies: child world pose = parent pose ∘ local (`FUN_005030b0`, `0050
 - Clears bit0 of the *other* state's flags (`+0x174 - idx*0xd4`).
 - Linear drag: `BodyDef+0x98 < 0` ⇒ force `= coef · v`.
 - Gravity: if `world+0x78` set and body bit1 clear ⇒ force `= g_vec(world+0x1c4..0x1cc) / mass` (applied via `FUN_00505360`).
-- BodyDef flag `0x80`: extra constant acceleration `−BodyDef+0xa0 · world+0x364 · g_dir`.
+- BodyDef flag `0x80`: extra constant acceleration `−BodyDef+0xa0 · world+0x364 · g_dir` (= volume × 1.2935 (air density?) × g: buoyancy-like term; `PhysicsWorld__init` 0x4fffb0 sets the constants, gravity (0,−9.81,0), dt 0.02).
 - BodyDef flag `0x800` with `world+0x80`: **ground/water-plane contact**: tests the body against `world+0x384` planes (stride 6 floats), plane at `world+0x368..` normal `+0x374..`; computes a plane-penetration contact (`FUN_0050f810/0050f8a0`), applies friction/restoring impulse with energy cap (kinetic energy before/after, `world+0x394/0x398` coefficients), and queues an event `FUN_0047d550(node, 0, 0x200, &contactInfo)` (collision event dispatched to script, type `0x200`).
 
-## Constraint solver `FUN_00502410`
-Iterates the constraint-group list `world+0xe8` (each group: count at `+0x34/+0x35`): per group virtual calls `+0x1c` (build Jacobian), `+0x20`, then assembles block-sparse matrices with `FUN_00569ea0/569cc0/569db0` (matrix alloc/mul/copy helpers = small linear-algebra library), solves, and applies results with vfunc `+0x24`. Hence a Lagrange-multiplier / LCP-style joint solver (joints = `ResourceType_Physics_Constraint`).
+## Constraint solver `0x502410` = `PhysicsWorld__solvePass` (corrected)
+Not an LCP/global solve: it gathers each constraint's 1-row rhs/λ vectors into world vectors (`world+0x3a0/+0x3a8`; an N×N matrix at `+0x3b0` is sized but unused), with vf7 = rhs, vf8 = λ = rhs/K, vf9 = apply (impulse for mode 6, force λ/dt otherwise). The real contact response is the per-contact sequential impulse/force routine `c_collision__resolve` (0x4f0dd0): restitution impulse for approach speeds > 0.2 m/s, Baumgarte-like bias (0.03 m slop, gain 10) as a force, Coulomb friction as a force capped by μ·N, and a 0.021 m position-offset correction. Full formulas, contact fields and constants: **`notes/11-collision-shapes.md` §5**.
 
 ## Next
 `FUN_004fc610` (contact resolve), `FUN_004f9af0`, `FUN_004fa4d0/a900` (broad/narrow phase), the `FUN_005680d0`/`FUN_00566xxx` math helpers (matrix/quaternion library — name and reimplement first), and the vehicle code (~100 callers of `FUN_004eabc0` in 0x488000–0x4d5000).
@@ -69,14 +70,14 @@ Matrices are 3 rows × stride 4 floats (`Mat34`, 12 floats), quaternions `{x,y,z
 | 0x5666d0 | Euler → rotation matrix (SSE code; `0x570fcb`=sin, `0x570e7e`=cos inferred) |
 
 ## Contacts (corrected naming)
-- **`FUN_004f9af0` = narrow-phase / contact refresh** (ECX = world). Walks the contact-pair list `world+0x1d8` (doubly linked, sentinel-terminated; each node is a polymorphic pair object: vfunc `+0x18` "still valid?", `+8` unlink; world counters `+0x60` live pairs, `+0x1c` removed). Pair fields: `+0x48` body A, `+0x50` body B, `+0x58` optional override shape (shape at `+0x2c`), `+0x64/+0x68` contact points, `+0x74..` local points, `+0x8c` normal, `+0xa4` last distance. Uses the *previous* state of each body (`idx^1`) and the root body's definition flag `(~BodyDef+0xb4 >> 2) & 1` (≠ "no integration") to decide whether the pair matters.
+- **`FUN_004f9af0` = narrow-phase / contact refresh** (ECX = world). Walks the contact-pair list `world+0x1d8` (doubly linked, sentinel-terminated; each node is a polymorphic pair object: vfunc `+0x18` "still valid?", `+8` unlink; world counters `+0x60` live pairs, `+0x1c` removed). Pair fields: `+0x48` body A, `+0x50` body B, `+0x58` optional override shape (shape at `+0x2c`), `+0x64/+0x68` cached V-Clip features A/B, `+0x74`/`+0x80` local contact points A/B, `+0x8c` normal (B→A), `+0x98` world point, `+0xa4` separation (pairs are `c_collision` objects, see 11 §5). Uses the *previous* state of each body (`idx^1`) and the root body's definition flag `(~BodyDef+0xb4 >> 2) & 1` (≠ "no integration") to decide whether the pair matters.
   - Calls the shape-distance routine **`FUN_0050d9d0(stateA, stateB, shapeA, shapeB, outPtA, outPtB, ..., outNormal)`** → signed separation. Shapes have a margin/radius at `+0x10`. A pair is dropped when `dist > rA + rB + 0.05`.
   - If `dist < rA + rB + 0.02` the pair is in contact: clears bit0 of the other-state flags of both root bodies (wake/dirty).
   - If penetrating (`dist <= rA + rB`) it runs a **10-step bisection in time** (`FUN_00506c00(prev, cur, out, t)` interpolates both bodies between previous and current state; `t` starts 0.5, step 0.25, halves each time) to find the time of first touch, stores resulting contact points/normal, then offsets the points by the radii along the normal (`±rA`, `+rB`) and stores the final distance in `+0xa4`.
 - `FUN_004fa4d0`: prunes constraint objects in `world+0xe8` whose vfunc `+0x18` says dead (counter `world+0x5c`).
 - **`FUN_004fc610` is not a contact solver**: it walks the global collision-event list `DAT_00605230`, checks each with `FUN_004f9750`, bumps `world+0x50`, and **dispatches collision events to the owning script objects** (`FUN_0040cac0`, `FUN_004e9ac0`, `FUN_004edf80`; at most 16 distinct targets per call, de-duplicated), then frees the nodes; returns the sum of `FUN_004ee460` results (events handled). So collision response lives in the script layer via these events, plus the constraint solver above.
 
-## Shape distance dispatcher `FUN_0050d9d0` (observed)
+## Shape distance dispatcher `FUN_0050d9d0` (observed; kinds decoded in `11-collision-shapes.md`: **1 = vertex, 2 = edge, 3 = face** Voronoi features of a V-Clip polyhedron, not shape types)
 `dist = shapeDistance(stateA, stateB, shapeA, shapeB, &ptA, &ptB, &outPtA?, &outPtB?, &normal)`; shapes are polymorphic records whose first dword is a **shape kind** (1, 2 or 3). `key = kindA*0x100 + kindB`; for mixed pairs the arguments are swapped (`DAT_006060e0` = swap flag, result normal negated afterwards). Lazily initialises each shape's cached data (`FUN_00507ce0`, flag bit0 at shape+0x14/+0x34).
 | key | handler (test / distance) |
 |---|---|
