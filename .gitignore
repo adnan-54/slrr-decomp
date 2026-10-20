@@ -10,3 +10,6 @@ bin/
 # build output
 obj/
 *.pdb
+
+# local claude config (holds api keys)
+.claude/
