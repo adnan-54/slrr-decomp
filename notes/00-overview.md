@@ -36,7 +36,7 @@ Confidence: **observed** = read from decompile/xrefs; **inferred** = guessed fro
   - Fixed-step-ish sub-loop `FUN_004563d0` / `FUN_004562c0` / `FUN_004563c0`, run unbounded when `DAT_005da464 <= 0` else capped to `res_lock` iterations (**inferred**: event/resource queue drain).
   - Every >15 ms: `FUN_00566160(dt)`, `FUN_0047e050`, `FUN_0047b700`.
   - Every >7 ms: `FUN_0055cf20(10.0f)` if `[this+0x234]`.
-  - `FUN_0047ba10(min(dt, DAT_005da468))` – main simulation update (clamped dt). Callees: `0x40cac0 0x47dd50 0x4e8860 0x4ebdd0 0x51f4f0` (**inferred**: script tick + world/physics update; the 4 indirect calls are unresolved).
+  - `FUN_0047ba10(min(dt, DAT_005da468))` – **corrected after decompiling**: not a physics step. It walks the game-object linked list at `[this+0xa0]`, frees objects whose `+0x2c` is 0, and for live ones with state `+0x7c == 1` calls virtual methods and the `"animate"` handler (`FUN_0047dd50`), forwarding dt. So it is the per-object animate/update dispatch. Physics step still not located.
   - `FUN_0047d070` → `0x47c760`, `0x559f60`.
   - Camera/listener setup from `DAT_005fe110..144` → `FUN_00568bb0` (set listener/camera), `FUN_005690a0`.
   - `FUN_00517f60` (resource streaming tick: calls `0x51e310 0x51e900 0x51f9b0 0x542c30`), `FUN_00518f80`.
@@ -51,12 +51,13 @@ Confidence: **observed** = read from decompile/xrefs; **inferred** = guessed fro
 - Resource classes (RTTI @0x5e58a0–0x5e5a78): `ResourceInstance_Physics`, `ResourceType_Physics_Body`, `ResourceType_Physics_Constraint`, plus type names `RESTYPE_PHYSICS_BODY/CONSTRAINT/PARTICLE` (0x5a74fc..), `INSTANCE_PHYSICS` (0x5a7480). Engine appears to be an in-house/own rigid-body system (no third-party physics DLL in imports). Script bindings: `vm_physicsref_create / create_box / create_sphere / setmatrix / getpos / getori`, `vm_vehicle_getspeedsquare`. Simulation entry not yet pinned down (likely under `FUN_0047ba10`).
 ### Script VM
 - Java-flavoured script language ("java.util.resource.PhysicsRef", "java.render.Frontend", `getScriptInstance`, `isScripted`). Script dirs (0x5b44e8–0x5b45f8): `system\scripts\{lang,net,io,util,render,sound}`, `sl\scripts\game`, `parts\scripts`, `parts\accessories\scripts`.
-- Native bindings are named `vm_*` (strings 0x5a03dc–0x5a46f0): `vm_object_runmethod_{int,float,ref,void}`, `vm_resourceref_*`, `vm_renderref_*`, `vm_gameref_*` (create/setpos/setmatrix/addtimer/addnotif/queueevent…), `vm_physicsref_*`, `vm_sfxref_play/stop`, `vm_cam_*`, `vm_viewport_*`, `vm_mouse_getpickedpos`. Binding-registration code references them from around 0x4dbd00 (e.g. `vm_gameref_setpos` string is referenced from `FUN_004dbd00`, 0x4dbd00–0x4dbf14).
+- Native bindings are named `vm_*` (strings 0x5a03dc–0x5a46f0): `vm_object_runmethod_{int,float,ref,void}`, `vm_resourceref_*`, `vm_renderref_*`, `vm_gameref_*` (create/setpos/setmatrix/addtimer/addnotif/queueevent…), `vm_physicsref_*`, `vm_sfxref_play/stop`, `vm_cam_*`, `vm_viewport_*`, `vm_mouse_getpickedpos`. **Correction:** `FUN_004dbd00` (0x4dbd00–0x4dbf14) is not the registration table. It is the body of one native binding, `vm_gameref_setpos`: it reads the object arg and 3 floats, and on a missing scripted resource builds the error `"vm_gameref_setpos: scripted resource ... not found in file \"...\" at line N"`. It has one caller, inside `FUN_004d5fb0` (0x4d5fb0–0x4d8484, 9429 bytes), which looks like the big native-call dispatcher (**inferred**, not decompiled; the output is 67 KB).
 - Script errors: `!Script error\n\nThread: %s\nError:` referenced from `FUN_00559d20` (0x559d20–0x559e23) – error reporter; also "script error"/"fatal script error" strings @0x5b5c5c/0x5b5df0. `libcall.dll` string @0x5a64bc (native lib call from script, **inferred**).
 - Not done: locating the bytecode interpreter loop/opcode dispatch.
 ### Resource loading (.rpk)
 - Package files referenced by name: `system.rpk`, `frontend.rpk`, `cars.rpk`, `sl.rpk`, `particles.rpk`, `sound.rpk`, `decals.rpk`, `humans.rpk`, `part.rpk` (strings 0x599ce0–0x5a0130, 0x5a234c, 0x5a6ee0).
 - Package registry: `FUN_00518940(name)` – looks up the package by name (via `FUN_0051e2f0`), appends if absent (`FUN_0051e2a0`), returns index; index 0xffff = failure. The manager object has the package count at `+0x166740` (so the manager is very large, ~1.4 MB, **inferred** static object). Companion functions `FUN_00517bd0` (init), `FUN_00517f60` (per-frame), `FUN_00517110` (shutdown), `FUN_00518f60/f80`.
+- **RPK on-disk format (observed, from reader `FUN_0051e310`, 0x51e310):** header = magic `0x4b415052` (bytes `52 50 41 4B`, "RPAK") + `u32` version expected `0x200`, then `u32 count_a`, `u32 count_b`. Then `(count_a+count_b)` 0x40-byte records: `u16` id at +2, name string from +4 (up to 56 bytes; each name is re-registered through `FUN_00518940`), `u32` at +0x3c (stored per-entry, probably an offset/size). Then `u32 blob_size`, `u32 blob_count`, two more `u32`, and a `blob_size`-byte blob parsed `blob_count` times by `FUN_0051e860` / `FUN_0051e6b0` (entry-table parsing; not decoded). In memory each package entry is 0x42 bytes in a table at `[pkg+0x5c]`; package state at `[pkg+0x50]` goes 0 (unopened) → 1 → 2 (header loaded). Package object init is `FUN_0051e2a0` (name copied to `+0xc`, 0x40 bytes; id at `+8`).
 - Resource types are config/`.cfg` driven: `Fatal! Cannot open .cfg file` @0x5a7230 (ref'd from `FUN_004f6430`), `Missing .cfg: %s` @0x5a83e0/0x5a8448.
 - **`.rdb`: no string containing ".rdb" exists in the defined-string inventory.** Handling of `.rdb` is unverified; it may be built by concatenation or live in an undefined string. Open item.
 ### Audio / input / misc
@@ -64,8 +65,8 @@ Confidence: **observed** = read from decompile/xrefs; **inferred** = guessed fro
 - Sound init `FUN_00546da0`, teardown `FUN_005449f0` (virtual-releases up to `DAT_0078d0ec` sound devices).
 
 ## Open items / next steps
-1. Name and decompile `FUN_0047ba10` (sim update) and its 6 unresolved indirect calls – find the physics step and the script tick.
-2. Find the script interpreter (xref `vm_*` table from `FUN_004dbd00`; find the registration table).
-3. Locate the .rpk reader (`FUN_0051e2a0`/`FUN_0051e2f0`, file open helpers `FUN_005657b0/00565950/00564dd0`) and the on-disk header format; resolve `.rdb`.
+1. Find the physics step and the script tick (not under `FUN_0047ba10`; try the `FUN_0047e050` / `FUN_0047b700` / `FUN_004563d0` paths in the main loop).
+2. Decompile `FUN_004d5fb0` in slices to find the `vm_*` dispatch and the interpreter.
+3. Decode the RPK entry table (`FUN_0051e860`, `FUN_0051e6b0`) and how a resource payload is read from a package; resolve `.rdb`.
 4. Identify the window proc / message pump (`FUN_0056a1c0` is the quit-check candidate).
 5. Full import table dump (only DLL names were taken from strings here).
