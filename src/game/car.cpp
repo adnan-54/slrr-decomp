@@ -153,8 +153,9 @@ float curve_at(const std::vector<float> &rpm, const std::vector<float> &val,
         i++;
         if (n <= i) return 0.0f;
     }
-    float t = (q - rpm[i - 1]) / (rpm[i] - rpm[i - 1]);
-    return val[i - 1] + (val[i] - val[i - 1]) * t;
+    // exe order: (dv * dq) / drpm + v0
+    return (val[i] - val[i - 1]) * (q - rpm[i - 1]) / (rpm[i] - rpm[i - 1]) +
+           val[i - 1];
 }
 
 }  // namespace
