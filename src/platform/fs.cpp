@@ -2,6 +2,8 @@
 
 #include <stdio.h>
 
+#include <utility>
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -32,6 +34,82 @@ bool list_dir(const std::string &path, std::vector<std::string> *names)
     while (struct dirent *e = readdir(d)) names->push_back(e->d_name);
     closedir(d);
     return true;
+#endif
+}
+
+#ifndef _WIN32
+namespace {
+
+// INVENTED: FindFirstFileA has no POSIX equivalent, so match the Win32 pattern
+// search closely enough for the engine's callers. No 8.3 emulation.
+char lower_ascii(char c)
+{
+    return c >= 'A' && c <= 'Z' ? (char)(c + ('a' - 'A')) : c;
+}
+
+bool wild_match(const char *s, const char *p)
+{
+    if (*p == '*') {
+        while (*p == '*') ++p;
+        if (!*p) return true;
+        do {
+            if (wild_match(s, p)) return true;
+        } while (*s++);
+        return false;
+    }
+    if (!*s) return false;
+    if (*p != '?' && lower_ascii(*p) != lower_ascii(*s)) return false;
+    return wild_match(s + 1, p + 1);
+}
+
+// Win32: a pattern ending in ".*" also matches names without a dot ("*.*" == "*").
+bool pattern_match(const std::string &name, const std::string &pattern)
+{
+    if (wild_match(name.c_str(), pattern.c_str())) return true;
+    if (pattern.size() >= 2 && pattern.compare(pattern.size() - 2, 2, ".*") == 0)
+        return wild_match(name.c_str(), pattern.substr(0, pattern.size() - 2).c_str());
+    return false;
+}
+
+} // namespace
+#endif
+
+bool find(const std::string &pattern, std::vector<FindEntry> *out)
+{
+#ifdef _WIN32
+    // 0x545520/0x5455e0/0x5454d0
+    std::string pat = pattern;
+    for (char &c : pat)
+        if (c == '/') c = '\\';
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    do {
+        FindEntry e;
+        e.name = fd.cFileName;
+        e.is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        out->push_back(std::move(e));
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return true;
+#else
+    size_t sep = pattern.find_last_of("/\\");
+    std::string dir = sep == std::string::npos ? "" : pattern.substr(0, sep);
+    std::string name_pat = sep == std::string::npos ? pattern : pattern.substr(sep + 1);
+    if (name_pat.empty()) return false;   // FindFirstFileA("dir\\") fails
+    std::vector<std::string> names;
+    if (!list_dir(dir, &names)) return false;
+    bool matched = false;
+    for (const std::string &name : names) {
+        if (!pattern_match(name, name_pat)) continue;
+        FindEntry e;
+        e.name = name;
+        std::string full = dir.empty() ? name : dir + "/" + name;
+        e.is_dir = exists(full) && !is_file(full, nullptr);
+        out->push_back(std::move(e));
+        matched = true;
+    }
+    return matched;
 #endif
 }
 

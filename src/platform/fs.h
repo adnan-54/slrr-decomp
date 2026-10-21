@@ -14,6 +14,17 @@ namespace fs {
 // path may use either separator and may be empty (current directory).
 bool list_dir(const std::string &path, std::vector<std::string> *names);
 
+struct FindEntry {
+    std::string name;   // cFileName (no directory part)
+    bool is_dir = false;
+};
+
+// All matches of a FindFirstFileA pattern ("dir/*", "dir/*.png", "dir/name"), in OS
+// order, including "." and ".." when the pattern matches them. False when nothing
+// matches or the directory does not exist (FindFirstFileA failure).
+// Exe: 0x545520/0x5455e0/0x5454d0 wrappers around FindFirstFileA/FindNextFileA/FindClose.
+bool find(const std::string &pattern, std::vector<FindEntry> *out);
+
 bool exists(const std::string &path);
 
 // True for a regular file only; size receives the byte count.

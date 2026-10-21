@@ -1,7 +1,7 @@
 ---
 id: 025
-status: todo
-branch:
+status: implemented
+branch: card/025
 depends: []
 ---
 # platform: fs::find — FindFirstFileA/FindNextFileA equivalent
