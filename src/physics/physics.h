@@ -122,9 +122,11 @@ struct RigidBody {
     Vec3 pos_correction{0.0f, 0.0f, 0.0f};   // state s[6..8], applied after integration
     Vec3 ext_force{0.0f, 0.0f, 0.0f};  // gravity/drag, applied every integration
     Vec3 ext_torque{0.0f, 0.0f, 0.0f};
-    Vec3 force{0.0f, 0.0f, 0.0f};      // solver force, consumed by next integration
-    Vec3 torque{0.0f, 0.0f, 0.0f};     // solver torque, consumed by next integration
-    bool settled = false;              // state flags bit0 (sleep); no sleeping is decoded yet
+    Vec3 force{0.0f, 0.0f, 0.0f};      // solver force (active state +0x8c), kept for the whole step
+    Vec3 torque{0.0f, 0.0f, 0.0f};     // solver torque (active state +0xec), kept for the whole step
+    // Other-state flags bit0: set by the integration (0x5001c0), cleared at step
+    // start (0x4f8460) and by a contact that touches the body (0x4f0dd0).
+    bool integrated = false;
 
     Pose pose() const { return Pose{pos, rot}; }
     Mat34 rotation() const;
@@ -186,13 +188,12 @@ struct Contact {
     int feature_b = 0;
 };
 
-// PhysicsWorld (notes/08). Fixed iteration order:
-//   apply forces per root body -> for each sub-iteration: re-integrate every
-//   root from the immutable start-of-step state, replay the accumulated
-//   impulses, refresh contacts, then resolve each body pair in list order
-//   (manifold block solve); stop when a pass reports no corrections (max 20).
-// The RHS is velocity-level (see resolve_pair): notes/11 §5's resting spring
-// bias is a force and is replaced by its position correction.
+// PhysicsWorld (notes/08, World::step 0x502060). Fixed iteration order:
+//   apply forces per root body, integrate every root -> for each sub-iteration
+//   (max 20): refresh contacts; if one is within 0.02 m, resolve every contact
+//   in list order (c_collision__resolve 0x4f0dd0); re-integrate every root from
+//   the start-of-step state, which carries the solver impulses, forces and
+//   position offset; stop when no contact was near or the pass returned 0.
 struct World {
     Vec3 gravity{0.0f, -9.81f, 0.0f}; // notes/11 §6 (PhysicsWorld__init 0x4fffb0)
     float air_density = 1.2935f;      // +0x364, buoyancy path (body def flag 0x80) TODO

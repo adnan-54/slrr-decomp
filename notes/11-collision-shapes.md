@@ -1,7 +1,7 @@
 # Collision shapes, V-Clip narrow phase, contact constraints
 
 Read from the exe (Ghidra decompile + assembly where ECX mattered). Companion to `08-physics.md`. New names: `analysis/names.physics.json`.
-"state" = one of the two body state buffers (`body+0x64 + idx*0xd4`, see 08): `s+0x00` pos, `s+0x0c` linear vel, `s+0x18` position-correction offset, `s+0x28` force accumulator, `s+0x40/+0x50/+0x60` rotation rows R (3×4), `s+0x70` ω, `s+0x7c` angular momentum L, `s+0x88` torque accumulator, `s+0xa4/+0xb4/+0xc4` world inverse inertia rows (3×4), `s+0x3c` flags (bit0 = "settled/valid"; cleared = wake). Local→world: `p_w = pos + R·p` (rows: `x = pos.x + R[0]·p` …). World→local: `p = Rᵀ(p_w − pos)`.
+"state" = one of the two body state buffers (`body+0x64 + idx*0xd4`, see 08): `s+0x00` pos, `s+0x0c` linear vel, `s+0x18` position-correction offset, `s+0x28` force accumulator, `s+0x40/+0x50/+0x60` rotation rows R (3×4), `s+0x70` ω, `s+0x7c` angular momentum L, `s+0x88` torque accumulator, `s+0xa4/+0xb4/+0xc4` world inverse inertia rows (3×4), `s+0x3c` flags (bit0 = "integrated, untouched since": set by 0x5001c0, cleared by 0x4f8460 at step start and by contact resolve to force re-integration). Local→world: `p_w = pos + R·p` (rows: `x = pos.x + R[0]·p` …). World→local: `p = Rᵀ(p_w − pos)`.
 
 ## 1. Shape object (`Shape__ctor` 0x4ba8c0, 0xc4 bytes; owned by the rigid-body definition at `bodyDef+0x90`)
 | off | type | meaning |
@@ -127,9 +127,15 @@ if imp+bias > 0:
       applyForceAt(A, −f t, pA); applyForceAt(B, +f t, pB); +0xc0 += f
 if d < 0.021: c = (0.021 − d) − (n·offA − n·offB)       // off = state+0x18 position offset (added after integration)
   if c > 0: A static → offB −= c n; B static → offA += c n; else ±c/2;  return 1
-on nonzero return: clear other-state bit0 of both (wake), world+0x14++.
+on nonzero return: clear other-state bit0 of each dyn side, world+0x14++.
 ```
-`PhysBody__applyImpulseAt(J, pLocal)` 0x505450: `v += J·invm`; `L += (R p)×J`; `ω = I⁻¹_w L` (state idx). `PhysBody__applyForceAt(F, p)` 0x5051e0: `force += F`, `torque += (R p)×F` (consumed by the next integration). Since `World::step` re-integrates every root after each sub-iteration, impulses (velocity) and forces (bias, friction) both act through the RK4 re-integration from the start-of-step state.
+Details re-checked against the 0x4f0dd0 decompile:
+- A side that is not dyn contributes nothing to K (its r, I⁻¹ term and invm are 0) and gets no impulse/force; r = R·p and I⁻¹ come from the **active** state (`PhysBody__rotateToWorld` 0x5061f0, state +0xa4), vrel from the **other** (integrated) state.
+- Friction uses this call's `N` only (not the accumulated +0xb8) and `vt` from the vrel taken before this call's response. The position-correction branch returns 1 even when friction clamped (2).
+- Mode 7 puts both the spring and the restitution term in `bias`, i.e. it acts as a **force**; only mode 6 applies an impulse.
+- Other-state flags bit0 is not a sleep bit: `0x5001c0` sets it after integrating a body and skips bodies that still have it, `0x4f8460` clears it at step start, resolve clears it to force re-integration. So "both bit0 set" = neither body touched by a contact earlier in this pass.
+- `off` is the active state's s[6..8]; the integrator `0x506530` adds it to the integrated position, so `d` (measured on the integrated state) already includes earlier corrections.
+`PhysBody__applyImpulseAt(J, pLocal)` 0x505450: `v += J·invm`; `L += (R p)×J`; `ω = I⁻¹_w L` (state idx). `PhysBody__applyForceAt(F, p)` 0x5051e0: `force += F`, `torque += (R p)×F` (state idx, kept until the next step's force model). The active state idx is the start-of-step state that `0x5001c0` integrates into the other buffer, so impulses (velocity), forces (bias, friction) and the position offset all act through the RK4 re-integration after the pass; within a pass, later contacts do not see earlier impulses (vrel reads the other state).
 
 ### Impact pass `PhysicsWorld__resolveImpacts` 0x4ffd20
 For every contact in mode 6: call vf4 (sum returned), clear both roots' flag 0x400/`+0x214`, queue script event type 1 (`Game__queueEvent(body+0x38, 0, 1, contact)`) for each body when its threshold `body+0x18` < accumulated impulse `+0xb8` or body flag 0x80 (also to the compound root), then **switch the contact to mode 7**.
