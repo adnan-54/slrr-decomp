@@ -45,7 +45,7 @@ void compute_mass_props(BodyDef *def, float mass)
     }
     default:
         // TODO(notes/11 §1): mesh mass props need Poly__massProps (Mirtich
-        // volume integrals, 0x508d20); no shape geometry is ported yet.
+        // volume integrals, 0x508d20); mesh bodies are static for now.
         break;
     }
 }
@@ -538,6 +538,14 @@ static int existing_mode(const World &w, const RigidBody *a, const RigidBody *b)
     return 6;
 }
 
+// Pairs the port intentionally leaves without contacts (mesh-mesh has no
+// narrow phase; a kind-6 shape without geometry is not a collider).
+static bool pair_unsupported_mesh(const Shape &a, const Shape &b)
+{
+    return (a.type == SHAPE_MESH && !a.mesh) || (b.type == SHAPE_MESH && !b.mesh) ||
+           (a.type == SHAPE_MESH && b.type == SHAPE_MESH);
+}
+
 // PhysicsWorld__updateContacts 0x4f9af0 plus Collide__bodyPair 0x4fb370.
 // add_new: the broad phase pass at the start of a step may create pairs; later
 // sub-iteration refreshes only update pairs that already exist.
@@ -559,8 +567,9 @@ static void update_contacts(World &w, bool add_new)
                 tb == SHAPE_MESH_NO_POLY)
                 continue;
             if (!shape_kind_resolved(ta) || !shape_kind_resolved(tb) ||
-                (ta == SHAPE_PLANE && tb == SHAPE_PLANE)) {
-                // TODO(notes/11 §1/§4): unresolved kind, no contacts are invented.
+                (ta == SHAPE_PLANE && tb == SHAPE_PLANE) ||
+                pair_unsupported_mesh(a.def.shape, b.def.shape)) {
+                // Unsupported kind/pair, no contacts are invented.
                 if (add_new)
                     w.unsupported_pairs++;
                 continue;

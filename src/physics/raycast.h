@@ -3,11 +3,12 @@
 // mount; S+0xb4/S+0xd0..cc are filled by the physics ray pass).
 //
 // The exe's ray pass is not decoded; this is the minimal helper the vehicle
-// layer needs. Plane/sphere/box are covered (the shipped ground bodies are
-// primitives). Capsule and mesh kinds return no hit.
+// layer needs. Plane/sphere/box and kind-6 mesh bodies are covered; capsules
+// return no hit (the suspension only needs planes and meshes).
 #pragma once
 #include <math.h>
 
+#include "physics/mesh.h"
 #include "physics/physics.h"
 
 struct RayHit {
@@ -108,9 +109,19 @@ inline bool raycast_body(const RigidBody &body, Vec3 origin, Vec3 dir, float max
                                     Vec3{0.0f, 1.0f, 0.0f});
         return true;
     }
+    case SHAPE_MESH: {
+        if (!s.mesh)
+            return false;
+        MeshRayHit mh;
+        if (!mesh_raycast(*s.mesh, body.pose(), origin, dir, max_dist, &mh))
+            return false;
+        hit->distance = mh.distance;
+        hit->point = mh.point;
+        hit->normal = mh.normal;
+        return true;
+    }
     default:
-        // TODO: capsule/mesh ground bodies. The suspension only needs planes
-        // in the shipped data and tests.
+        // TODO: capsule ground bodies.
         return false;
     }
 }

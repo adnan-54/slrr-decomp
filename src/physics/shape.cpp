@@ -4,6 +4,7 @@
 // and box/plane generate a four-point manifold so resting contacts are stable.
 #include <math.h>
 
+#include "physics/mesh.h"
 #include "physics/physics.h"
 
 static const float kContactSlop = 0.02f; // notes/11 §4: d < rA+rB+0.02 is a contact
@@ -20,6 +21,8 @@ float Shape::bounding_radius() const
     case SHAPE_BOX:
         return sqrtf(half_extents.x * half_extents.x + half_extents.y * half_extents.y +
                      half_extents.z * half_extents.z) + 0.05f;
+    case SHAPE_MESH:
+        return mesh ? mesh->radius + 0.05f : 0.0f;
     default:
         return 0.0f;
     }
@@ -33,12 +36,11 @@ bool shape_kind_resolved(int type)
     case SHAPE_CAPSULE_Y:
     case SHAPE_CAPSULE_Z:
     case SHAPE_BOX:
+    case SHAPE_MESH: // against sphere/box/capsule; mesh-mesh stays unsupported
     case SHAPE_PLANE:
         return true;
     default:
-        // TODO(notes/11 §1): SHAPE_MESH (6) needs the .scx loader, Poly__buildMesh
-        // and the V-Clip feature walk before it can produce contacts. Shape 7 and
-        // 0 are skipped by Collide__bodyPair in the exe as well.
+        // Shape 7 and 0 are skipped by Collide__bodyPair in the exe as well.
         return false;
     }
 }
@@ -609,6 +611,21 @@ static int collide_pair(const Shape &a, const Pose &pa, const Shape &b, const Po
     float reach = a.bounding_radius() + b.bounding_radius() + 0.05f;
     if (vec_dot(dp, dp) > reach * reach)
         return 0;
+
+    if (a.type == SHAPE_MESH || b.type == SHAPE_MESH) {
+        // Mesh-mesh has no ported pair; the other primitives are gathered
+        // against the triangle soup in physics/mesh.cpp.
+        if (a.type == SHAPE_MESH && b.type == SHAPE_MESH)
+            return 0;
+        if (a.type == SHAPE_MESH) {
+            if (!a.mesh)
+                return 0;
+            return mesh_contacts(*a.mesh, pa, b, pb, true, hits, max_hits, slop);
+        }
+        if (!b.mesh)
+            return 0;
+        return mesh_contacts(*b.mesh, pb, a, pa, false, hits, max_hits, slop);
+    }
 
     if (a.type == SHAPE_SPHERE && b.type == SHAPE_SPHERE)
         return pair_sphere_sphere(a, pa, b, pb, hits, max_hits, slop);

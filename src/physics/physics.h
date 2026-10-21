@@ -3,6 +3,8 @@
 // Generic engine naming: no game prefix; math types come from engine/math.h.
 #pragma once
 #include <stdint.h>
+
+#include <memory>
 #include <vector>
 
 #include "engine/math.h"
@@ -59,11 +61,14 @@ static inline Mat34 pose_rotation(const Pose &p)
     return m;
 }
 
+struct CollisionMesh;
+
 // Shape kinds (notes/11 §1, shape+0x08).
-// Kinds 6/7 (convex .scx mesh) are not ported: no loader and no Poly__buildMesh.
-// Shape 8 is an engine extension standing in for the world ground/water plane
-// used by the documented body-flag 0x800 path (notes/08 §Force model); the exe
-// builds a temporary collider for it, not a scene shape.
+// Kind 6 carries a triangle-soup CollisionMesh (physics/mesh.h); kind 7 keeps
+// the loaded mesh without the collision polyhedron and is skipped by
+// Collide__bodyPair. Shape 8 is an engine extension standing in for the world
+// ground/water plane used by the documented body-flag 0x800 path (notes/08
+// §Force model); the exe builds a temporary collider for it, not a scene shape.
 enum ShapeKind {
     SHAPE_NONE = 0,
     SHAPE_SPHERE = 1,
@@ -71,7 +76,7 @@ enum ShapeKind {
     SHAPE_CAPSULE_Y = 3,
     SHAPE_CAPSULE_Z = 4,
     SHAPE_BOX = 5,
-    SHAPE_MESH = 6,          // TODO: .scx loader + Poly__buildMesh, returns no contacts
+    SHAPE_MESH = 6,          // convex .scx collision mesh (build_collision_mesh)
     SHAPE_MESH_NO_POLY = 7,  // skipped by Collide__bodyPair like shape 0
     SHAPE_PLANE = 8,         // engine extension (see above)
 };
@@ -83,6 +88,7 @@ struct Shape {
     Vec3 half_extents{0.0f, 0.0f, 0.0f}; // +0xb4..+0xbc: box
     Vec3 plane_point{0.0f, 0.0f, 0.0f};  // SHAPE_PLANE, shape-local
     Vec3 plane_normal{0.0f, 1.0f, 0.0f}; // SHAPE_PLANE, shape-local, unit
+    std::shared_ptr<const CollisionMesh> mesh; // +0xb8..: SHAPE_MESH geometry
     float friction = 0.6f;            // +0x50
     float restitution = 0.2f;         // +0x58
 
@@ -104,7 +110,7 @@ struct BodyDef {
 };
 
 // Fills inv_mass/inv_inertia/drag from the shape (notes/11 §1 mass formulas).
-// Mesh kinds leave the inertia at zero (TODO).
+// Mesh kinds leave the inertia at zero (Poly__massProps is not ported).
 void compute_mass_props(BodyDef *def, float mass);
 
 struct RigidBody {
