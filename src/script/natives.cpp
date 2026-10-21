@@ -90,6 +90,10 @@ bool get_o(const char *who, const Value &v, Object **out, std::string *err)
     return true;
 }
 
+// Object identity for natives that keep an opaque reference; a non-object
+// argument becomes null, like the exe's unchecked field store would never run.
+void *obj(const Value &v) { return v.kind == Value::Obj ? (void *)v.obj : nullptr; }
+
 // ---- java.lang.Thread cooperative scheduler --------------------------------
 
 // The exe binds every script Thread to an engine Thread (0x38 bytes: frame,
@@ -3443,6 +3447,62 @@ bool ctl_user_set_axis_force(Vm &, const Args &a, Value *out, std::string *err)
 
 // ---- java.io.Input ---------------------------------------------------------
 
+// FUN_004ed490: write the script Hotkey's int field "state"; a set error is
+// ignored, like the exe's field setter.
+void hotkey_set_state(void *hotkey, int state, void *ctx)
+{
+    if (hotkey == nullptr)
+        return;
+    std::string e;
+    ((Vm *)ctx)->set_instance_field((Object *)hotkey, "state",
+                                    Value::make_int(state), &e);
+}
+
+// 0x4de880 Input.createHotkey (static)
+bool in_create_hotkey(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t axis, flags, events;
+    if (!want("Input.createHotkey", a, 6, err) ||
+        !get_i("Input.createHotkey", a[0], &axis, err) ||
+        !get_i("Input.createHotkey", a[1], &flags, err) ||
+        !get_i("Input.createHotkey", a[5], &events, err))
+        return false;
+    input::hotkeys().create(axis, flags, obj(a[2]), obj(a[3]), obj(a[4]),
+                            (uint32_t)events);
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4de920 Input.deleteHotkey (static)
+bool in_delete_hotkey(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Input.deleteHotkey", a, 1, err)) return false;
+    input::hotkeys().remove(obj(a[0]));
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4de970 Input.flushHotkeys (static)
+bool in_flush_hotkeys(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Input.flushHotkeys", a, 0, err)) return false;
+    input::hotkeys().flush();
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4de750 Input.checkHotkeys (static): instance -> its controller block.
+// shortcut: queued hotkey events are never dispatched or drained; upgrade when
+// the Game event queue (0x47d550) exists.
+bool in_check_hotkeys(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Input.checkHotkeys", a, 2, err)) return false;
+    input::Controller *c = controller_of(value_resource(a[0]));
+    input::hotkeys().check(c, input::devices(), obj(a[1]), hotkey_set_state, &vm);
+    *out = Value::make_null();
+    return true;
+}
+
 // 0x4de990 Input.getAxis
 bool in_get_axis(Vm &, const Args &a, Value *out, std::string *err)
 {
@@ -3910,10 +3970,10 @@ const std::vector<Entry> &table()
     {"java.io.Input", "activeAxis", "(I)I", in_active_axis, false},
     {"java.io.Input", "axisName", "(II)Ljava.lang.String;", in_axis_name, false},
     {"java.io.Input", "lastKey", "()I", in_last_key, false},
-    {"java.io.Input", "createHotkey", "(IILjava.io.Hotkey;Ljava.util.resource.GameRef;Ljava.render.Osd;I)V", nullptr, true},
-    {"java.io.Input", "deleteHotkey", "(Ljava.io.Hotkey;)V", nullptr, true},
-    {"java.io.Input", "checkHotkeys", "(Ljava.util.resource.GameRef;Ljava.render.Osd;)V", nullptr, true},
-    {"java.io.Input", "flushHotkeys", "()V", nullptr, true},
+    {"java.io.Input", "createHotkey", "(IILjava.io.Hotkey;Ljava.util.resource.GameRef;Ljava.render.Osd;I)V", in_create_hotkey, false},
+    {"java.io.Input", "deleteHotkey", "(Ljava.io.Hotkey;)V", in_delete_hotkey, false},
+    {"java.io.Input", "checkHotkeys", "(Ljava.util.resource.GameRef;Ljava.render.Osd;)V", in_check_hotkeys, false},
+    {"java.io.Input", "flushHotkeys", "()V", in_flush_hotkeys, false},
     {"java.io.MouseCursor", "getPickedPos", "()Ljava.lang.Vector3;", nullptr, true},
     {"java.io.MouseCursor", "getPos", "()Ljava.lang.Vector3;", nullptr, true},
     {"java.io.MouseCursor", "getPickedPos", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", nullptr, true},

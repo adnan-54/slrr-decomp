@@ -1,7 +1,7 @@
 ---
 id: 023
-status: todo
-branch:
+status: implemented
+branch: card/023
 depends: [020, 021]
 ---
 # input: Input.createHotkey / deleteHotkey / checkHotkeys / flushHotkeys

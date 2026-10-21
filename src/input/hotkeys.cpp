@@ -6,7 +6,7 @@
 
 namespace input {
 
-void HotkeyTable::create(int axis, int flags, HotkeyState *hotkey, void *handler,
+void HotkeyTable::create(int axis, int flags, void *hotkey, void *handler,
                          void *osd, uint32_t events)
 {
     for (HotkeySlot &s : slots_) {
@@ -24,7 +24,7 @@ void HotkeyTable::create(int axis, int flags, HotkeyState *hotkey, void *handler
     }
 }
 
-void HotkeyTable::remove(HotkeyState *hotkey)
+void HotkeyTable::remove(void *hotkey)
 {
     for (HotkeySlot &s : slots_) {
         if (s.hotkey == hotkey) {
@@ -42,8 +42,11 @@ void HotkeyTable::flush()
     }
 }
 
-void HotkeyTable::check(Controller &controller, DeviceTable &devices,
-                        void *infocus_osd)
+// 0x4de750 Input.checkHotkeys
+void HotkeyTable::check(Controller *controller, DeviceTable &devices,
+                        void *infocus_osd,
+                        void (*set_state)(void *hotkey, int state, void *ctx),
+                        void *ctx)
 {
     int count = 0;
     int first = -1;
@@ -55,7 +58,9 @@ void HotkeyTable::check(Controller &controller, DeviceTable &devices,
             continue;
         float value = 0.0f;
         if (s.flags & 1)
-            value = controller.get_axis_val(s.axis);
+            // INVENTED: a null controller (unresolved GameRef) reads 0.0; the
+            // exe would dereference null.
+            value = controller ? controller->get_axis_val(s.axis) : 0.0f;
         else if (s.flags & 2)
             value = devices.get_axis(0, s.axis) > 0.1f ? 1.0f : 0.0f;
         bool pressed = value > 0.2f;
@@ -70,8 +75,8 @@ void HotkeyTable::check(Controller &controller, DeviceTable &devices,
             }
         }
         s.state = pressed ? 1 : 0;
-        if (s.hotkey != nullptr)
-            s.hotkey->state = s.state;
+        if (set_state != nullptr)
+            set_state(s.hotkey, s.state, ctx);
     }
     if (count > 0)
         queue.push_back({slots_[first].handler, slots_[first].hotkey});

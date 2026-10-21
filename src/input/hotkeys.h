@@ -12,17 +12,14 @@ class Backend;
 class Controller;
 class DeviceTable;
 
-// Script Hotkey object stand-in; the native writes its +0x10 state field.
-struct HotkeyState {
-    int state = 0;
-};
-
 // Slot offsets: +0 flags, +4 axis, +8 Hotkey, +0xc Osd, +0x10 state,
 // +0x14 handler, +0x18 event mask (1 press, 2 release), +0x1c latch.
+// hotkey is the script Hotkey object identity; its "state" field is written
+// through the check() callback, like FUN_004ed490(hotkey, "state", v).
 struct HotkeySlot {
     uint32_t flags = 0;  // 1 virtual axis, 2 key
     int axis = 0;
-    HotkeyState *hotkey = nullptr;
+    void *hotkey = nullptr;
     void *osd = nullptr;
     int state = 0;
     void *handler = nullptr;
@@ -33,20 +30,22 @@ struct HotkeySlot {
 // Game__queueEvent(handler, 0, 0x100000, hotkey, 0).
 struct QueuedEvent {
     void *handler = nullptr;
-    HotkeyState *hotkey = nullptr;
+    void *hotkey = nullptr;
 };
 
 class HotkeyTable {
   public:
     static constexpr int kSlots = 512;
 
-    void create(int axis, int flags, HotkeyState *hotkey, void *handler, void *osd,
+    void create(int axis, int flags, void *hotkey, void *handler, void *osd,
                 uint32_t events);
-    void remove(HotkeyState *hotkey);
+    void remove(void *hotkey);
     void flush();
     // infocus_osd null accepts every slot; otherwise slots owned by another OSD
-    // are skipped.
-    void check(Controller &controller, DeviceTable &devices, void *infocus_osd);
+    // are skipped. set_state (may be null) receives every slot's state,
+    // including slots whose hotkey is null.
+    void check(Controller *controller, DeviceTable &devices, void *infocus_osd,
+               void (*set_state)(void *hotkey, int state, void *ctx), void *ctx);
     // Buffered keyboard read plus the ANSI ring; returns the packed
     // (ansi << 16) | scan value unchanged.
     uint32_t last_key(Backend &keyboard);
