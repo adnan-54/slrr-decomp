@@ -63,7 +63,7 @@ void HotkeyTable::check(Controller *controller, DeviceTable &devices,
             value = controller ? controller->get_axis_val(s.axis) : 0.0f;
         else if (s.flags & 2)
             value = devices.get_axis(0, s.axis) > 0.1f ? 1.0f : 0.0f;
-        bool pressed = value > 0.2f;
+        bool pressed = (double)value > 0.2;  // double const at 0x5a6850
         if (s.latch == 0) {
             s.latch = 1;  // first evaluation only arms the slot
         } else if (s.state != (pressed ? 1 : 0)) {
