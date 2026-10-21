@@ -43,6 +43,19 @@ class Runtime {
         Resource *next_sibling = nullptr;
         std::vector<Resource *> children;
         uint32_t flags = 0;                // RI+0x84
+        // Notification (0x4e7480, 0x44 bytes) on the watched instance's list.
+        struct Notification {
+            Resource *watcher = nullptr;   // +0x24 ref node
+            uint32_t mask = 0;             // +0x34 etype
+            uint32_t alias = 0;            // +0x38 ealias
+            bool has_message = false;      // +0x3c non-null
+            std::string message;
+            bool has_method = false;       // +0x40 non-null
+            std::string method;
+        };
+        // INVENTED: initial mask 0; the typed-object ctor value was not traced.
+        uint32_t event_mask = 0;                  // typed+0xa0
+        std::vector<Notification> notifications;  // typed+0x5c, index 0 = list head
         float pos[3] = {};
         float ori[3] = {};
         float vel[3] = {};

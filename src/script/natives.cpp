@@ -1524,6 +1524,120 @@ bool gr_set_state(Vm &vm, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// ---- java.lang.GameType events -------------------------------------------
+
+// 0x4dc780: typed->event_mask |= m (typed+0xa0).
+// INVENTED: a null receiver resource is ignored; the exe crashes.
+bool gt_set_event_mask(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameType.setEventMask", err)) return false;
+    Object *o;
+    int32_t m;
+    if (!receiver_object("GameType.setEventMask", a, &o, err) ||
+        !want("GameType.setEventMask", a, 2, err) ||
+        !get_i("GameType.setEventMask", a[1], &m, err))
+        return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (r) r->event_mask |= (uint32_t)m;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4dc4d0: typed->event_mask &= ~m.
+// INVENTED: a null receiver resource is ignored; the exe crashes.
+bool gt_clear_event_mask(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameType.clearEventMask", err)) return false;
+    Object *o;
+    int32_t m;
+    if (!receiver_object("GameType.clearEventMask", a, &o, err) ||
+        !want("GameType.clearEventMask", a, 2, err) ||
+        !get_i("GameType.clearEventMask", a[1], &m, err))
+        return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (r) r->event_mask &= ~(uint32_t)m;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e78e0: push a Notification onto the watched object's list (head first).
+// The watcher is the receiver; the mask match replaces an earlier notification.
+bool add_notification(const Args &a, Value *out, std::string *err,
+                      const char *who, bool with_method)
+{
+    if (!need_rt(who, err)) return false;
+    Object *o;
+    int32_t etype, ealias;
+    if (!receiver_object(who, a, &o, err) ||
+        !want(who, a, with_method ? 6u : 5u, err) ||
+        !get_i(who, a[2], &etype, err) ||
+        !get_i(who, a[3], &ealias, err))
+        return false;
+    Runtime::Resource *me = value_resource(a[0]);
+    *out = Value::make_null();
+    if (!me) {
+        std::fprintf(stderr, "vm_gameref_addnotif: scripted resource not found\n");
+        return true;
+    }
+    Runtime::Resource *t = value_resource(a[1]);
+    if (!t) return true;
+    for (auto it = t->notifications.begin(); it != t->notifications.end(); ++it) {
+        if (it->watcher == me && it->mask == (uint32_t)etype) {
+            t->notifications.erase(it);
+            break;
+        }
+    }
+    Runtime::Resource::Notification n;
+    n.watcher = me;
+    n.mask = (uint32_t)etype;
+    n.alias = (uint32_t)ealias;
+    n.has_message = a[4].kind == Value::Str;
+    if (n.has_message) n.message = a[4].s;
+    n.has_method = with_method && a[5].kind == Value::Str;
+    if (n.has_method) n.method = a[5].s;
+    t->notifications.insert(t->notifications.begin(), n);
+    return true;
+}
+
+// 0x4da280: GameType.addNotification(GameRef, int, int, String).
+bool gt_add_notification(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return add_notification(a, out, err, "GameType.addNotification", false);
+}
+
+// 0x4da140: GameType.addNotification(GameRef, int, int, String, String).
+bool gt_add_notification_method(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return add_notification(a, out, err, "GameType.addNotification", true);
+}
+
+// 0x4db6c0: remove the first notification watching from the receiver.
+bool gt_rem_notification(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameType.remNotification", err)) return false;
+    Object *o;
+    int32_t etype;
+    if (!receiver_object("GameType.remNotification", a, &o, err) ||
+        !want("GameType.remNotification", a, 3, err) ||
+        !get_i("GameType.remNotification", a[2], &etype, err))
+        return false;
+    Runtime::Resource *me = value_resource(a[0]);
+    *out = Value::make_null();
+    if (!me) {
+        std::fprintf(stderr, "vm_gameref_remnotif: scripted resource not found\n");
+        return true;
+    }
+    Runtime::Resource *t = value_resource(a[1]);
+    if (!t) return true;
+    for (auto it = t->notifications.begin(); it != t->notifications.end(); ++it) {
+        if (it->watcher == me && it->mask == (uint32_t)etype) {
+            t->notifications.erase(it);
+            break;
+        }
+    }
+    return true;
+}
+
 // 0x4dc510: typeID 0 uses the receiver's own type; otherwise the id is
 // resolved as a game type. The receiver handle ends up on the new instance.
 // shortcut: the exe's default ground/container (RI+0x1d4) is not modeled, so a
@@ -4320,13 +4434,13 @@ const std::vector<Entry> &table()
     {"java.util.resource.ParticleSystem", "setCounter", "(Ljava.lang.String;Ljava.lang.Vector3;F)V", nullptr, true},
     {"java.util.resource.ParticleSystem", "getCounter", "(Ljava.lang.String;)I", nullptr, true},
     {"java.util.resource.ParticleSystem", "modePermanent", "(I)V", nullptr, true},
-    {"java.lang.GameType", "remNotification", "(Ljava.util.resource.GameRef;I)V", nullptr, true},
-    {"java.lang.GameType", "addNotification", "(Ljava.util.resource.GameRef;IILjava.lang.String;)V", nullptr, true},
-    {"java.lang.GameType", "addNotification", "(Ljava.util.resource.GameRef;IILjava.lang.String;Ljava.lang.String;)V", nullptr, true},
+    {"java.lang.GameType", "remNotification", "(Ljava.util.resource.GameRef;I)V", gt_rem_notification, false},
+    {"java.lang.GameType", "addNotification", "(Ljava.util.resource.GameRef;IILjava.lang.String;)V", gt_add_notification, false},
+    {"java.lang.GameType", "addNotification", "(Ljava.util.resource.GameRef;IILjava.lang.String;Ljava.lang.String;)V", gt_add_notification_method, false},
     {"java.lang.GameType", "addTimer", "(FI)V", nullptr, true},
     {"java.lang.GameType", "removeAllTimers", "()V", nullptr, true},
-    {"java.lang.GameType", "setEventMask", "(I)V", nullptr, true},
-    {"java.lang.GameType", "clearEventMask", "(I)V", nullptr, true},
+    {"java.lang.GameType", "setEventMask", "(I)V", gt_set_event_mask, false},
+    {"java.lang.GameType", "clearEventMask", "(I)V", gt_clear_event_mask, false},
     {"java.lang.GameType", "registerCallback", "(I)V", nullptr, true},
     {"java.lang.GameType", "unregisterCallback", "(I)V", nullptr, true},
     {"java.lang.GameType", "unregisterCallbacks", "()V", nullptr, true},

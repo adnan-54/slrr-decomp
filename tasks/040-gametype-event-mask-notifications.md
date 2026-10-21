@@ -1,7 +1,7 @@
 ---
 id: 040
-status: todo
-branch:
+status: implemented
+branch: card/040
 depends: [004, 009, 022, 023, 024, 026]
 ---
 # events: per-instance event mask + notification list, GameType mask/notification natives
