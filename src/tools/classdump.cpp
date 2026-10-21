@@ -3,8 +3,10 @@
 #include <dirent.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <cmath>
 #include <fstream>
@@ -15,6 +17,7 @@
 
 #include "game/car.h"
 #include "game/runtime.h"
+#include "platform/fs.h"
 #include "resource/manager.h"
 #include "script/classfile.h"
 #include "script/natives.h"
@@ -911,6 +914,386 @@ static void vm_synthetic_tests(Checker &c)
     expect_int(c, ran, r, 42, "native dispatch stub", err);
 }
 
+// ---- VM service natives: Thread / System / File ----------------------------
+
+static void build_service_units(std::vector<ClassUnit> *units)
+{
+    // synth.Worker: run() counts to 1000 in one-instruction steps so a 256-token
+    // slice only makes partial progress.
+    UnitBuilder w;
+    w.add_field(false, "n", "I");
+    int m_n = w.add_member("synth.Worker", "n", "I");
+    Code wc;
+    wc.op(0x01, 1);
+    wc.op(0x1b, (uint32_t)m_n);
+    wc.op(0x08, 35);
+    wc.op(0x2a);
+    int wc_body = w.add_body(wc);
+    Code run;
+    size_t head = run.mark();
+    run.op(0x1b, (uint32_t)m_n);
+    run.op(0x0b, 1000);
+    run.op(0x07, 11);  // n < 1000
+    size_t exit_jump = run.mark();
+    run.op(0x15);
+    run.op(0x1b, (uint32_t)m_n);
+    run.op(0x07, 28);
+    run.op(0x0b, 1);
+    run.op(0x07, 16);  // n + 1
+    run.op(0x1b, (uint32_t)m_n);
+    run.op(0x07, 35);  // n = ...
+    size_t back = run.mark();
+    run.op(0x14);
+    run.patch(back, head);
+    run.patch(exit_jump, run.mark());
+    run.op(0x29);
+    int run_body = w.add_body(run);
+    Code gn;
+    gn.op(0x01, 0);
+    gn.op(0x1b, (uint32_t)m_n);
+    gn.op(0x28);
+    int gn_body = w.add_body(gn);
+    w.add_method(false, 0x1, "<init>", "(I)V", wc_body, 2);
+    w.add_method(false, 0x1, "run", "()V", run_body, 1);
+    w.add_method(false, 0x1, "getN", "()I", gn_body, 1);
+    units->push_back(w.finish("synth.Worker", ""));
+
+    UnitBuilder t;
+    t.add_field(false, "target", "Ljava.lang.Runnable;");
+    t.add_method(false, 0x41, "init", "(Ljava.lang.String;)V", -1, 0);
+    t.add_method(false, 0x41, "start", "()V", -1, 0);
+    t.add_method(false, 0x41, "stop", "()V", -1, 0);
+    t.add_method(false, 0x41, "isAlive", "()I", -1, 0);
+    t.add_method(false, 0x41, "getPriority", "()I", -1, 0);
+    t.add_method(false, 0x41, "setPriority", "(I)V", -1, 0);
+    t.add_method(false, 0x41, "sleep", "(F)V", -1, 0);
+    t.add_method(false, 0x41, "suspend", "()V", -1, 0);
+    t.add_method(false, 0x41, "resume", "()V", -1, 0);
+    t.add_method(false, 0x41, "setDaemon", "(I)V", -1, 0);
+    units->push_back(t.finish("java.lang.Thread", ""));
+
+    UnitBuilder s;
+    s.add_method(true, 0x49, "log", "(Ljava.lang.String;)V", -1, 0);
+    s.add_method(true, 0x49, "gc", "()I", -1, 0);
+    s.add_method(true, 0x49, "simTime", "()F", -1, 0);
+    s.add_method(true, 0x49, "timeWarp", "(F)F", -1, 0);
+    s.add_method(true, 0x49, "memUsage", "()I", -1, 0);
+    s.add_method(true, 0x49, "currentTime", "()F", -1, 0);
+    units->push_back(s.finish("java.lang.System", ""));
+
+    UnitBuilder f;
+    f.add_field(false, "name", "Ljava.lang.String;");
+    f.add_method(false, 0x41, "open", "(I)I", -1, 0);
+    f.add_method(false, 0x41, "close", "()V", -1, 0);
+    f.add_method(false, 0x41, "write", "(I)I", -1, 0);
+    f.add_method(false, 0x41, "write", "(F)I", -1, 0);
+    f.add_method(false, 0x41, "write", "(Ljava.lang.String;)I", -1, 0);
+    f.add_method(false, 0x41, "readInt", "()I", -1, 0);
+    f.add_method(false, 0x41, "readFloat", "()F", -1, 0);
+    f.add_method(false, 0x41, "readString", "()Ljava.lang.String;", -1, 0);
+    f.add_method(false, 0x41, "readResID", "()I", -1, 0);
+    f.add_method(true, 0x49, "delete", "(Ljava.lang.String;)I", -1, 0);
+    f.add_method(true, 0x49, "copy",
+                 "(Ljava.lang.String;Ljava.lang.String;)I", -1, 0);
+    f.add_method(true, 0x49, "move",
+                 "(Ljava.lang.String;Ljava.lang.String;)I", -1, 0);
+    f.add_method(true, 0x49, "exists", "(Ljava.lang.String;)I", -1, 0);
+    units->push_back(f.finish("java.io.File", ""));
+}
+
+static const ClassUnit *unit_by_name(const std::vector<ClassUnit> &units,
+                                     const char *name)
+{
+    for (const ClassUnit &u : units)
+        if (u.class_name(u.self_class) == name) return &u;
+    return nullptr;
+}
+
+static uint32_t le32(const std::vector<uint8_t> &b, size_t at)
+{
+    return (uint32_t)b[at] | (uint32_t)b[at + 1] << 8 | (uint32_t)b[at + 2] << 16 |
+           (uint32_t)b[at + 3] << 24;
+}
+
+static void vm_service_tests(Checker &c)
+{
+    std::printf("VM service natives (Thread/System/File)\n");
+    std::vector<ClassUnit> units;
+    build_service_units(&units);
+    // Deliberately leaked: scheduler and file state in natives.cpp are keyed by
+    // Vm*/Object* and the VM has no teardown hook, so the VM must outlive them.
+    Vm &vm = *new Vm();
+    for (ClassUnit &u : units) vm.add_class(&u);
+    const ClassUnit *threadu = unit_by_name(units, "java.lang.Thread");
+    const ClassUnit *workeru = unit_by_name(units, "synth.Worker");
+    const ClassUnit *sysu = unit_by_name(units, "java.lang.System");
+    const ClassUnit *fileu = unit_by_name(units, "java.io.File");
+    c.check(threadu && workeru && sysu && fileu && vm.find_class("java.lang.Thread") &&
+                vm.find_class("synth.Worker") && vm.find_class("java.lang.System") &&
+                vm.find_class("java.io.File"),
+            "service fixtures registered");
+    if (!threadu || !workeru || !sysu || !fileu) return;
+
+    std::string err;
+    Value r;
+    bool ran;
+
+    // System: clock, collector, memory, logging.
+    ran = call_static(vm, *sysu, "simTime", "()F", {}, &r, &err);
+    expect_float(c, ran, r, 0.0f, 0.0f, "System.simTime starts at 0", err);
+    ran = call_static(vm, *sysu, "gc", "()I", {}, &r, &err);
+    expect_int(c, ran, r, 0, "System.gc", err);
+    ran = call_static(vm, *sysu, "memUsage", "()I", {}, &r, &err);
+    c.check(ran, "System.memUsage runs" + (ran ? std::string() : ": " + err));
+    if (ran) c.check(r.kind == Value::Int && r.i > 0, "System.memUsage > 0 kB");
+    ran = call_static(vm, *sysu, "log", "(Ljava.lang.String;)V",
+                      {Value::make_null()}, &r, &err);
+    c.check(ran, "System.log(null)" + (ran ? std::string() : ": " + err));
+    ran = call_static(vm, *sysu, "log", "(Ljava.lang.String;)V",
+                      {Value::make_str("vm_service: log line")}, &r, &err);
+    c.check(ran, "System.log(String)" + (ran ? std::string() : ": " + err));
+    float t1 = 0.0f, t2 = 0.0f;
+    ran = call_static(vm, *sysu, "currentTime", "()F", {}, &r, &err);
+    if (ran && r.kind == Value::Float) t1 = r.f;
+    ran = call_static(vm, *sysu, "currentTime", "()F", {}, &r, &err);
+    if (ran && r.kind == Value::Float) t2 = r.f;
+    c.check(ran && t1 >= 0.0f && t2 >= t1, "System.currentTime monotonic");
+
+    // Thread: state transitions, priorities and cooperative sleep.
+    ClassState *tcs = vm.find_class("java.lang.Thread");
+    ClassState *wcs = vm.find_class("synth.Worker");
+    Object *worker = vm.new_object(wcs, &err);
+    c.check(worker != nullptr, "worker object" + (worker ? std::string() : ": " + err));
+    if (!worker) return;
+    ran = call_instance(vm, *workeru, "<init>", "(I)V", worker, {vi(0)}, &r, &err);
+    c.check(ran, "worker constructor" + (ran ? std::string() : ": " + err));
+    Object *th = vm.new_object(tcs, &err);
+    c.check(th != nullptr, "thread object" + (th ? std::string() : ": " + err));
+    if (!th) return;
+    ran = vm.set_instance_field(th, "target", Value::make_obj(worker), &err);
+    c.check(ran, "thread target" + (ran ? std::string() : ": " + err));
+    ran = call_instance(vm, *threadu, "init", "(Ljava.lang.String;)V", th,
+                        {Value::make_str("worker")}, &r, &err);
+    c.check(ran, "Thread.init" + (ran ? std::string() : ": " + err));
+    ran = call_instance(vm, *threadu, "isAlive", "()I", th, {}, &r, &err);
+    expect_int(c, ran, r, 0, "Thread.isAlive before start", err);
+    ran = call_instance(vm, *threadu, "getPriority", "()I", th, {}, &r, &err);
+    expect_int(c, ran, r, 0, "Thread.getPriority default", err);
+    ran = call_instance(vm, *threadu, "setPriority", "(I)V", th, {vi(7)}, &r, &err);
+    c.check(ran, "Thread.setPriority" + (ran ? std::string() : ": " + err));
+    ran = call_instance(vm, *threadu, "getPriority", "()I", th, {}, &r, &err);
+    expect_int(c, ran, r, 7, "Thread.getPriority after set", err);
+    ran = call_instance(vm, *threadu, "setDaemon", "(I)V", th, {vi(1)}, &r, &err);
+    c.check(ran, "Thread.setDaemon" + (ran ? std::string() : ": " + err));
+    ran = call_instance(vm, *threadu, "start", "()V", th, {}, &r, &err);
+    c.check(ran, "Thread.start" + (ran ? std::string() : ": " + err));
+    ran = call_instance(vm, *threadu, "isAlive", "()I", th, {}, &r, &err);
+    expect_int(c, ran, r, 1, "Thread.isAlive after start", err);
+
+    // Thread.sleep takes milliseconds; 250 ms advances the sim clock 0.25 s.
+    ran = call_instance(vm, *threadu, "sleep", "(F)V", th, {vf(250.0f)}, &r, &err);
+    c.check(ran, "Thread.sleep" + (ran ? std::string() : ": " + err));
+    ran = call_static(vm, *sysu, "simTime", "()F", {}, &r, &err);
+    expect_float(c, ran, r, 0.25f, 1e-6f, "sleep advances simTime", err);
+    int32_t n1 = 0, n2 = 0;
+    ran = call_instance(vm, *workeru, "getN", "()I", worker, {}, &r, &err);
+    if (ran && r.kind == Value::Int) n1 = r.i;
+    c.check(ran && n1 > 0 && n1 < 1000, "sleep pumps one slice of run()");
+
+    ran = call_instance(vm, *threadu, "suspend", "()V", th, {}, &r, &err);
+    c.check(ran, "Thread.suspend" + (ran ? std::string() : ": " + err));
+    ran = call_instance(vm, *threadu, "sleep", "(F)V", th, {vf(250.0f)}, &r, &err);
+    c.check(ran, "sleep while suspended" + (ran ? std::string() : ": " + err));
+    ran = call_instance(vm, *workeru, "getN", "()I", worker, {}, &r, &err);
+    c.check(ran && r.kind == Value::Int && r.i == n1, "suspended thread frozen");
+    ran = call_static(vm, *sysu, "simTime", "()F", {}, &r, &err);
+    expect_float(c, ran, r, 0.5f, 1e-6f, "clock advances while suspended", err);
+    ran = call_instance(vm, *threadu, "resume", "()V", th, {}, &r, &err);
+    c.check(ran, "Thread.resume" + (ran ? std::string() : ": " + err));
+    ran = call_instance(vm, *threadu, "sleep", "(F)V", th, {vf(250.0f)}, &r, &err);
+    c.check(ran, "sleep after resume" + (ran ? std::string() : ": " + err));
+    ran = call_instance(vm, *workeru, "getN", "()I", worker, {}, &r, &err);
+    if (ran && r.kind == Value::Int) n2 = r.i;
+    c.check(ran && n2 > n1 && n2 < 1000, "resume advances the worker");
+
+    ran = call_static(vm, *sysu, "timeWarp", "(F)F", {vf(0.0f)}, &r, &err);
+    expect_float(c, ran, r, 1.0f, 0.0f, "timeWarp(0) returns previous 1.0", err);
+    ran = call_instance(vm, *threadu, "sleep", "(F)V", th, {vf(250.0f)}, &r, &err);
+    c.check(ran, "sleep during timeWarp(0)" + (ran ? std::string() : ": " + err));
+    ran = call_static(vm, *sysu, "simTime", "()F", {}, &r, &err);
+    expect_float(c, ran, r, 0.75f, 1e-6f, "timeWarp(0) freezes simTime", err);
+    ran = call_static(vm, *sysu, "timeWarp", "(F)F", {vf(2.0f)}, &r, &err);
+    expect_float(c, ran, r, 0.0f, 0.0f, "timeWarp(2) returns previous 0.0", err);
+    ran = call_instance(vm, *threadu, "sleep", "(F)V", th, {vf(100.0f)}, &r, &err);
+    c.check(ran, "sleep at 2x warp" + (ran ? std::string() : ": " + err));
+    ran = call_static(vm, *sysu, "simTime", "()F", {}, &r, &err);
+    expect_float(c, ran, r, 0.95f, 1e-5f, "timeWarp(2) doubles sleep time", err);
+    ran = call_static(vm, *sysu, "timeWarp", "(F)F", {vf(1.0f)}, &r, &err);
+    expect_float(c, ran, r, 2.0f, 0.0f, "timeWarp(1) returns previous 2.0", err);
+
+    bool finished = false;
+    for (int i = 0; i < 200 && !finished; i++) {
+        ran = call_instance(vm, *threadu, "isAlive", "()I", th, {}, &r, &err);
+        finished = ran && r.kind == Value::Int && r.i == 0;
+        if (!finished) {
+            ran = call_instance(vm, *threadu, "sleep", "(F)V", th, {vf(250.0f)}, &r,
+                                &err);
+            c.check(ran, "pump to completion" + (ran ? std::string() : ": " + err));
+        }
+    }
+    c.check(finished, "worker reaches completion");
+    ran = call_instance(vm, *workeru, "getN", "()I", worker, {}, &r, &err);
+    expect_int(c, ran, r, 1000, "run() ran to completion", err);
+    ran = call_instance(vm, *threadu, "isAlive", "()I", th, {}, &r, &err);
+    expect_int(c, ran, r, 0, "Thread.isAlive after completion", err);
+
+    // stop freezes a running thread; a missing target never starts.
+    Object *worker2 = vm.new_object(wcs, &err);
+    Object *th2 = vm.new_object(tcs, &err);
+    if (worker2 && th2) {
+        call_instance(vm, *workeru, "<init>", "(I)V", worker2, {vi(0)}, &r, &err);
+        vm.set_instance_field(th2, "target", Value::make_obj(worker2), &err);
+        call_instance(vm, *threadu, "init", "(Ljava.lang.String;)V", th2,
+                      {Value::make_str("stopper")}, &r, &err);
+        call_instance(vm, *threadu, "start", "()V", th2, {}, &r, &err);
+        call_instance(vm, *threadu, "sleep", "(F)V", th2, {vf(250.0f)}, &r, &err);
+        int32_t before = 0, after = 0;
+        ran = call_instance(vm, *workeru, "getN", "()I", worker2, {}, &r, &err);
+        if (ran && r.kind == Value::Int) before = r.i;
+        c.check(ran && before > 0, "second worker progressed");
+        ran = call_instance(vm, *threadu, "stop", "()V", th2, {}, &r, &err);
+        c.check(ran, "Thread.stop" + (ran ? std::string() : ": " + err));
+        ran = call_instance(vm, *threadu, "isAlive", "()I", th2, {}, &r, &err);
+        expect_int(c, ran, r, 0, "Thread.isAlive after stop", err);
+        call_instance(vm, *threadu, "sleep", "(F)V", th2, {vf(250.0f)}, &r, &err);
+        ran = call_instance(vm, *workeru, "getN", "()I", worker2, {}, &r, &err);
+        if (ran && r.kind == Value::Int) after = r.i;
+        c.check(ran && after == before, "stopped thread no longer runs");
+    } else {
+        c.check(false, "second thread fixture");
+    }
+    Object *th3 = vm.new_object(tcs, &err);
+    if (th3) {
+        ran = call_instance(vm, *threadu, "start", "()V", th3, {}, &r, &err);
+        c.check(ran, "Thread.start without target" +
+                         (ran ? std::string() : ": " + err));
+        ran = call_instance(vm, *threadu, "isAlive", "()I", th3, {}, &r, &err);
+        expect_int(c, ran, r, 0, "targetless thread is not alive", err);
+    }
+
+    // File: SDAT v2 round-trip in a temp dir, binary bytes and error paths.
+    char tmpl[] = "/tmp/slrr-vm-services-XXXXXX";
+    char *dir = mkdtemp(tmpl);
+    c.check(dir != nullptr, "temp dir created");
+    if (!dir) return;
+    std::string base(dir);
+    auto make_file = [&](const std::string &path) -> Object * {
+        ClassState *fcs = vm.find_class("java.io.File");
+        Object *o = vm.new_object(fcs, &err);
+        if (o && !vm.set_instance_field(o, "name", Value::make_str(path), &err))
+            return nullptr;
+        return o;
+    };
+    std::string path = base + "/round.sdat";
+    Object *f = make_file(path);
+    c.check(f != nullptr, "file object");
+    if (!f) return;
+    ran = call_instance(vm, *fileu, "open", "(I)I", f, {vi(1)}, &r, &err);
+    expect_int(c, ran, r, 1, "File.open(write)", err);
+    ran = call_instance(vm, *fileu, "write", "(I)I", f, {vi(0x11223344)}, &r, &err);
+    expect_int(c, ran, r, 4, "File.write(int)", err);
+    ran = call_instance(vm, *fileu, "write", "(F)I", f, {vf(1.5f)}, &r, &err);
+    expect_int(c, ran, r, 4, "File.write(float)", err);
+    ran = call_instance(vm, *fileu, "write", "(Ljava.lang.String;)I", f,
+                        {Value::make_str("hello")}, &r, &err);
+    expect_int(c, ran, r, 6, "File.write(String)", err);
+    ran = call_instance(vm, *fileu, "close", "()V", f, {}, &r, &err);
+    c.check(ran, "File.close(write)" + (ran ? std::string() : ": " + err));
+
+    size_t size = 0;
+    c.check(fs::is_file(path, &size) && size == 38, "SDAT file is 38 bytes");
+    std::vector<uint8_t> bytes;
+    std::string ferr;
+    c.check(fs::read_file(path, &bytes, &ferr) && bytes.size() == 38, "SDAT bytes read");
+    if (bytes.size() == 38) {
+        c.check(memcmp(&bytes[0], "SDAT\0\1\2\0", 8) == 0, "SDAT header");
+        c.check(le32(bytes, 8) == 0x11223344 && le32(bytes, 12) == 0x3fc00000 &&
+                    le32(bytes, 16) == 6 && memcmp(&bytes[20], "hello\0", 6) == 0,
+                "SDAT data section is binary exact");
+        c.check(le32(bytes, 26) == 0 && le32(bytes, 30) == 0 &&
+                    le32(bytes, 34) == 8,
+                "empty trailer written on close");
+    }
+    std::string mixed = path;
+    for (char &ch : mixed)
+        if (ch == '/') ch = '\\';
+    ran = call_static(vm, *fileu, "exists", "(Ljava.lang.String;)I",
+                      {Value::make_str(mixed)}, &r, &err);
+    expect_int(c, ran, r, 1, "File.exists normalizes backslashes", err);
+
+    Object *rf = make_file(path);
+    ran = call_instance(vm, *fileu, "open", "(I)I", rf, {vi(0)}, &r, &err);
+    expect_int(c, ran, r, 1, "File.open(read)", err);
+    ran = call_instance(vm, *fileu, "readInt", "()I", rf, {}, &r, &err);
+    expect_int(c, ran, r, 0x11223344, "File.readInt", err);
+    ran = call_instance(vm, *fileu, "readFloat", "()F", rf, {}, &r, &err);
+    expect_float(c, ran, r, 1.5f, 0.0f, "File.readFloat", err);
+    ran = call_instance(vm, *fileu, "readString", "()Ljava.lang.String;", rf, {}, &r,
+                        &err);
+    expect_str(c, ran, r, "hello", "File.readString", err);
+    ran = call_instance(vm, *fileu, "readString", "()Ljava.lang.String;", rf, {}, &r,
+                        &err);
+    c.check(ran && r.kind == Value::Null, "File.readString zero length is null");
+    ran = call_instance(vm, *fileu, "readInt", "()I", rf, {}, &r, &err);
+    expect_int(c, ran, r, 0, "File.readInt at EOF", err);
+    ran = call_instance(vm, *fileu, "close", "()V", rf, {}, &r, &err);
+    c.check(ran, "File.close(read)");
+
+    std::string cpy = base + "/copy.sdat";
+    ran = call_static(vm, *fileu, "copy",
+                      "(Ljava.lang.String;Ljava.lang.String;)I",
+                      {Value::make_str(mixed), Value::make_str(cpy)}, &r, &err);
+    expect_int(c, ran, r, 1, "File.copy", err);
+    std::vector<uint8_t> copied;
+    c.check(fs::read_file(cpy, &copied, &ferr) && copied == bytes, "copy is binary exact");
+    std::string moved = base + "/moved.sdat";
+    ran = call_static(vm, *fileu, "move",
+                      "(Ljava.lang.String;Ljava.lang.String;)I",
+                      {Value::make_str(cpy), Value::make_str(moved)}, &r, &err);
+    expect_int(c, ran, r, 1, "File.move", err);
+    ran = call_static(vm, *fileu, "exists", "(Ljava.lang.String;)I",
+                      {Value::make_str(cpy)}, &r, &err);
+    expect_int(c, ran, r, 0, "move removed the source", err);
+    ran = call_static(vm, *fileu, "exists", "(Ljava.lang.String;)I",
+                      {Value::make_str(moved)}, &r, &err);
+    expect_int(c, ran, r, 1, "move created the target", err);
+    ran = call_static(vm, *fileu, "delete", "(Ljava.lang.String;)I",
+                      {Value::make_str(moved)}, &r, &err);
+    expect_int(c, ran, r, 1, "File.delete", err);
+    ran = call_static(vm, *fileu, "delete", "(Ljava.lang.String;)I",
+                      {Value::make_str(moved)}, &r, &err);
+    expect_int(c, ran, r, 0, "File.delete missing file", err);
+
+    Object *missing = make_file(base + "/absent.sdat");
+    ran = call_instance(vm, *fileu, "open", "(I)I", missing, {vi(0)}, &r, &err);
+    expect_int(c, ran, r, 0, "open missing file fails", err);
+    ran = call_instance(vm, *fileu, "write", "(I)I", missing, {vi(1)}, &r, &err);
+    expect_int(c, ran, r, 0, "write without a handle", err);
+    ran = call_instance(vm, *fileu, "readInt", "()I", missing, {}, &r, &err);
+    expect_int(c, ran, r, 0, "read without a handle", err);
+    ran = call_instance(vm, *fileu, "close", "()V", missing, {}, &r, &err);
+    c.check(ran, "close without a handle");
+    Object *badmode = make_file(base + "/badmode.sdat");
+    ran = call_instance(vm, *fileu, "open", "(I)I", badmode, {vi(2)}, &r, &err);
+    expect_int(c, ran, r, 0, "open invalid mode fails", err);
+    Object *nodir = make_file(base + "/nodir/x.sdat");
+    ran = call_instance(vm, *fileu, "open", "(I)I", nodir, {vi(1)}, &r, &err);
+    expect_int(c, ran, r, 0, "open in missing directory fails", err);
+
+    remove(path.c_str());
+    rmdir(base.c_str());
+}
+
 // ---- real corpus programs --------------------------------------------------
 
 static const ClassUnit *find_unit(const std::vector<ClassFile> &files, const char *name)
@@ -1134,7 +1517,11 @@ static void vm_corpus_tests(int argc, char **argv, Checker &c)
 
         err.clear();
         ran = call_static(vm, *sys, "gc", "()I", {}, &r, &err);
-        c.check(!ran && err == "native not implemented (stub): java.lang.System.gc()I",
+        expect_int(c, ran, r, 0, "System.gc", err);
+
+        err.clear();
+        ran = call_static(vm, *sys, "exit", "()V", {}, &r, &err);
+        c.check(!ran && err == "native not implemented (stub): java.lang.System.exit()V",
                 "engine native is an explicit stub");
     }
 
@@ -2714,6 +3101,7 @@ static int selfcheck(int argc, char **argv)
     for (int i = 0; i < argc; i++)
         selfcheck_file(argv[i], c);
     vm_synthetic_tests(c);
+    vm_service_tests(c);
     std::string game = game_root(argc, argv);
     if (!game.empty()) runtime_tests(game, c);
     else std::printf("game runtime: skipped (no game root in the sample paths)\n");

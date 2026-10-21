@@ -14,12 +14,14 @@ LIB_SRC  := script/classfile.cpp script/vm.cpp script/natives.cpp \
             render/recording.cpp input/backend.cpp input/device.cpp \
             input/controller.cpp input/hotkeys.cpp input/cursor.cpp \
             input/platform_backend.cpp vehicle/vehicle.cpp app/boot.cpp \
-            game/runtime.cpp game/car.cpp platform/fs.cpp
+            game/runtime.cpp game/car.cpp platform/fs.cpp \
+            audio/audio.cpp audio/sfx.cpp audio/music.cpp audio/mixer.cpp \
+            audio/dsound.cpp
 LIB_OBJ  := $(LIB_SRC:%.cpp=$(BUILD)/%.o)
 LIB      := $(BUILD)/libengine.a
 
 TOOLS    := classdump rpkdump resman cfgdump physcheck vehiclecheck vmboot \
-            scxcheck rendercheck inputcheck
+            scxcheck rendercheck inputcheck audiocheck
 TOOL_BIN := $(TOOLS:%=$(BUILD)/%)
 TOOL_OBJ := $(TOOLS:%=$(BUILD)/tools/%.o)
 
@@ -68,6 +70,7 @@ check: all
 	cd .. && src/$(BUILD)/scxcheck --selfcheck
 	cd .. && src/$(BUILD)/rendercheck
 	$(BUILD)/inputcheck
+	$(BUILD)/audiocheck
 
 clean:
 	rm -rf $(BUILD)

@@ -9,13 +9,22 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <psapi.h>
+#endif
+
 #include <chrono>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "engine/math.h"
 #include "game/car.h"
 #include "game/runtime.h"
+#include "platform/fs.h"
 #include "script/vm.h"
 
 namespace {
@@ -72,6 +81,241 @@ bool get_o(const char *who, const Value &v, Object **out, std::string *err)
         return false;
     }
     *out = v.obj;
+    return true;
+}
+
+// ---- java.lang.Thread cooperative scheduler --------------------------------
+
+// The exe binds every script Thread to an engine Thread (0x38 bytes: frame,
+// state, priority, flags) and runs it in 256-token VM slices. A NativeFn here
+// only receives Vm&, never the executing Thread, so sleep cannot suspend its
+// caller; it advances the scheduler's simulation clock and gives every started
+// thread one slice instead.
+// shortcut: sleep yields one slice per registered thread and cannot block the
+// caller. Upgrade when Vm exposes the current Thread to native methods.
+struct ScriptThreadState {
+    Object *script = nullptr;  // java.lang.Thread instance (identity)
+    Object *target = nullptr;  // Runnable whose run() this thread executes
+    std::unique_ptr<Thread> runner;
+    std::string name;
+    int32_t priority = 0;      // engine Thread ctor (0x5612f0) starts at 0
+    bool daemon = false;
+    bool suspended = false;
+    bool started = false;
+    bool done = false;
+    bool in_slice = false;  // its run_slice is on the stack (do not re-enter)
+};
+
+struct Scheduler {
+    std::vector<std::unique_ptr<ScriptThreadState>> threads;
+    double sim_seconds = 0.0;  // level-2 time; sleep advances it
+    // 0x4e5880 stores the scale through 0x47dfd0 into the global at 0x5fde90
+    // (+0x27c); normal speed is 1.0 (playVideo saves and restores it).
+    float warp = 1.0f;
+    bool pumping = false;
+};
+
+// shortcut: scheduler state is never pruned (Vm has no teardown hook); the game
+// runs one long-lived Vm, so this only matters to tools that churn Vm instances.
+std::map<Vm *, Scheduler> &schedulers()
+{
+    static std::map<Vm *, Scheduler> m;
+    return m;
+}
+
+Scheduler &sched(Vm &vm) { return schedulers()[&vm]; }
+
+ScriptThreadState *thread_state(Vm &vm, Object *o)
+{
+    for (auto &t : sched(vm).threads)
+        if (t->script == o) return t.get();
+    return nullptr;
+}
+
+ScriptThreadState *thread_state_for(Vm &vm, Object *o)
+{
+    ScriptThreadState *t = thread_state(vm, o);
+    if (t) return t;
+    std::unique_ptr<ScriptThreadState> n(new ScriptThreadState);
+    n->script = o;
+    t = n.get();
+    sched(vm).threads.push_back(std::move(n));
+    return t;
+}
+
+// vm.h keeps ClassState opaque. vm.cpp defines it with `unit` as its first
+// member, so the declaring unit can be recovered via memcpy without widening
+// the VM interface.
+// shortcut: relies on ClassState's leading member in vm.cpp; upgrade when Vm
+// exposes a ClassState -> ClassUnit accessor.
+const ClassUnit *class_state_unit(ClassState *st)
+{
+    const ClassUnit *unit = nullptr;
+    if (st) ::memcpy(&unit, st, sizeof unit);
+    return unit;
+}
+
+// One 256-token slice per started, unsuspended thread. Runners are kept after
+// completion (and after stop) so a script cannot destroy the Thread object that
+// is currently on the pump's stack.
+void pump_threads(Vm &vm)
+{
+    Scheduler &s = sched(vm);
+    if (s.pumping) return;
+    s.pumping = true;
+    for (size_t i = 0; i < s.threads.size(); i++) {
+        ScriptThreadState *t = s.threads[i].get();
+        if (!t->runner || t->suspended || t->done || !t->started || t->in_slice)
+            continue;
+        t->in_slice = true;
+        Thread::Status st = t->runner->run_slice(256);
+        t->in_slice = false;
+        if (st == Thread::Yielded) continue;
+        if (st == Thread::Failed)
+            std::fprintf(stderr, "vm thread failed: %s\n", t->runner->error().c_str());
+        t->started = false;
+        t->done = true;
+    }
+    s.pumping = false;
+}
+
+bool thread_init(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("Thread.init", a, 2, err) || !get_o("Thread.init", a[0], &o, err))
+        return false;
+    ScriptThreadState *t = thread_state_for(vm, o);
+    t->name = a[1].kind == Value::Str ? a[1].s : std::string();
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e6170: clears flag 2, resolves the script `target` field and starts
+// target.run() as a VM thread. A missing target or run() terminates it.
+bool thread_start(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("Thread.start", a, 1, err) || !get_o("Thread.start", a[0], &o, err))
+        return false;
+    *out = Value::make_null();
+    ScriptThreadState *t = thread_state_for(vm, o);
+    if (t->started || t->done) return true;  // one start per script Thread
+    Value tv;
+    std::string e;
+    if (!vm.get_instance_field(o, "target", &tv, &e) || tv.kind != Value::Obj ||
+        !tv.obj) {
+        t->done = true;
+        return true;
+    }
+    ClassState *decl = nullptr;
+    const MethodInfo *run = vm.find_method(tv.obj->cls, "run", "", 0, {}, &decl, &e);
+    const ClassUnit *unit = class_state_unit(decl);
+    std::unique_ptr<Thread> runner =
+        run && unit ? vm.start(*unit, *run, tv.obj, {}, &e) : nullptr;
+    if (!runner) {
+        t->done = true;
+        return true;
+    }
+    t->target = tv.obj;
+    t->runner = std::move(runner);
+    t->started = true;
+    return true;
+}
+
+bool thread_stop(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("Thread.stop", a, 1, err) || !get_o("Thread.stop", a[0], &o, err))
+        return false;
+    if (ScriptThreadState *t = thread_state(vm, o)) {
+        t->started = false;
+        t->done = true;
+        t->target = nullptr;  // exe clears +0x18 and detaches the handle
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+bool thread_is_alive(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("Thread.isAlive", a, 1, err) || !get_o("Thread.isAlive", a[0], &o, err))
+        return false;
+    // The exe stub 0x4e6040 always returns 0 (assembly ends in XOR EAX,EAX);
+    // report the real cooperative state so script logic can observe completion.
+    ScriptThreadState *t = thread_state(vm, o);
+    *out = Value::make_int(t && t->started && !t->done ? 1 : 0);
+    return true;
+}
+
+bool thread_get_priority(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("Thread.getPriority", a, 1, err) ||
+        !get_o("Thread.getPriority", a[0], &o, err))
+        return false;
+    ScriptThreadState *t = thread_state(vm, o);
+    *out = Value::make_int(t ? t->priority : 0);
+    return true;
+}
+
+bool thread_set_priority(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    int32_t pri;
+    if (!want("Thread.setPriority", a, 2, err) ||
+        !get_o("Thread.setPriority", a[0], &o, err) ||
+        !get_i("Thread.setPriority", a[1], &pri, err))
+        return false;
+    if (ScriptThreadState *t = thread_state(vm, o)) t->priority = pri;
+    *out = Value::make_null();
+    return true;
+}
+
+bool thread_sleep(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    float ms;
+    // Receiver is prepended by the VM, so the declared float is a[1].
+    if (!want("Thread.sleep", a, 2, err) || !get_f("Thread.sleep", a[1], &ms, err))
+        return false;
+    Scheduler &s = sched(vm);
+    if (ms > 0.0f && s.warp > 0.0f)
+        s.sim_seconds += (double)ms * 0.001 * (double)s.warp;
+    pump_threads(vm);
+    *out = Value::make_null();
+    return true;
+}
+
+bool thread_suspend(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("Thread.suspend", a, 1, err) || !get_o("Thread.suspend", a[0], &o, err))
+        return false;
+    if (ScriptThreadState *t = thread_state(vm, o)) t->suspended = true;
+    *out = Value::make_null();
+    return true;
+}
+
+bool thread_resume(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("Thread.resume", a, 1, err) || !get_o("Thread.resume", a[0], &o, err))
+        return false;
+    if (ScriptThreadState *t = thread_state(vm, o)) t->suspended = false;
+    *out = Value::make_null();
+    return true;
+}
+
+bool thread_set_daemon(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    int32_t on;
+    if (!want("Thread.setDaemon", a, 2, err) ||
+        !get_o("Thread.setDaemon", a[0], &o, err) ||
+        !get_i("Thread.setDaemon", a[1], &on, err))
+        return false;
+    if (ScriptThreadState *t = thread_state(vm, o)) t->daemon = on != 0;
+    *out = Value::make_null();
     return true;
 }
 
@@ -240,6 +484,77 @@ bool system_current_time(Vm &, const Args &, Value *out, std::string *)
 bool system_build_number(Vm &, const Args &, Value *out, std::string *)
 {
     *out = Value::make_int(940);  // 0x4e5470 returns 0x3ac
+    return true;
+}
+
+// 0x4e5700: writes the text (or "<null>") to the engine log channel.
+bool system_log(Vm &, const Args &a, Value *out, std::string *)
+{
+    const std::string &s = a.empty() || a[0].kind != Value::Str ? std::string("<null>")
+                                                                : a[0].s;
+    std::fprintf(stderr, "%s\n", s.c_str());
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e55b0 runs the JVM collector; this VM has no managed heap to collect.
+bool system_gc(Vm &, const Args &, Value *out, std::string *)
+{
+    *out = Value::make_int(0);
+    return true;
+}
+
+bool system_sim_time(Vm &vm, const Args &, Value *out, std::string *)
+{
+    // 0x4e5810 returns the world simulation time; sleep advances the same clock.
+    *out = Value::make_float((float)sched(vm).sim_seconds);
+    return true;
+}
+
+// 0x4e5880: returns the previous warp factor and applies a non-negative one.
+bool system_time_warp(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    float warp = 0.0f;
+    if (!a.empty() && !get_f("System.timeWarp", a[0], &warp, err)) return false;
+    Scheduler &s = sched(vm);
+    float previous = s.warp;
+    if (warp >= 0.0f) s.warp = warp;
+    *out = Value::make_float(previous);
+    return true;
+}
+
+// 0x4e5740: process working set in KB.
+bool system_mem_usage(Vm &, const Args &, Value *out, std::string *)
+{
+    uint32_t kb = 0;
+#ifdef _WIN32
+    // psapi.dll is not in the portable link line; resolve it at runtime.
+    HMODULE lib = LoadLibraryA("psapi.dll");
+    if (lib) {
+        typedef BOOL(WINAPI * GetInfo)(HANDLE, PROCESS_MEMORY_COUNTERS *, DWORD);
+        GetInfo info = (GetInfo)GetProcAddress(lib, "GetProcessMemoryInfo");
+        PROCESS_MEMORY_COUNTERS counters = {};
+        counters.cb = sizeof counters;
+        if (info && info(GetCurrentProcess(), &counters, sizeof counters))
+            kb = (uint32_t)(counters.WorkingSetSize >> 10);
+        FreeLibrary(lib);
+    }
+#else
+    // VmRSS is the resident set in kB, the closest match to WorkingSetSize.
+    FILE *f = std::fopen("/proc/self/status", "r");
+    if (f) {
+        char line[256];
+        while (std::fgets(line, sizeof line, f)) {
+            unsigned long pages = 0;
+            if (std::sscanf(line, "VmRSS: %lu kB", &pages) == 1) {
+                kb = (uint32_t)pages;
+                break;
+            }
+        }
+        std::fclose(f);
+    }
+#endif
+    *out = Value::make_int((int32_t)kb);
     return true;
 }
 
@@ -1222,6 +1537,493 @@ bool gt_create_native_instance(Vm &, const Args &a, Value *out, std::string *err
                         value_string(a, 3), false, err);
     if (!inst) return false;
     rt->bind(h, inst);
+    return true;
+}
+
+// ---- java.io.File: SDAT v2 datafiles --------------------------------------
+
+// On-disk layout (confirmed against save files and 0x4d9830/0x4d93b0):
+//   "SDAT\0\1\2\0", data bytes, then
+//   u32 local_count, local_count*{u32 id, u32 type, i32 len, type-7 source bytes},
+//   u32 lib_count, lib_count*{u32 index, u32 strlen+1, chars incl NUL},
+//   u32 trailer_size = 4 + local_bytes + 4 + lib_bytes.
+// The exe's local table remaps unsaved (0xffff????) resource ids; the original
+// id is not serialized, so a reopened file cannot resolve it. Library ids are
+// serialized as index<<16|low16 and classified by the index field.
+// shortcut: no v1 trailer parsing (shipped saves are v2) and a local id read
+// back from a foreign save maps to 0xffff0000|new_id instead of a recreated
+// engine resource; upgrade when v1 saves or engine resource recreation matter.
+struct FileLocal {
+    uint32_t id = 0;    // id stored in the file
+    uint32_t type = 0;  // resource type
+    uint32_t orig = 0;  // original id, for files opened for writing
+};
+
+struct FileLib {
+    uint32_t index = 0;  // per-file library slot stored in the id high half
+    std::string name;    // library path as written (.rpk included)
+    uint32_t key = 0;    // open-package index, resolved from name on open
+};
+
+struct FileState {
+    FILE *f = nullptr;
+    int mode = -1;
+    std::string path;  // normalized path, for error messages
+    std::vector<FileLocal> locals;
+    std::vector<FileLib> libs;
+    ~FileState()
+    {
+        if (f) std::fclose(f);
+    }
+};
+
+std::map<Object *, std::unique_ptr<FileState>> &file_states()
+{
+    static std::map<Object *, std::unique_ptr<FileState>> m;
+    return m;
+}
+
+FileState *file_state(Object *o)
+{
+    auto it = file_states().find(o);
+    return it == file_states().end() ? nullptr : it->second.get();
+}
+
+void file_log(const char *what, const std::string &path)
+{
+    std::fprintf(stderr, "vm_file: %s: %s\n", what, path.c_str());
+}
+
+// The exe copies paths into a 256-byte buffer and canonicalizes separators.
+// Rejecting an overlong path is safer than silently opening a truncated one.
+bool file_path(const char *who, const std::string &in, std::string *out,
+               std::string *err)
+{
+    if (in.size() > 255) {
+        file_log("path too long", in);
+        *err = std::string(who) + ": path longer than 255 bytes";
+        return false;
+    }
+    *out = in;
+    for (char &c : *out)
+        if (c == '\\') c = '/';
+    return true;
+}
+
+uint32_t package_index(const Package *pkg)
+{
+    Runtime *rt = game_rt();
+    if (!rt || !pkg) return 0;
+    ResourceManager &rm = rt->resources();
+    for (size_t i = 0; i < rm.package_count(); i++)
+        if (&rm.package(i) == pkg) return (uint32_t)i;
+    return 0;
+}
+
+uint32_t package_key(const std::string &name)
+{
+    Runtime *rt = game_rt();
+    if (!rt) return 0;
+    ResourceManager &rm = rt->resources();
+    const Package *pkg = rm.find_open_package(name);
+    return package_index(pkg);
+}
+
+int file_put(FileState *s, const void *p, size_t n)
+{
+    if (!s || !s->f) return 0;
+    if (std::fwrite(p, 1, n, s->f) != n) {
+        file_log("write error", s->path);
+        return -1;
+    }
+    return (int)n;
+}
+
+bool file_get(FileState *s, void *p, size_t n)
+{
+    return s && s->f && std::fread(p, 1, n, s->f) == n;
+}
+
+void file_parse_v2(FileState *s)
+{
+    std::fseek(s->f, 0, SEEK_END);
+    long size = std::ftell(s->f);
+    if (size < 12) return;
+    uint32_t trailer = 0;
+    std::fseek(s->f, size - 4, SEEK_SET);
+    if (!file_get(s, &trailer, 4)) return;
+    if (trailer < 8 || (long)trailer > size - 8) {
+        file_log("invalid datafile", s->path);
+        return;
+    }
+    long start = size - 4 - (long)trailer;
+    std::fseek(s->f, start, SEEK_SET);
+    uint32_t count = 0;
+    if (!file_get(s, &count, 4)) return;
+    for (uint32_t i = 0; i < count; i++) {
+        FileLocal e;
+        int32_t len = 0;
+        if (!file_get(s, &e.id, 4) || !file_get(s, &e.type, 4) ||
+            !file_get(s, &len, 4))
+            return;
+        e.orig = 0xffff0000u | (e.id & 0xffff);  // no engine resource to recreate
+        if (e.type == 7 && len != 0) {
+            long pos = std::ftell(s->f);
+            if (len < 0 || pos < 0 || (long)len > size - 4 - pos) {
+                file_log("invalid datafile", s->path);
+                return;
+            }
+            std::fseek(s->f, len, SEEK_CUR);
+        }
+        s->locals.push_back(e);
+    }
+    if (!file_get(s, &count, 4)) return;
+    for (uint32_t i = 0; i < count; i++) {
+        FileLib e;
+        uint32_t n = 0;
+        if (!file_get(s, &e.index, 4) || !file_get(s, &n, 4) || n == 0) return;
+        long pos = std::ftell(s->f);
+        if (pos < 0 || (long)n > size - 4 - pos) {
+            file_log("invalid datafile", s->path);
+            return;
+        }
+        std::string raw(n, '\0');
+        if (!file_get(s, &raw[0], n)) return;
+        e.name = raw.c_str();  // written with its terminating NUL
+        e.key = package_key(e.name);
+        s->libs.push_back(e);
+    }
+}
+
+uint32_t local_index(FileState *s, uint32_t orig, uint32_t type)
+{
+    for (const FileLocal &e : s->locals)
+        if (e.orig == orig) return e.id;
+    FileLocal e;
+    e.id = (uint32_t)s->locals.size() + 1;  // the exe numbers from 1
+    e.type = type;
+    e.orig = orig;
+    s->locals.push_back(e);
+    return e.id;
+}
+
+uint32_t lib_index(FileState *s, const Package *pkg)
+{
+    uint32_t key = package_index(pkg);
+    for (const FileLib &e : s->libs)
+        if (e.key == key) return e.index;
+    FileLib e;
+    e.index = (uint32_t)s->libs.size() + 1;
+    e.key = key;
+    if (pkg) {
+        e.name = pkg->mount.empty() ? pkg->rpk_path : pkg->mount + ".rpk";
+        if (!e.name.empty() && e.name.back() == '/') e.name.pop_back();
+    }
+    s->libs.push_back(e);
+    return e.index;
+}
+
+bool file_open(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    int32_t mode;
+    if (!want("File.open", a, 2, err) || !get_o("File.open", a[0], &o, err) ||
+        !get_i("File.open", a[1], &mode, err))
+        return false;
+    *out = Value::make_int(0);
+    file_states().erase(o);  // reopen discards the previous handle, like 0x4d9830
+    Value nv;
+    std::string e;
+    std::string path;
+    if (!vm.get_instance_field(o, "name", &nv, &e) || nv.kind != Value::Str ||
+        !file_path("File.open", nv.s, &path, err))
+        return true;
+    std::unique_ptr<FileState> s(new FileState);
+    s->mode = mode;
+    s->path = path;
+    if (mode == 0) {
+        s->f = std::fopen(path.c_str(), "rb");
+        if (!s->f) {
+            file_log("cannot open", path);
+            return true;
+        }
+        uint8_t header[8] = {};
+        if (file_get(s.get(), header, 8) && header[6] == 2) file_parse_v2(s.get());
+        std::fseek(s->f, 8, SEEK_SET);
+    } else if (mode == 1) {
+        s->f = std::fopen(path.c_str(), "wb");
+        if (!s->f) {
+            file_log("cannot create", path);
+            return true;
+        }
+        static const char header[8] = {'S', 'D', 'A', 'T', 0, 1, 2, 0};
+        if (file_put(s.get(), header, 8) != 8) {
+            std::fclose(s->f);
+            s->f = nullptr;
+            return true;
+        }
+    } else {
+        file_log("vm_file_open: invalid file open mode", path);
+        return true;
+    }
+    file_states()[o] = std::move(s);
+    *out = Value::make_int(1);
+    return true;
+}
+
+void file_write_trailer(FileState *s)
+{
+    uint32_t total = 4 + 4;
+    uint32_t count = (uint32_t)s->locals.size();
+    uint32_t scratch = 0;
+    if (file_put(s, &count, 4) != 4) goto bad;
+    for (const FileLocal &e : s->locals) {
+        scratch = 0;  // no engine source is attached to a script-written entry
+        if (file_put(s, &e.id, 4) != 4 || file_put(s, &e.type, 4) != 4 ||
+            file_put(s, &scratch, 4) != 4)
+            goto bad;
+        total += 12;
+    }
+    count = (uint32_t)s->libs.size();
+    if (file_put(s, &count, 4) != 4) goto bad;
+    for (const FileLib &e : s->libs) {
+        scratch = (uint32_t)e.name.size() + 1;
+        if (file_put(s, &e.index, 4) != 4 || file_put(s, &scratch, 4) != 4 ||
+            file_put(s, e.name.c_str(), scratch) != (int)scratch)
+            goto bad;
+        total += 8 + scratch;
+    }
+    if (file_put(s, &total, 4) != 4) goto bad;
+    return;
+bad:
+    file_log("Invalid datafile saved", s->path);
+}
+
+bool file_close(Vm &, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("File.close", a, 1, err) || !get_o("File.close", a[0], &o, err))
+        return false;
+    auto it = file_states().find(o);
+    if (it != file_states().end()) {
+        FileState *s = it->second.get();
+        if (s->mode == 1) file_write_trailer(s);
+        if (s->f && std::fclose(s->f) != 0) file_log("close error", s->path);
+        s->f = nullptr;
+        file_states().erase(it);
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+bool file_write_int(Vm &, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("File.write", a, 2, err) || !get_o("File.write", a[0], &o, err))
+        return false;
+    uint32_t bits = 0;
+    if (a[1].kind == Value::Float)
+        ::memcpy(&bits, &a[1].f, 4);
+    else if (!get_i("File.write", a[1], (int32_t *)&bits, err))
+        return false;
+    *out = Value::make_int(file_put(file_state(o), &bits, 4));
+    return true;
+}
+
+bool file_write_string(Vm &, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("File.write", a, 2, err) || !get_o("File.write", a[0], &o, err))
+        return false;
+    FileState *s = file_state(o);
+    if (!s) {
+        *out = Value::make_int(0);
+        return true;
+    }
+    if (a[1].kind != Value::Str) {  // null writes a zero length
+        uint32_t zero = 0;
+        file_put(s, &zero, 4);
+        *out = Value::make_int(0);
+        return true;
+    }
+    uint32_t n = (uint32_t)a[1].s.size() + 1;  // length includes the NUL
+    if (file_put(s, &n, 4) != 4) {
+        *out = Value::make_int(-1);
+        return true;
+    }
+    *out = Value::make_int(file_put(s, a[1].s.c_str(), n));
+    return true;
+}
+
+bool file_write_ref(Vm &, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("File.write", a, 2, err) || !get_o("File.write", a[0], &o, err))
+        return false;
+    FileState *s = file_state(o);
+    uint32_t field = 0;
+    Runtime::Handle *h = a[1].kind == Value::Obj ? value_handle(a[1]) : nullptr;
+    if (h && h->id) {
+        Runtime::Resource *r = h->target;
+        if (h->id >> 16 == 0xffff || !r || !r->package) {
+            // Unsaved resource: remap through the local table when saveable.
+            if (r && (r->type == 5 || r->type == 7))
+                field = local_index(s, h->id, r->type);
+            else {
+                file_log("ERROR! Unsaveable resource!", s ? s->path : std::string());
+                field = h->id;
+            }
+        } else {
+            field = lib_index(s, r->package) << 16 | (h->id & 0xffff);
+        }
+    }
+    *out = Value::make_int(file_put(s, &field, 4));
+    return true;
+}
+
+bool file_read_int(Vm &, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("File.readInt", a, 1, err) || !get_o("File.readInt", a[0], &o, err))
+        return false;
+    int32_t v = 0;
+    file_get(file_state(o), &v, 4);
+    *out = Value::make_int(v);
+    return true;
+}
+
+bool file_read_float(Vm &, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("File.readFloat", a, 1, err) || !get_o("File.readFloat", a[0], &o, err))
+        return false;
+    float v = 0.0f;
+    file_get(file_state(o), &v, 4);
+    *out = Value::make_float(v);
+    return true;
+}
+
+bool file_read_string(Vm &, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("File.readString", a, 1, err) ||
+        !get_o("File.readString", a[0], &o, err))
+        return false;
+    *out = Value::make_null();
+    FileState *s = file_state(o);
+    int32_t n = 0;
+    if (!file_get(s, &n, 4) || n <= 0) return true;
+    if (n > (1 << 24)) {  // corrupt length; the exe would allocate it
+        file_log("invalid string length", s->path);
+        return true;
+    }
+    std::string buf((size_t)n, '\0');
+    if (!file_get(s, &buf[0], (size_t)n)) {
+        file_log("read error", s->path);  // exe would use uninitialized bytes
+        return true;
+    }
+    *out = Value::make_str(buf.c_str());  // JVM__newString stops at the NUL
+    return true;
+}
+
+bool file_read_res_id(Vm &, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("File.readResID", a, 1, err) ||
+        !get_o("File.readResID", a[0], &o, err))
+        return false;
+    *out = Value::make_int(0);
+    FileState *s = file_state(o);
+    uint32_t id = 0;
+    if (!file_get(s, &id, 4) || id == 0) return true;
+    uint32_t high = id >> 16;
+    if (high == 0 || high == 0xffff) {
+        for (const FileLocal &e : s->locals)
+            if ((e.id & 0xffff) == (id & 0xffff)) {
+                *out = Value::make_int((int32_t)e.orig);
+                return true;
+            }
+        file_log("ERROR! Unsaved resource!", s->path);
+    } else {
+        for (const FileLib &e : s->libs)
+            if (e.index == high) {
+                *out = Value::make_int((int32_t)(e.key << 16 | (id & 0xffff)));
+                return true;
+            }
+    }
+    return true;
+}
+
+// The exe static helpers return void (the native callers read stale EAX); this
+// rebuild returns a meaningful 1/0 and logs failures instead of hiding them.
+bool file_delete(Vm &, const Args &a, Value *out, std::string *err)
+{
+    const std::string *arg;
+    std::string path;
+    if (!want("File.delete", a, 1, err) || !get_s("File.delete", a[0], &arg, err))
+        return false;
+    if (!file_path("File.delete", *arg, &path, err)) return false;
+    bool ok = ::remove(path.c_str()) == 0;
+    if (!ok) file_log("delete failed", path);
+    *out = Value::make_int(ok ? 1 : 0);
+    return true;
+}
+
+bool file_copy(Vm &, const Args &a, Value *out, std::string *err)
+{
+    const std::string *from;
+    const std::string *to;
+    std::string src, dst;
+    if (!want("File.copy", a, 2, err) ||
+        !get_s("File.copy", a[0], &from, err) ||
+        !get_s("File.copy", a[1], &to, err) ||
+        !file_path("File.copy", *from, &src, err) ||
+        !file_path("File.copy", *to, &dst, err))
+        return false;
+    *out = Value::make_int(0);
+    std::vector<uint8_t> data;
+    std::string e;
+    if (!fs::read_file(src, &data, &e)) {
+        file_log("copy read failed", src);
+        return true;
+    }
+    FILE *f = std::fopen(dst.c_str(), "wb");
+    if (!f) {
+        file_log("copy open failed", dst);
+        return true;
+    }
+    bool ok = std::fwrite(data.data(), 1, data.size(), f) == data.size();
+    if (std::fclose(f) != 0) ok = false;
+    if (!ok) file_log("copy write failed", dst);
+    *out = Value::make_int(ok ? 1 : 0);
+    return true;
+}
+
+bool file_move(Vm &, const Args &a, Value *out, std::string *err)
+{
+    const std::string *from;
+    const std::string *to;
+    std::string src, dst;
+    if (!want("File.move", a, 2, err) ||
+        !get_s("File.move", a[0], &from, err) ||
+        !get_s("File.move", a[1], &to, err) ||
+        !file_path("File.move", *from, &src, err) ||
+        !file_path("File.move", *to, &dst, err))
+        return false;
+    bool ok = ::rename(src.c_str(), dst.c_str()) == 0;
+    if (!ok) file_log("move failed", src);
+    *out = Value::make_int(ok ? 1 : 0);
+    return true;
+}
+
+bool file_exists(Vm &, const Args &a, Value *out, std::string *err)
+{
+    const std::string *arg;
+    std::string path;
+    if (!want("File.exists", a, 1, err) || !get_s("File.exists", a[0], &arg, err))
+        return false;
+    if (!file_path("File.exists", *arg, &path, err)) return false;
+    *out = Value::make_int(fs::exists(path) ? 1 : 0);
     return true;
 }
 
@@ -2413,16 +3215,16 @@ const std::vector<Entry> &table()
     {"java.game.GameLogic", "kismajomCheck", "([Ljava.lang.String;)I", nullptr, true},
     {"java.lang.System", "exit", "()V", nullptr, true},
     {"java.lang.System", "exit", "(Ljava.lang.String;)V", noop_void, false},
-    {"java.lang.System", "log", "(Ljava.lang.String;)V", nullptr, true},
-    {"java.lang.System", "gc", "()I", nullptr, true},
+    {"java.lang.System", "log", "(Ljava.lang.String;)V", system_log, false},
+    {"java.lang.System", "gc", "()I", system_gc, false},
     {"java.lang.System", "runFinalization", "()I", zero_int, false},
     {"java.lang.System", "analyze", "(Ljava.lang.Object;)V", noop_void, false},
     {"java.lang.System", "analyze", "(I)V", noop_void, false},
     {"java.lang.System", "analyze", "(F)V", noop_void, false},
     {"java.lang.System", "arraycopy", "(Ljava.lang.Object;ILjava.lang.Object;II)V", system_arraycopy, false},
     {"java.lang.System", "currentTime", "()F", system_current_time, false},
-    {"java.lang.System", "simTime", "()F", nullptr, true},
-    {"java.lang.System", "timeWarp", "(F)F", nullptr, true},
+    {"java.lang.System", "simTime", "()F", system_sim_time, false},
+    {"java.lang.System", "timeWarp", "(F)F", system_time_warp, false},
     {"java.lang.System", "openLib", "(Ljava.lang.String;)I", nullptr, true},
     {"java.lang.System", "compileAll", "(Ljava.lang.String;)I", nullptr, true},
     {"java.lang.System", "info", "(I)Ljava.lang.String;", nullptr, true},
@@ -2433,7 +3235,7 @@ const std::vector<Entry> &table()
     {"java.lang.System", "getConfigOptions", "()V", nullptr, true},
     {"java.lang.System", "isLoadingReset", "()V", nullptr, true},
     {"java.lang.System", "isLoading", "()I", nullptr, true},
-    {"java.lang.System", "memUsage", "()I", nullptr, true},
+    {"java.lang.System", "memUsage", "()I", system_mem_usage, false},
     {"java.lang.Float", "toString", "(FLjava.lang.String;)Ljava.lang.String;", float_tostring, false},
     {"java.lang.Integer", "toString", "(I)Ljava.lang.String;", int_tostring, false},
     {"java.lang.Integer", "toHexString", "(I)Ljava.lang.String;", int_tohexstring, false},
@@ -2452,16 +3254,16 @@ const std::vector<Entry> &table()
     {"java.lang.Vector3", "<init>", "(Ljava.lang.Ypr;)", vec_ctor_ypr, false},
     {"java.lang.Ypr", "<init>", "(Ljava.lang.Vector3;)", ypr_ctor_vector, false},
     {"java.lang.Ypr", "mul", "(Ljava.lang.Ypr;)V", ypr_mul, false},
-    {"java.lang.Thread", "init", "(Ljava.lang.String;)V", nullptr, true},
-    {"java.lang.Thread", "start", "()V", nullptr, true},
-    {"java.lang.Thread", "stop", "()V", nullptr, true},
-    {"java.lang.Thread", "isAlive", "()I", nullptr, true},
-    {"java.lang.Thread", "getPriority", "()I", nullptr, true},
-    {"java.lang.Thread", "setPriority", "(I)V", nullptr, true},
-    {"java.lang.Thread", "sleep", "(F)V", nullptr, true},
-    {"java.lang.Thread", "suspend", "()V", nullptr, true},
-    {"java.lang.Thread", "resume", "()V", nullptr, true},
-    {"java.lang.Thread", "setDaemon", "(I)V", nullptr, true},
+    {"java.lang.Thread", "init", "(Ljava.lang.String;)V", thread_init, false},
+    {"java.lang.Thread", "start", "()V", thread_start, false},
+    {"java.lang.Thread", "stop", "()V", thread_stop, false},
+    {"java.lang.Thread", "isAlive", "()I", thread_is_alive, false},
+    {"java.lang.Thread", "getPriority", "()I", thread_get_priority, false},
+    {"java.lang.Thread", "setPriority", "(I)V", thread_set_priority, false},
+    {"java.lang.Thread", "sleep", "(F)V", thread_sleep, false},
+    {"java.lang.Thread", "suspend", "()V", thread_suspend, false},
+    {"java.lang.Thread", "resume", "()V", thread_resume, false},
+    {"java.lang.Thread", "setDaemon", "(I)V", thread_set_daemon, false},
     {"java.lang.Object", "wait", "()V", nullptr, true},
     {"java.lang.Object", "notify", "()V", nullptr, true},
     {"java.lang.Object", "notifyAll", "()V", nullptr, true},
@@ -2493,20 +3295,20 @@ const std::vector<Entry> &table()
     {"java.io.MouseCursor", "getPos", "()Ljava.lang.Vector3;", nullptr, true},
     {"java.io.MouseCursor", "getPickedPos", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", nullptr, true},
     {"java.io.MouseCursor", "getPos", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", nullptr, true},
-    {"java.io.File", "open", "(I)I", nullptr, true},
-    {"java.io.File", "close", "()V", nullptr, true},
-    {"java.io.File", "delete", "(Ljava.lang.String;)I", nullptr, true},
-    {"java.io.File", "copy", "(Ljava.lang.String;Ljava.lang.String;)I", nullptr, true},
-    {"java.io.File", "move", "(Ljava.lang.String;Ljava.lang.String;)I", nullptr, true},
-    {"java.io.File", "exists", "(Ljava.lang.String;)I", nullptr, true},
-    {"java.io.File", "write", "(I)I", nullptr, true},
-    {"java.io.File", "write", "(F)I", nullptr, true},
-    {"java.io.File", "write", "(Ljava.util.resource.ResourceRef;)I", nullptr, true},
-    {"java.io.File", "write", "(Ljava.lang.String;)I", nullptr, true},
-    {"java.io.File", "readInt", "()I", nullptr, true},
-    {"java.io.File", "readFloat", "()F", nullptr, true},
-    {"java.io.File", "readResID", "()I", nullptr, true},
-    {"java.io.File", "readString", "()Ljava.lang.String;", nullptr, true},
+    {"java.io.File", "open", "(I)I", file_open, false},
+    {"java.io.File", "close", "()V", file_close, false},
+    {"java.io.File", "delete", "(Ljava.lang.String;)I", file_delete, false},
+    {"java.io.File", "copy", "(Ljava.lang.String;Ljava.lang.String;)I", file_copy, false},
+    {"java.io.File", "move", "(Ljava.lang.String;Ljava.lang.String;)I", file_move, false},
+    {"java.io.File", "exists", "(Ljava.lang.String;)I", file_exists, false},
+    {"java.io.File", "write", "(I)I", file_write_int, false},
+    {"java.io.File", "write", "(F)I", file_write_int, false},
+    {"java.io.File", "write", "(Ljava.util.resource.ResourceRef;)I", file_write_ref, false},
+    {"java.io.File", "write", "(Ljava.lang.String;)I", file_write_string, false},
+    {"java.io.File", "readInt", "()I", file_read_int, false},
+    {"java.io.File", "readFloat", "()F", file_read_float, false},
+    {"java.io.File", "readResID", "()I", file_read_res_id, false},
+    {"java.io.File", "readString", "()Ljava.lang.String;", file_read_string, false},
     {"java.io.FindFile", "first", "(Ljava.lang.String;I)Ljava.lang.String;", nullptr, true},
     {"java.io.FindFile", "next", "()Ljava.lang.String;", nullptr, true},
     {"java.io.FindFile", "close", "()V", nullptr, true},

@@ -8,6 +8,8 @@ bin/
 .rea/
 
 # build output
+build/
+build-win/
 obj/
 *.pdb
 

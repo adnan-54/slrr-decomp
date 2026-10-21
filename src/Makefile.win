@@ -1,6 +1,6 @@
 # 32-bit Windows (PE32 i386) build of the engine library.
-# Same sources as the Linux library in Makefile, plus platform/fs.cpp, linked
-# into probe.dll with a single exported C entry point.
+# Same sources as the Linux library in Makefile, plus platform/fs.cpp and the
+# DirectInput8 input backend, linked into probe.dll with one exported entry.
 # Usage: make -C src -f Makefile.win -j4
 CXX := i686-w64-mingw32-g++
 AR  := i686-w64-mingw32-ar
@@ -15,8 +15,14 @@ LIB_SRC  := script/classfile.cpp script/vm.cpp script/natives.cpp \
             resource/rpk.cpp resource/rdb.cpp resource/manager.cpp \
             parts/cfg.cpp physics/shape.cpp physics/world.cpp \
             physics/mesh.cpp mesh/scx.cpp \
-            vehicle/vehicle.cpp app/boot.cpp game/runtime.cpp \
-            platform/fs.cpp
+            vehicle/vehicle.cpp app/boot.cpp game/runtime.cpp game/car.cpp \
+            platform/fs.cpp input/backend.cpp input/device.cpp \
+            input/controller.cpp input/hotkeys.cpp input/cursor.cpp \
+            input/platform_backend.cpp \
+            render/device.cpp render/scene.cpp render/ui.cpp \
+            render/d3d9.cpp \
+            audio/audio.cpp audio/sfx.cpp audio/music.cpp audio/mixer.cpp \
+            audio/dsound.cpp
 LIB_OBJ  := $(LIB_SRC:%.cpp=$(BUILD)/%.o)
 LIB      := $(BUILD)/libengine.a
 PROBE    := $(BUILD)/probe.dll
@@ -34,7 +40,8 @@ $(LIB): $(LIB_OBJ)
 # the probe calls.
 $(PROBE): $(BUILD)/tools/probe.o $(LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< \
-		-Wl,--whole-archive $(LIB) -Wl,--no-whole-archive
+		-Wl,--whole-archive $(LIB) -Wl,--no-whole-archive \
+		-ld3d9 -ld3dx9_32 -ldinput8 -ldsound -ldxguid -luser32
 
 clean:
 	rm -rf $(BUILD)
