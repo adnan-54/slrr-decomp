@@ -1,6 +1,6 @@
 ---
 id: 053
-status: draft
+status: blocked  # needs untraced helpers or a missing service (physics body / collision / type manager); see UNRESOLVED
 branch:
 depends: []
 ---
