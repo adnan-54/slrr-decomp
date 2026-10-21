@@ -28,6 +28,7 @@
 #include "game/runtime.h"
 #include "platform/fs.h"
 #include "script/vm.h"
+#include "vehicle/dyno.h"
 
 namespace {
 
@@ -2771,6 +2772,88 @@ bool wr_set_opp_wheel(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// ---- java.game.parts.DynoData ----
+
+// 0x4cc2b0 / 0x4cc1b0 table interpolation. rpm has already been checked >= 0.
+float dyno_lerp(const EngineModel &e, const std::vector<float> &t, float rpm)
+{
+    float result = 0.0f;
+    int32_t i = 1;
+    if (1 < e.count) {
+        int32_t x = e.step;
+        while ((float)x <= rpm) {
+            i++;
+            x += e.step;
+            if (e.count <= i) return result;
+        }
+        // INVENTED: the exe reads the table pointer blindly; guard short tables.
+        if (t.size() <= (size_t)i) return result;
+        result = ((rpm - (float)((i - 1) * e.step)) *
+                      (t[(size_t)i] - t[(size_t)i - 1]) /
+                      (float)e.step) +
+                 t[(size_t)i - 1];
+    }
+    return result;
+}
+
+// Shared prologue of getTorque/getHP. *e is null when the exe returns 0.0f.
+bool dyno_arg(const Vm &vm, const Args &a, const char *who, const EngineModel **e,
+              float *rpm, std::string *err)
+{
+    *e = nullptr;
+    if (!want(who, a, 3, err)) return false;
+    Object *self;
+    float nitro;
+    if (!receiver_object(who, a, &self, err) ||
+        !get_f(who, a[1], rpm, err) || !get_f(who, a[2], &nitro, err))
+        return false;
+    (void)nitro;
+    if (!vm.find_class("java.lang.Native")) return true;
+    const EngineModel *m = game::dyno_data(self);
+    if (m && 0.0f <= *rpm) *e = m;
+    return true;
+}
+
+// 0x4cc3b0 DynoData.newNative
+bool dd_new_native(Vm &, const Args &a, Value *out, std::string *err)
+{
+    Object *self;
+    if (!receiver_object("DynoData.newNative", a, &self, err)) return false;
+    game::attach_dyno(self);
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4cc150 DynoData.deleteNative
+bool dd_delete_native(Vm &, const Args &a, Value *out, std::string *err)
+{
+    Object *self;
+    if (!receiver_object("DynoData.deleteNative", a, &self, err)) return false;
+    game::detach_dyno(self);
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4cc2b0 DynoData.getTorque
+bool dd_get_torque(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    const EngineModel *e;
+    float rpm;
+    if (!dyno_arg(vm, a, "DynoData.getTorque", &e, &rpm, err)) return false;
+    *out = Value::make_float(e ? dyno_lerp(*e, e->torque_table[0], rpm) : 0.0f);
+    return true;
+}
+
+// 0x4cc1b0 DynoData.getHP
+bool dd_get_hp(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    const EngineModel *e;
+    float rpm;
+    if (!dyno_arg(vm, a, "DynoData.getHP", &e, &rpm, err)) return false;
+    *out = Value::make_float(e ? dyno_lerp(*e, e->power_table[0], rpm) : 0.0f);
+    return true;
+}
+
 bool pt_get_slots(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!want("Part.getSlots", a, 1, err)) return false;
@@ -3372,11 +3455,11 @@ const std::vector<Entry> &table()
     {"java.game.parts.Part", "setSfxLoopParams", "(FF)I", pt_set_sfx_loop_params, false},
     {"java.game.parts.Part", "flap", "(I)I", nullptr, true},
     {"java.game.parts.Part", "install_OK", "(Ljava.util.resource.GameRef;ILjava.util.resource.GameRef;ILjava.lang.Vector3;)[I", nullptr, true},
-    {"java.game.parts.DynoData", "newNative", "()V", nullptr, true},
-    {"java.game.parts.DynoData", "deleteNative", "()V", nullptr, true},
+    {"java.game.parts.DynoData", "newNative", "()V", dd_new_native, false},
+    {"java.game.parts.DynoData", "deleteNative", "()V", dd_delete_native, false},
     {"java.game.parts.DynoData", "calcDyno", "(F)F", nullptr, true},
-    {"java.game.parts.DynoData", "getTorque", "(FF)F", nullptr, true},
-    {"java.game.parts.DynoData", "getHP", "(FF)F", nullptr, true},
+    {"java.game.parts.DynoData", "getTorque", "(FF)F", dd_get_torque, false},
+    {"java.game.parts.DynoData", "getHP", "(FF)F", dd_get_hp, false},
     {"java.io.Controller", "user_Add", "(IIIFFFF)I", nullptr, true},
     {"java.io.Controller", "user_Del", "(III)I", nullptr, true},
     {"java.io.Controller", "user_SetAxisSmooth", "(IFFFFF)I", nullptr, true},

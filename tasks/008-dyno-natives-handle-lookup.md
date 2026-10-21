@@ -1,7 +1,7 @@
 ---
 id: 008
-status: todo
-branch:
+status: implemented
+branch: card/008
 depends: [005, 004]
 ---
 # natives: DynoData.newNative/deleteNative/getTorque/getHP + payload binding

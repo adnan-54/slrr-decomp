@@ -14,6 +14,7 @@
 
 #include "parts/cfg.h"
 #include "resource/manager.h"
+#include "vehicle/dyno.h"
 
 namespace game {
 namespace {
@@ -41,6 +42,7 @@ Runtime *g_rt = nullptr;
 std::map<Runtime::Resource *, std::unique_ptr<PartData>> g_parts;
 std::map<Runtime::Resource *, std::unique_ptr<CarData>> g_cars;
 std::map<Object *, WheelData *> g_wheels;
+std::map<Object *, std::unique_ptr<EngineModel>> g_dynos;
 
 // The cfg ref sits on the record's native line, possibly on a super record.
 bool load_native_cfg(Runtime &rt, Runtime::Resource *r, const char *native,
@@ -392,11 +394,35 @@ WheelData *wheel_data(Object *wrapper)
     return it == g_wheels.end() ? nullptr : it->second;
 }
 
+EngineModel *dyno_data(Object *wrapper)
+{
+    auto it = g_dynos.find(wrapper);
+    return it == g_dynos.end() ? nullptr : it->second.get();
+}
+
+EngineModel *attach_dyno(Object *wrapper)
+{
+    if (!wrapper) return nullptr;
+    auto it = g_dynos.find(wrapper);
+    if (it == g_dynos.end())
+        it = g_dynos.emplace(wrapper, std::make_unique<EngineModel>()).first;
+    return it->second.get();
+}
+
+void detach_dyno(Object *wrapper)
+{
+    auto it = g_dynos.find(wrapper);
+    if (it == g_dynos.end()) return;
+    it->second->free_tables();
+    g_dynos.erase(it);
+}
+
 // shortcut: payloads keyed by Runtime address; a Runtime destroyed and recreated
 // at the same address would see stale entries (tools create one per process).
 void reset(Runtime *rt)
 {
     g_wheels.clear();
+    g_dynos.clear();
     g_cars.clear();
     g_parts.clear();
     g_rt = rt;

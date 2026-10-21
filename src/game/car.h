@@ -18,6 +18,7 @@
 
 class Vm;
 struct Object;
+struct EngineModel;
 
 namespace game {
 
@@ -185,6 +186,10 @@ PartData *part_data(Runtime &rt, Runtime::Resource *r);
 CarData *car_data(Runtime &rt, Runtime::Resource *r);
 void bind_wheel(Object *wrapper, WheelData *w);
 WheelData *wheel_data(Object *wrapper);
+// DynoData native handle (Native__instanceToHandle 0x4ecc70 / FUN_004ed320).
+EngineModel *dyno_data(Object *wrapper);
+EngineModel *attach_dyno(Object *wrapper);  // creates if missing, returns it
+void detach_dyno(Object *wrapper);          // frees it
 // Drop all payloads when a new Runtime takes over (tests/tools create several).
 void reset(Runtime *rt = nullptr);
 
