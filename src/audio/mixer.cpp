@@ -8,8 +8,9 @@ namespace audio {
 SoftwareMixer::SoftwareMixer()
 {
     for (int i = 0; i < kBuses; i++) {
-        min_distance_[i] = 1.0f;
-        max_distance_[i] = 100.0f;
+        // Sound resource defaults of FUN_00525d90 (mindist 5, maxdist 1000).
+        min_distance_[i] = 5.0f;
+        max_distance_[i] = 1000.0f;
     }
 }
 
@@ -42,7 +43,7 @@ void SoftwareMixer::set_bus_distances(int bus, float min_distance,
 {
     if (bus < 0 || bus >= kBuses)
         return;
-    min_distance_[bus] = min_distance;
+    min_distance_[bus] = min_distance <= 0.001f ? 0.001f : min_distance;
     max_distance_[bus] = max_distance;
 }
 
@@ -62,6 +63,9 @@ void SoftwareMixer::set_listener(const float pos[3])
         listener_[i] = pos[i];
 }
 
+// FUN_005476e0, software 3D branch (DAT_0079a0c0 == 0): the source point is
+// taken off the radius sphere, its distance clamped to [min, max], and the gain
+// is min/d * (max - d)/(max - min), capped at 1.
 float SoftwareMixer::distance_gain(int bus, const float pos[3],
                                    float radius) const
 {
@@ -69,21 +73,33 @@ float SoftwareMixer::distance_gain(int bus, const float pos[3],
         return 0.0f;
     const float min_d = min_distance_[bus];
     const float max_d = max_distance_[bus];
-    const float dx = pos[0] - listener_[0];
-    const float dy = pos[1] - listener_[1];
-    const float dz = pos[2] - listener_[2];
-    const float d2 = dx * dx + dy * dy + dz * dz;
-    float d = sqrtf(d2);
-    if (radius > 0.0f)
-        d -= radius;
-    if (d < min_d)
+    float p[3];
+    source_point(pos, radius, listener_, p);
+    const float dx = p[0] - listener_[0];
+    const float dy = p[1] - listener_[1];
+    const float dz = p[2] - listener_[2];
+    float d = sqrtf(dx * dx + dy * dy + dz * dz);
+    if (d <= min_d)
         d = min_d;
-    if (d > max_d)
+    if (max_d <= d)
         d = max_d;
-    if (max_d <= min_d || d <= 0.0f)
-        return 1.0f;
-    const float gain = (max_d - d) / (max_d - min_d) * min_d / d;
-    return gain > 1.0f ? 1.0f : gain;
+    float linear = 1.0f;
+    if (0.0f < max_d - min_d)
+        linear = (max_d - d) / (max_d - min_d);
+    const float gain = 1.0f / d * min_d * linear;
+    return 1.0f <= gain ? 1.0f : gain;
+}
+
+// FUN_005476e0 scales the event volume by the distance gain and only then
+// quantizes it through the dB table (0x5e0648); index 0 makes it return 0, so
+// the voice is not started (FUN_005466d0) or is stopped (FUN_00548630).
+// The bus 2D flag (sound resource flags bit0, DAT_0079d580) is not modelled.
+float SoftwareMixer::voice_gain(int bus, const Voice &voice) const
+{
+    float volume = voice.volume;
+    if (!(voice.flags & kSfx2D))
+        volume *= distance_gain(bus, voice.pos, voice.radius);
+    return volume_gain(volume);
 }
 
 int SoftwareMixer::mix(int16_t *out, int frames)
@@ -103,10 +119,9 @@ int SoftwareMixer::mix(int16_t *out, int frames)
             (double)s.rate * (double)v.pitch / (double)kSampleRate;
         if (!(step > 0.0))
             continue;
-        float gain = 1.0f;
-        if (!(v.flags & kSfx2D))
-            gain = distance_gain(v.bus, v.pos, v.radius);
-        gain *= volume_gain(v.volume);
+        // INVENTED: no pan or doppler; FUN_005476e0 also sets SetPan from the
+        // listener basis and scales pitch by relative velocity (not ported).
+        const float gain = v.gain;
         const bool loop = (v.flags & kSfxLoop) != 0;
         bool produced = false;
         for (int f = 0; f < frames; f++) {
@@ -183,11 +198,9 @@ int SoftwareMixer::play(int bus, const Voice &voice_in)
         v.bus = bus;
         v.slot = slot;
         v.pitch = voice_in.pitch;
-        v.volume = voice_in.volume;
         v.flags = voice_in.flags;
-        v.radius = voice_in.radius;
-        for (int i = 0; i < 3; i++)
-            v.pos[i] = voice_in.pos[i];
+        v.gain = voice_gain(bus, voice_in);
+        v.active = v.gain > 0.0f;
         return handle_of(bus, slot);
     }
     return -1;
@@ -199,11 +212,10 @@ void SoftwareMixer::update(int handle, const Voice &voice_in)
     if (!v || !v->active)
         return;
     v->pitch = voice_in.pitch;
-    v->volume = voice_in.volume;
     v->flags = voice_in.flags;
-    v->radius = voice_in.radius;
-    for (int i = 0; i < 3; i++)
-        v->pos[i] = voice_in.pos[i];
+    v->gain = voice_gain(v->bus, voice_in);
+    if (v->gain <= 0.0f)
+        v->active = false;
 }
 
 bool SoftwareMixer::playing(int handle)
