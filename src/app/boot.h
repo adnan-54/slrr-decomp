@@ -47,3 +47,16 @@ class Boot {
     BootResult result_;
     bool attempted_ = false;
 };
+
+// Main-loop control gate of 0x47d760: every frame with more than 15 ms since
+// the last control step runs input::update (0x566160) with that interval.
+class FrameLoop {
+  public:
+    explicit FrameLoop(int start_ms) : last_control_ms_(start_ms) {}
+    // now_ms: the 0x569730 millisecond clock truncated to int.
+    void frame(int now_ms);
+    int last_control_ms() const { return last_control_ms_; }
+
+  private:
+    int last_control_ms_;
+};

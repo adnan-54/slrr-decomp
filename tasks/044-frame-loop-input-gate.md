@@ -1,7 +1,7 @@
 ---
 id: 044
-status: todo
-branch:
+status: implemented
+branch: card/044
 depends: [043]
 ---
 # app: FrameLoop — main-loop control gate (0x47d760) driving input::update

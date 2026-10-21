@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <set>
 
+#include "input/controller.h"
+
 namespace {
 
 const char *kEntryClass = "java.game.Init";
@@ -107,4 +109,14 @@ const BootResult &Boot::run(const std::string &rpk, const std::string &rdb)
     result_.ok = result_.packages > 0 && result_.entry_found && result_.clinit_ran &&
                  result_.errors.empty();
     return result_;
+}
+
+// 0x47d760 control gate.
+void FrameLoop::frame(int now_ms)
+{
+    if (now_ms - last_control_ms_ > 15) {
+        input::update((float)(now_ms - last_control_ms_) * 0.001f);  // 0x566160
+        // shortcut: sim step 0x47e050 and script timers 0x47b700 not ported; add them here.
+        last_control_ms_ = now_ms;
+    }
 }
