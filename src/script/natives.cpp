@@ -15,6 +15,7 @@
 #include <psapi.h>
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <map>
 #include <memory>
@@ -2035,6 +2036,155 @@ bool file_exists(Vm &, const Args &a, Value *out, std::string *err)
         return false;
     if (!file_path("File.exists", *arg, &path, err)) return false;
     *out = Value::make_int(fs::exists(path) ? 1 : 0);
+    return true;
+}
+
+// ---- java.io.FindFile ------------------------------------------------------
+
+struct FindList {
+    bool used = false;
+    std::vector<fs::FindEntry> e;
+    size_t cursor = 0;
+};
+
+// 0x7a59d0: 32 global match-list slots served by first/next/close.
+FindList g_find[32];
+
+// 0x5654c0 find_next: hand out the next entry of a slot.
+int find_next(int slot, std::string *name, bool *is_dir)
+{
+    // INVENTED: slot range check; the exe indexes the table unchecked.
+    if (slot < 0 || slot >= 32) return -1;
+    FindList &l = g_find[slot];
+    if (!l.used || l.cursor >= l.e.size()) return -1;
+    *name = l.e[l.cursor].name;
+    *is_dir = l.e[l.cursor].is_dir;
+    l.cursor++;
+    return 0;
+}
+
+// 0x5280c0 compare with fold=1: case-insensitive signed-char order (sort key).
+int find_compare(const fs::FindEntry &a, const fs::FindEntry &b)
+{
+    size_t i = 0;
+    for (;;) {
+        int ca = i < a.name.size() ? (signed char)a.name[i] : 0;
+        int cb = i < b.name.size() ? (signed char)b.name[i] : 0;
+        if (ca >= 'A' && ca <= 'Z') ca += 32;
+        if (cb >= 'A' && cb <= 'Z') cb += 32;
+        if (ca != cb) return ca < cb ? -1 : 1;
+        if (ca == 0) return 0;
+        i++;
+    }
+}
+
+// 0x5652c0 find_open: snapshot the whole match list, sorted, into a free slot.
+// Returns the slot, -2 when fs::find fails, -1 when all 32 slots are used.
+int find_open(const std::string &path, std::string *name, bool *is_dir)
+{
+    std::vector<fs::FindEntry> entries;
+    if (!fs::find(path, &entries)) return -2;
+    int slot = -1;
+    for (int i = 0; i < 32; i++)
+        if (!g_find[i].used) {
+            slot = i;
+            break;
+        }
+    if (slot < 0) return -1;
+    // INVENTED: stable order for names equal under folding (only possible on
+    // case-sensitive hosts).
+    std::stable_sort(entries.begin(), entries.end(),
+                     [](const fs::FindEntry &a, const fs::FindEntry &b) {
+                         return find_compare(a, b) < 0;
+                     });
+    g_find[slot].used = true;
+    g_find[slot].e = std::move(entries);
+    g_find[slot].cursor = 0;
+    find_next(slot, name, is_dir);
+    return slot;
+}
+
+// 0x565270 find_close: release a slot.
+void find_close(int slot)
+{
+    if ((unsigned)slot < 32) {
+        g_find[slot].used = false;
+        g_find[slot].e.clear();
+        g_find[slot].cursor = 0;
+    }
+}
+
+// 0x4ece80: missing or non-int instance field reads as the caller's default.
+int32_t find_field(Vm &vm, Object *self, const char *name, int32_t fallback)
+{
+    std::string e;
+    Value v;
+    if (!vm.get_instance_field(self, name, &v, &e) || v.kind != Value::Int)
+        return fallback;
+    return v.i;
+}
+
+// 0x4d9e90 FindFile.first
+bool ff_first(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *self;
+    const std::string *path;
+    int32_t flags;
+    if (!want("FindFile.first", a, 3, err) ||
+        !receiver_object("FindFile.first", a, &self, err) ||
+        !get_s("FindFile.first", a[1], &path, err) ||
+        !get_i("FindFile.first", a[2], &flags, err))
+        return false;
+    std::string p;
+    if (!file_path("FindFile.first", *path, &p, err)) return false;
+    *out = Value::make_null();
+    std::string name;
+    bool is_dir = false;
+    int h = find_open(p, &name, &is_dir);
+    std::string e;
+    vm.set_instance_field(self, "handle", Value::make_int(h), &e);
+    vm.set_instance_field(self, "flags", Value::make_int(flags), &e);
+    if (h < 0) return true;
+    for (;;) {
+        if (name != "." && name != ".." && (is_dir ? flags != 1 : flags < 2)) {
+            *out = Value::make_str(name);
+            return true;
+        }
+        if (find_next(h, &name, &is_dir) != 0) break;
+    }
+    return true;
+}
+
+// 0x4d9fb0 FindFile.next
+bool ff_next(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *self;
+    if (!receiver_object("FindFile.next", a, &self, err)) return false;
+    *out = Value::make_null();
+    int32_t h = find_field(vm, self, "handle", -1);
+    int32_t flags = find_field(vm, self, "flags", 0);
+    if (h < 0) return true;
+    std::string name;
+    bool is_dir = false;
+    while (find_next(h, &name, &is_dir) == 0) {
+        if (name != "." && name != ".." && (is_dir ? flags != 1 : flags < 2)) {
+            *out = Value::make_str(name);
+            break;
+        }
+    }
+    return true;
+}
+
+// 0x4d9e40 FindFile.close
+bool ff_close(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *self;
+    if (!receiver_object("FindFile.close", a, &self, err)) return false;
+    int32_t h = find_field(vm, self, "handle", -1);
+    std::string e;
+    vm.set_instance_field(self, "handle", Value::make_int(-1), &e);
+    if (h >= 0) find_close(h);
+    *out = Value::make_null();
     return true;
 }
 
@@ -4094,9 +4244,9 @@ const std::vector<Entry> &table()
     {"java.io.File", "readFloat", "()F", file_read_float, false},
     {"java.io.File", "readResID", "()I", file_read_res_id, false},
     {"java.io.File", "readString", "()Ljava.lang.String;", file_read_string, false},
-    {"java.io.FindFile", "first", "(Ljava.lang.String;I)Ljava.lang.String;", nullptr, true},
-    {"java.io.FindFile", "next", "()Ljava.lang.String;", nullptr, true},
-    {"java.io.FindFile", "close", "()V", nullptr, true},
+    {"java.io.FindFile", "first", "(Ljava.lang.String;I)Ljava.lang.String;", ff_first, false},
+    {"java.io.FindFile", "next", "()Ljava.lang.String;", ff_next, false},
+    {"java.io.FindFile", "close", "()V", ff_close, false},
     {"java.sound.Sound", "changeMusicSet", "(I)V", snd_change_music_set, false},
     {"java.sound.Sound", "nextTrack", "()V", snd_next_track, false},
     {"java.sound.Sound", "prevTrack", "()V", snd_prev_track, false},

@@ -1,7 +1,7 @@
 ---
 id: 026
-status: todo
-branch:
+status: implemented
+branch: card/026
 depends: [025]
 ---
 # io: FindFile.first / next / close
