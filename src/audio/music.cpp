@@ -134,6 +134,19 @@ int MusicSystem::next()
     return set->track;
 }
 
+int MusicSystem::first()
+{
+    MusicSet *set = current();
+    if (!set)
+        return -1;
+    stop_stream();
+    if (set->mode == 5)
+        set->mode = set->prev_mode;
+    set->track = 0;
+    start_set(*set);
+    return set->track;
+}
+
 int MusicSystem::prev()
 {
     MusicSet *set = current();
@@ -260,6 +273,12 @@ void MusicSystem::stop_stream()
     } else {
         stream_kind_ = 0;
     }
+}
+
+MusicSystem &music_system()
+{
+    static MusicSystem system;
+    return system;
 }
 
 }  // namespace audio

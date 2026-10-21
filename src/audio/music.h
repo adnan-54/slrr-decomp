@@ -74,6 +74,7 @@ struct MusicSystem {
     // 0x568a90: mode 5 with prev_mode = old mode, loop off, no start_set.
     void play_track(const std::string &path);
     int next();    // 0x568c70
+    int first();   // 0x568b10
     int prev();    // 0x568ca0
     int random();  // 0x568cd0
     // 0x4e4b40: accepted modes are 0..5; returns the resulting mode.
@@ -102,5 +103,8 @@ struct MusicSystem {
     int current_ = -1;
     int stream_kind_ = 0;
 };
+
+// One instance per process: exe statics, current set DAT_005fe3b8.
+MusicSystem &music_system();
 
 }  // namespace audio
