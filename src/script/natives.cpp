@@ -27,6 +27,7 @@
 #include "game/car.h"
 #include "game/runtime.h"
 #include "input/controller.h"
+#include "input/cursor.h"
 #include "input/device.h"
 #include "input/hotkeys.h"
 #include "platform/fs.h"
@@ -3598,6 +3599,107 @@ bool in_last_key(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// ---- java.io.MouseCursor ---------------------------------------------------
+
+// The exe reads the object's "cursor" field (a GameRef to the cursor resource);
+// an unset field or a native-object read failure is its null path.
+bool has_cursor(Vm &vm, Object *o)
+{
+    Value v;
+    std::string e;
+    return vm.get_instance_field(o, "cursor", &v, &e) && v.kind == Value::Obj &&
+           v.obj;
+}
+
+// 0x4df270 MouseCursor.getPos
+bool mc_get_pos(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("MouseCursor.getPos", a, 1, err) ||
+        !get_o("MouseCursor.getPos", a[0], &o, err))
+        return false;
+    if (!has_cursor(vm, o)) {
+        std::fprintf(stderr, "vm_mouse: Mighty Mouse ERROR 2\n");
+        *out = Value::make_null();
+        return true;
+    }
+    // INVENTED: no CursorSource is installed yet; the exe reads an uninitialized
+    // info block when the cursor resource does not answer.
+    float x = 0.0f, y = 0.0f;
+    input::cursor_pos(&x, &y);
+    float v[3] = {x, y, 0.0f};
+    Object *p = new_point(vm, "java.lang.Vector3", v, false, err);
+    if (!p) return false;
+    *out = Value::make_obj(p);
+    return true;
+}
+
+// 0x4df3b0 MouseCursor.getPos(Vector3 out): z is deliberately left untouched.
+bool mc_get_pos_out(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o, *dst;
+    if (!want("MouseCursor.getPos", a, 2, err) ||
+        !get_o("MouseCursor.getPos", a[0], &o, err) ||
+        !get_o("MouseCursor.getPos", a[1], &dst, err))
+        return false;
+    if (!has_cursor(vm, o)) {
+        std::fprintf(stderr, "vm_mouse: Mighty Mouse ERROR 2\n");
+        *out = Value::make_null();
+        return true;
+    }
+    // INVENTED: zeros without a CursorSource (see mc_get_pos).
+    float x = 0.0f, y = 0.0f;
+    input::cursor_pos(&x, &y);
+    if (!write_f(vm, dst, "x", x, err) || !write_f(vm, dst, "y", y, err))
+        return false;
+    *out = Value::make_obj(dst);
+    return true;
+}
+
+// 0x4def10 MouseCursor.getPickedPos
+bool mc_get_picked_pos(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("MouseCursor.getPickedPos", a, 1, err) ||
+        !get_o("MouseCursor.getPickedPos", a[0], &o, err))
+        return false;
+    if (!has_cursor(vm, o)) {
+        std::fprintf(stderr, "vm_mouse_getpickedpos: scripted resource not found\n");
+        *out = Value::make_null();
+        return true;
+    }
+    // INVENTED: zeros without a CursorSource (see mc_get_pos).
+    float v[3] = {0.0f, 0.0f, 0.0f};
+    input::cursor_picked_pos(v);
+    Object *p = new_point(vm, "java.lang.Vector3", v, false, err);
+    if (!p) return false;
+    *out = Value::make_obj(p);
+    return true;
+}
+
+// 0x4df100 MouseCursor.getPickedPos(Vector3 out)
+bool mc_get_picked_pos_out(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o, *dst;
+    if (!want("MouseCursor.getPickedPos", a, 2, err) ||
+        !get_o("MouseCursor.getPickedPos", a[0], &o, err) ||
+        !get_o("MouseCursor.getPickedPos", a[1], &dst, err))
+        return false;
+    if (!has_cursor(vm, o)) {
+        std::fprintf(stderr, "vm_mouse_getpickedpos: scripted resource not found\n");
+        *out = Value::make_null();
+        return true;
+    }
+    // INVENTED: zeros without a CursorSource (see mc_get_pos).
+    float v[3] = {0.0f, 0.0f, 0.0f};
+    input::cursor_picked_pos(v);
+    if (!write_f(vm, dst, "x", v[0], err) || !write_f(vm, dst, "y", v[1], err) ||
+        !write_f(vm, dst, "z", v[2], err))
+        return false;
+    *out = Value::make_obj(dst);
+    return true;
+}
+
 // ---- java.sound.Sound ------------------------------------------------------
 
 // 0x4e48f0 Sound.changeMusicSet(int id)
@@ -3974,10 +4076,10 @@ const std::vector<Entry> &table()
     {"java.io.Input", "deleteHotkey", "(Ljava.io.Hotkey;)V", in_delete_hotkey, false},
     {"java.io.Input", "checkHotkeys", "(Ljava.util.resource.GameRef;Ljava.render.Osd;)V", in_check_hotkeys, false},
     {"java.io.Input", "flushHotkeys", "()V", in_flush_hotkeys, false},
-    {"java.io.MouseCursor", "getPickedPos", "()Ljava.lang.Vector3;", nullptr, true},
-    {"java.io.MouseCursor", "getPos", "()Ljava.lang.Vector3;", nullptr, true},
-    {"java.io.MouseCursor", "getPickedPos", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", nullptr, true},
-    {"java.io.MouseCursor", "getPos", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", nullptr, true},
+    {"java.io.MouseCursor", "getPickedPos", "()Ljava.lang.Vector3;", mc_get_picked_pos, false},
+    {"java.io.MouseCursor", "getPos", "()Ljava.lang.Vector3;", mc_get_pos, false},
+    {"java.io.MouseCursor", "getPickedPos", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", mc_get_picked_pos_out, false},
+    {"java.io.MouseCursor", "getPos", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", mc_get_pos_out, false},
     {"java.io.File", "open", "(I)I", file_open, false},
     {"java.io.File", "close", "()V", file_close, false},
     {"java.io.File", "delete", "(Ljava.lang.String;)I", file_delete, false},

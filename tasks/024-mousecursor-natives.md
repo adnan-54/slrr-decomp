@@ -1,7 +1,7 @@
 ---
 id: 024
-status: todo
-branch:
+status: implemented
+branch: card/024
 depends: []
 ---
 # input: MouseCursor.getPos / getPickedPos (both overloads)
