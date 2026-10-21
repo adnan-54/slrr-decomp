@@ -252,7 +252,7 @@ Startup:
 
     exit: FUN_005449f0 (DirectInput shutdown)
 
-Per frame there is **no** dedicated engine input update in the main loop
+**Corrected in notes/18 §2: the main loop does call `0x566160(dt)` (device poll + controller tick) every >15 ms.** Original (wrong) text: per frame there is **no** dedicated engine input update in the main loop
 `FUN_0047d760`; scripts drive polling: `Input.getAxis`/`Controller.user_GetAxisVal`
 read device state on demand, `Input.checkHotkeys` is called by the game/UI layer,
 and `Input.lastKey` drains the buffered keyboard queue. [V for the main loop not

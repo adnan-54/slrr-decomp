@@ -34,7 +34,7 @@ Confidence: **observed** = read from decompile/xrefs; **inferred** = guessed fro
 - Per frame:
   - dt in `DAT_005f0c88` (seconds = ms*0.001). Smoothed value in `DAT_005f0c80` (from `FUN_0056a260(7)`).
   - Fixed-step-ish sub-loop `FUN_004563d0` / `FUN_004562c0` / `FUN_004563c0`, run unbounded when `DAT_005da464 <= 0` else capped to `res_lock` iterations (**inferred**: event/resource queue drain).
-  - Every >15 ms: `FUN_00566160(dt)`, `FUN_0047e050`, `FUN_0047b700`.
+  - Every >15 ms: `FUN_00566160(dt)` (input: device poll + controller tick, notes/18 §2), `FUN_0047e050` (sim step), `FUN_0047b700` (script timers → `Game__queueEvent`).
   - Every >7 ms: `FUN_0055cf20(10.0f)` if `[this+0x234]`.
   - `FUN_0047ba10(min(dt, DAT_005da468))` – **corrected after decompiling**: not a physics step. It walks the game-object linked list at `[this+0xa0]`, frees objects whose `+0x2c` is 0, and for live ones with state `+0x7c == 1` calls virtual methods and the `"animate"` handler (`FUN_0047dd50`), forwarding dt. So it is the per-object animate/update dispatch. Physics step still not located.
   - `FUN_0047d070` → `0x47c760`, `0x559f60`.
