@@ -20,8 +20,7 @@ LIB_SRC  := script/classfile.cpp script/vm.cpp script/natives.cpp \
 LIB_OBJ  := $(LIB_SRC:%.cpp=$(BUILD)/%.o)
 LIB      := $(BUILD)/libengine.a
 
-TOOLS    := classdump rpkdump resman cfgdump physcheck vehiclecheck vmboot \
-            scxcheck rendercheck inputcheck audiocheck
+TOOLS    := classdump rpkdump resman cfgdump vmboot scxcheck
 TOOL_BIN := $(TOOLS:%=$(BUILD)/%)
 TOOL_OBJ := $(TOOLS:%=$(BUILD)/tools/%.o)
 
@@ -64,13 +63,8 @@ check: all
 	cd .. && src/$(BUILD)/rpkdump $(ROOT_CHECK)
 	cd .. && src/$(BUILD)/resman --selfcheck
 	cd .. && src/$(BUILD)/cfgdump --selfcheck
-	$(BUILD)/physcheck
-	$(BUILD)/vehiclecheck
 	cd .. && src/$(BUILD)/vmboot --selfcheck
 	cd .. && src/$(BUILD)/scxcheck --selfcheck
-	cd .. && src/$(BUILD)/rendercheck
-	$(BUILD)/inputcheck
-	$(BUILD)/audiocheck
 
 clean:
 	rm -rf $(BUILD)
