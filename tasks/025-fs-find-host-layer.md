@@ -1,6 +1,6 @@
 ---
 id: 025
-status: implemented
+status: merged
 branch: card/025
 depends: []
 ---
