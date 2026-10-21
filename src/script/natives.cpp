@@ -1552,7 +1552,7 @@ bool gr_queue_event(Vm &, const Args &a, Value *out, std::string *err)
 // ---- java.lang.GameType events -------------------------------------------
 
 // 0x4dc780: typed->event_mask |= m (typed+0xa0).
-// INVENTED: a null receiver resource is ignored; the exe crashes.
+// A null receiver resource is ignored (0x4ebd90/0x4e8820 return 0 for it).
 bool gt_set_event_mask(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!need_rt("GameType.setEventMask", err)) return false;
@@ -1569,7 +1569,7 @@ bool gt_set_event_mask(Vm &, const Args &a, Value *out, std::string *err)
 }
 
 // 0x4dc4d0: typed->event_mask &= ~m.
-// INVENTED: a null receiver resource is ignored; the exe crashes.
+// A null receiver resource is ignored (0x4ebd90/0x4e8820 return 0 for it).
 bool gt_clear_event_mask(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!need_rt("GameType.clearEventMask", err)) return false;

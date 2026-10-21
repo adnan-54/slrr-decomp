@@ -1,6 +1,6 @@
 ---
 id: 004
-status: implemented
+status: merged
 branch: card/004
 depends: [001, 002, 003]
 ---
