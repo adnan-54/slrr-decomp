@@ -172,6 +172,26 @@ struct CarData {
     float ackermann = 0.0f;      // +0xa30
     float torque_base = 1.0f;    // +0xd4
     float nitro_torque_base = 1.0f;  // +0xd8
+    float max_rpm = 6500.0f;     // +0x18   INVENTED default (template not traced)
+    float rpm_limit = 6800.0f;   // +0x1c   INVENTED default
+    int32_t gears = 0;           // +0x20
+    float ratio[8] = {};         // +0x24..0x40
+    float rearend_ratio = 0.0f;  // +0x44
+    float clutch_f = 500.0f;     // +0xcc  template default (notes/09)
+    float starter_torque = 50.0f;    // +0xd0  template default
+    float inertia = 10.0f;       // +0xe4  template default
+    float idle_omega = 83.86f;   // +0xf0  template default (rad/s)
+    float friction_fwd = 1e-4f;  // +0xf4  template default
+    float friction_rev = 0.03f;  // +0xf8  template default
+    float rpm_trans_fwd = 0.0f;  // +0x808
+    float rpm_trans_rev = 0.0f;  // +0x80c
+    float sfx_starter_rpm = 0.0f;    // +0x810
+    float drag_center[3] = {};   // +0x910
+    float c_drag = 0.0f;         // +0x91c
+    float tank_nitro = 0.0f;     // +0xa4c
+    float consumption_nitro = 0.0f;  // +0xa58
+    float heat_capacity = 0.0f;  // car+0x1ebc  INVENTED initial 0
+    float cooling_coeff = 0.0f;  // car+0x1ec8  INVENTED initial 0
 
     // Engine torque curves: (rpm, torque) pairs, e+0/e+4 and e+8/e+0xc.
     std::vector<float> torque_rpm, torque_nm;

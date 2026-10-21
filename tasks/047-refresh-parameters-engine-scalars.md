@@ -1,7 +1,7 @@
 ---
 id: 047
-status: todo
-branch:
+status: implemented
+branch: card/047
 depends: [046]
 ---
 # vehicle: refreshParameters scalar fields (engine/gearbox/nitro/drag) into CarData

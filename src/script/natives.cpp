@@ -72,6 +72,9 @@ bool get_f(const char *who, const Value &v, float *out, std::string *err)
     return false;
 }
 
+// 0x4ec980 Instance__getFloatField (defined with the DynoData natives below).
+float dd_get_f(Vm &vm, Object *self, const char *name);
+
 bool get_s(const char *who, const Value &v, const std::string **out, std::string *err)
 {
     if (v.kind != Value::Str) {
@@ -2594,9 +2597,20 @@ bool ch_force_update(Vm &vm, const Args &a, Value *out, std::string *err)
     std::string e;  // Chassis.java updatevariables() runs dyno.calcDyno()
     Value r;
     rt->call_method(self, "updatevariables", {}, &r, &e);
+    c->inertia = dd_get_f(vm, self, "engine_inertia");
     // shortcut: installed parts' wear records (0x4a8060) not re-applied.
     c->torque_base = 1.0f;
     c->nitro_torque_base = 1.0f;
+    c->starter_torque = dd_get_f(vm, self, "starter_torque");
+    c->friction_fwd = dd_get_f(vm, self, "engine_friction_fwd");
+    c->friction_rev = dd_get_f(vm, self, "engine_friction_rev");
+    float idle_rpm = dd_get_f(vm, self, "engine_rpm_idle");
+    float idle_rad = idle_rpm * 0.016666668f;
+    c->idle_omega = idle_rad * 3.1415927f + idle_rad * 3.1415927f;
+    float mass = dd_get_f(vm, self, "engine_mass");
+    float old_heat = c->heat_capacity;
+    c->heat_capacity = mass * 8000.0f;
+    c->cooling_coeff = (old_heat * c->cooling_coeff) / (mass * 8000.0f);
     float f = health_factor(c->engine_damage);
     c->torque_health = c->torque_base * f;
     c->nitro_health = f * c->nitro_torque_base;
@@ -2613,6 +2627,36 @@ bool ch_force_update(Vm &vm, const Args &a, Value *out, std::string *err)
             c->dyno = game::dyno_data(dv.obj);
     }
     game::refresh_engine_curve(*c);
+    Value ratio;
+    if (vm.get_instance_field(self, "ratio", &ratio, &e) && ratio.kind == Value::Array &&
+        ratio.arr) {
+        size_t n = std::min(ratio.arr->elems.size(), (size_t)8);
+        for (size_t i = 0; i < n; i++) {
+            const Value &v = ratio.arr->elems[i];
+            c->ratio[i] = v.kind == Value::Float ? v.f : v.kind == Value::Int ? (float)v.i : 0.0f;
+        }
+    }
+    c->gears = find_field(vm, self, "gears", 0);
+    c->rearend_ratio = dd_get_f(vm, self, "rearend_ratio");
+    c->max_rpm = dd_get_f(vm, self, "maxRPM");
+    c->rpm_limit = dd_get_f(vm, self, "RPM_limit");
+    c->clutch_f = dd_get_f(vm, self, "ClutchF");
+    // shortcut: SFX_trans_fwd/rev, SFX_ignition resource refs and wheel slot rebinding not modelled.
+    c->rpm_trans_fwd = dd_get_f(vm, self, "rpm_trans_fwd");
+    c->rpm_trans_rev = dd_get_f(vm, self, "rpm_trans_rev");
+    c->sfx_starter_rpm = dd_get_f(vm, self, "sfx_starter_rpm");
+    c->horn_id = 0;
+    c->tank_nitro = dd_get_f(vm, self, "tank_nitro");
+    c->consumption_nitro = dd_get_f(vm, self, "consumption_nitro");
+    c->nitro = c->tank_nitro <= c->nitro ? c->tank_nitro : c->nitro;
+    Value dc;
+    Object *dco = vm.get_instance_field(self, "drag_center", &dc, &e) && dc.kind == Value::Obj
+                      ? dc.obj
+                      : nullptr;
+    c->drag_center[0] = dco ? dd_get_f(vm, dco, "x") : 0.0f;
+    c->drag_center[1] = dco ? dd_get_f(vm, dco, "y") : 0.0f;
+    c->drag_center[2] = dco ? dd_get_f(vm, dco, "z") : 0.0f;
+    c->c_drag = dd_get_f(vm, self, "C_drag");
     // shortcut: Vehicle__applyTuningOverrides 0x498020 not ported.
     *out = Value::make_null();
     return true;
