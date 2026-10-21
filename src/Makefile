@@ -11,12 +11,15 @@ LIB_SRC  := script/classfile.cpp script/vm.cpp script/natives.cpp \
             resource/rpk.cpp resource/rdb.cpp resource/manager.cpp \
             parts/cfg.cpp physics/shape.cpp physics/world.cpp physics/mesh.cpp \
             mesh/scx.cpp render/device.cpp render/scene.cpp render/ui.cpp \
-            render/recording.cpp vehicle/vehicle.cpp app/boot.cpp \
+            render/recording.cpp input/backend.cpp input/device.cpp \
+            input/controller.cpp input/hotkeys.cpp input/cursor.cpp \
+            input/platform_backend.cpp vehicle/vehicle.cpp app/boot.cpp \
             game/runtime.cpp game/car.cpp platform/fs.cpp
 LIB_OBJ  := $(LIB_SRC:%.cpp=$(BUILD)/%.o)
 LIB      := $(BUILD)/libengine.a
 
-TOOLS    := classdump rpkdump resman cfgdump physcheck vehiclecheck vmboot scxcheck rendercheck
+TOOLS    := classdump rpkdump resman cfgdump physcheck vehiclecheck vmboot \
+            scxcheck rendercheck inputcheck
 TOOL_BIN := $(TOOLS:%=$(BUILD)/%)
 TOOL_OBJ := $(TOOLS:%=$(BUILD)/tools/%.o)
 
@@ -64,6 +67,7 @@ check: all
 	cd .. && src/$(BUILD)/vmboot --selfcheck
 	cd .. && src/$(BUILD)/scxcheck --selfcheck
 	cd .. && src/$(BUILD)/rendercheck
+	$(BUILD)/inputcheck
 
 clean:
 	rm -rf $(BUILD)
