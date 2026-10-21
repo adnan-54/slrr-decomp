@@ -399,8 +399,11 @@ Allocation/update rules: [V]
 - `instance == 0` allocates a free slot and sets state 1.
 - otherwise find the slot matching `(instance, owner)` and update its event.
 - 2D events (flags & 4) get attenuation 0; positional events get
-  `clamp(dist^2 - radius^2, 16, 62500) / volume^2` [as decompiled; how the mixer
-  consumes this value is not traced [?]].
+  `clamp(dist^2 - radius^2, 16, 62500) / volume^2`. [V]
+- The attenuation is **only a priority key**: `FUN_005690a0` qsorts the slot
+  indices by it (`FUN_005689b0`, ascending) so the nearest/loudest events get the
+  available voices. It never reaches a voice; the voice calls receive the event
+  copy at slot+0x18 and recompute gain from scratch in `FUN_005476e0`. [V]
 
 `SfxRef.stop(instance)` 0x4e47d0 → `FUN_004eba90(instance)`; the runtime stop
 path is `FUN_00569020(instance, owner)` → `FUN_00546b00`.
@@ -417,6 +420,44 @@ Called from the main loop after the listener update:
 5. state 2 with DirectSound status flag bit 0 (finished) → stop, state reset
    (the code uses the constant `0x501502f9` in this reset path; its exact role
    is [?]).
+
+#### Voice gain/3D parameters `FUN_005476e0(bus, voice, event)` [V]
+
+Called by play `FUN_00546a90` → `FUN_005466d0` and update `FUN_00546b60` →
+`FUN_00548630`, with the event copy at slot+0x18 (relative offsets: +0x04
+volume, +0x08 2D pan, +0x0c pitch, +0x10 pos, +0x20 velocity = slot `vec1`,
++0x40 radius = slot+0x58). Per-bus state comes from `FUN_00546860` (bus create,
+called by the sound resource `FUN_005260b0`): `DAT_0079d600[bus]` min distance
+(floored at 0.001), `DAT_0079d800[bus]` max distance, `DAT_0079d580[bus]` 3D
+flag = `~resource_flags & 1`. The sound resource parser `FUN_00525d90` reads
+`sourcefile`/`volume`/`mindist`/`maxdist`/`instances`/`flags`, defaults
+1.0 / **5.0 / 1000.0** / 4 / 0 (asset +0x6c/+0x70/+0x74/+0x64/+0x68).
+
+- 2D bus or 2D event (flags & 4; `FUN_005466d0` also ORs 4 into the voice
+  flags of a 2D bus): `SetPan(table(event+0x08))`, volume unchanged.
+- Source point: radius > 0 → if `dist^2 >= r^2` the point on the sphere nearest
+  the listener (`pos + r/dist * (listener - pos)`), else the listener itself.
+- **No 3D hardware** (`DAT_0079a0c0 == 0`, software 3D):
+  `d = clamp(|point - listener|, min, max)`,
+  `lin = (max - d)/(max - min)` (1 when `max - min <= 0`),
+  `gain = min(1, min / d * lin)`, `volume *= gain`. Pan from the listener basis
+  (`atan2` of the up component, `SetPan` via the ±64 table `0x5e0748`); pitch
+  doppler `pitch *= 1 - dot(v_src - v_listener, rel)/d * 0.01` when pitch > 0
+  and d > 0.001.
+- **3D hardware** (`DAT_0079a0c0 != 0`): the game computes no gain.
+  `IDirectSound3DBuffer::SetPosition(point)` and `SetVelocity(vel)` (deferred,
+  committed by `FUN_00546c70` each service). Min/max distances are set once at
+  bus creation (`FUN_00546860`: `SetMinDistance(mindist)`, `SetMaxDistance(maxdist)`);
+  the listener (`FUN_00547580`, `SetAllParameters`) uses distance, rolloff and
+  doppler factors 1.0; 3D buffers are created with
+  `DSBCAPS_MUTE3DATMAXDISTANCE` (`FUN_005463a0`, flags 0x200b8/0x600b0). For a
+  2D event on a 3D buffer it sets `SetMode(DS3DMODE_DISABLE)`.
+- Then `SetVolume(table0x5e0648[(uint)(volume * 64)])` (0 dB above 64); index 0
+  returns 0 → play skips `Play`, update calls `Stop`. Frequency: pitch <= 0 →
+  bus base rate + random ±0x800, else from pitch, clamped 100..200000.
+
+`src/audio`: `SoftwareMixer` implements the software-3D gain (no pan/doppler,
+no bus 2D flag yet); `Ds8Backend` follows the hardware-3D branch.
 
 ### 2.3 `SfxTable` (looping engine/part sounds)
 
@@ -591,8 +632,9 @@ Engine sound path:
 5. `FUN_00566800(1|2)` object identity (likely camera basis vectors) and the
    exact camera-global to listener-field mapping.
 6. Audio: DirectShow vs direct-file decision logic; mixer thread internals;
-   DirectSound voice handle layout; how slot attenuation (+0x14) is consumed;
-   the `0x501502f9` reset constant; music-set +0x04/+0x10/+0x18 semantics;
+   (resolved: voice handle = `bus << 16 | buffer` (128 x 8); slot attenuation
+   (+0x14) is only the qsort key and `0x501502f9` = 1.0e10f sorts freed slots
+   last; voice gain is `FUN_005476e0`, see 2.2); music-set +0x04/+0x10/+0x18 semantics;
    the 64-entry attenuation curve at 0x5e0648.
 7. `Part.setSfxLoopParams`: which record +0x144/+0x148 belongs to and what
    consumes those values (engine loop volume/pitch).

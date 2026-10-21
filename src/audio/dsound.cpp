@@ -27,34 +27,27 @@ struct Ds8Backend::Impl {
 
 namespace {
 
-LONG ds_volume(float volume, float gain)
-{
-    int db = volume_db(volume);
-    if (db <= -10000 || gain <= 0.0f)
-        return DSBVOLUME_MIN;
-    db += (int)lrintf(2000.0f * log10f(gain));
-    if (db < DSBVOLUME_MIN)
-        db = DSBVOLUME_MIN;
-    if (db > DSBVOLUME_MAX)
-        db = DSBVOLUME_MAX;
-    return (LONG)db;
-}
-
+// Hardware 3D branch of FUN_005476e0 (DAT_0079a0c0 != 0): the game computes
+// no distance gain; the 3D buffer gets the source point and velocity and
+// DirectSound3D rolls off with the bus min/max distances set at creation
+// (FUN_00546860) and the listener rolloff factor 1.0 (FUN_00547580). 2D voices
+// get DS3DMODE_DISABLE. SetVolume takes the event volume only.
 void apply_voice(SoftwareMixer &mixer, int bus, IDirectSoundBuffer *buffer,
                  IDirectSound3DBuffer *buffer3d, const Voice &voice)
 {
-    float gain = 1.0f;
     DWORD mode = DS3DMODE_DISABLE;
     if (!(voice.flags & kSfx2D)) {
-        gain = mixer.distance_gain(bus, voice.pos, voice.radius);
+        float p[3];
+        source_point(voice.pos, voice.radius, mixer.listener(), p);
         mode = DS3DMODE_NORMAL;
-        buffer3d->SetPosition(voice.pos[0], voice.pos[1], voice.pos[2],
+        buffer3d->SetPosition(p[0], p[1], p[2], DS3D_IMMEDIATE);
+        buffer3d->SetVelocity(voice.vec1[0], voice.vec1[1], voice.vec1[2],
                               DS3D_IMMEDIATE);
         buffer3d->SetMinDistance(mixer.bus_min_distance(bus), DS3D_IMMEDIATE);
         buffer3d->SetMaxDistance(mixer.bus_max_distance(bus), DS3D_IMMEDIATE);
     }
     buffer3d->SetMode(mode, DS3D_IMMEDIATE);
-    buffer->SetVolume(ds_volume(voice.volume, gain));
+    buffer->SetVolume((LONG)volume_db(voice.volume));
     const MixSample *sample = mixer.sample(bus);
     DWORD rate = (DWORD)(sample ? sample->rate : kSampleRate);
     DWORD freq = (DWORD)lrintf((float)rate * voice.pitch);
@@ -116,8 +109,8 @@ bool Ds8Backend::init(void *hwnd)
         shutdown();
         return false;
     }
-    // Distance gain is computed by SoftwareMixer; the 3D listener only pans.
-    impl_->listener->SetRolloffFactor(0.0f, DS3D_IMMEDIATE);
+    // FUN_00547580 passes rolloff/distance/doppler factors 1.0.
+    impl_->listener->SetRolloffFactor(1.0f, DS3D_IMMEDIATE);
     impl_->listener->SetPosition(0.0f, 0.0f, 0.0f, DS3D_IMMEDIATE);
     use_software_ = false;
     return true;
@@ -202,7 +195,8 @@ int Ds8Backend::play(int bus, const Voice &voice)
     DSBUFFERDESC desc = {};
     desc.dwSize = sizeof desc;
     desc.dwFlags = DSBCAPS_CTRL3D | DSBCAPS_CTRLVOLUME |
-                   DSBCAPS_CTRLFREQUENCY | DSBCAPS_GETCURRENTPOSITION2;
+                   DSBCAPS_CTRLFREQUENCY | DSBCAPS_GETCURRENTPOSITION2 |
+                   DSBCAPS_MUTE3DATMAXDISTANCE;  // 0x20000, FUN_005463a0
     desc.dwBufferBytes = bytes;
     desc.lpwfxFormat = &format;
     if (FAILED(impl_->device->CreateSoundBuffer(&desc, &entry.buffer,

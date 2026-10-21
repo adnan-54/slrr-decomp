@@ -68,6 +68,26 @@ bool attenuation_of(const float pos[3], float radius, float volume,
     return true;
 }
 
+void source_point(const float pos[3], float radius, const float listener[3],
+                  float out[3])
+{
+    for (int i = 0; i < 3; i++)
+        out[i] = pos[i];
+    if (!(radius > 0.0f))
+        return;
+    const float v[3] = {listener[0] - pos[0], listener[1] - pos[1],
+                        listener[2] - pos[2]};
+    const float d2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+    if (radius * radius <= d2) {
+        const float s = radius / sqrtf(d2);
+        for (int i = 0; i < 3; i++)
+            out[i] = s * v[i] + pos[i];
+    } else {
+        for (int i = 0; i < 3; i++)
+            out[i] = listener[i];
+    }
+}
+
 VoicePool::VoicePool()
 {
     // FUN_00568b60 zeroes state/bus and marks every slot free by attenuation.

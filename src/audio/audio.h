@@ -114,6 +114,10 @@ bool in_range(const float pos[3], float radius, const float listener[3]);
 // writes distance^2 / volume^2 (no floor when radius <= 0).
 bool attenuation_of(const float pos[3], float radius, float volume,
                     const float listener[3], float *out);
+// Sound source point of FUN_005476e0: with radius > 0 the point on the sphere
+// nearest the listener, or the listener itself when it is inside the sphere.
+void source_point(const float pos[3], float radius, const float listener[3],
+                  float out[3]);
 
 // Low-level voice back end: FUN_00546a90 (play), 0x546b60 (update),
 // 0x546ab0 (playing), 0x546b00 (stop), 0x546c00 (available voices),
