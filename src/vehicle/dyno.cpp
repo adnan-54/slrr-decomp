@@ -183,8 +183,8 @@ void EngineModel::step_crank(int n)
             work_last = work;
             work = 0.0f;
             imep = (vd <= 1e-8f) ? 0.0f : work_last / vd;
-            torque = cylinders * imep * vd * 0.125f;
-            const float pi = rpm * imep * vd * 0.016666668f * cylinders;
+            torque = cylinders * ((imep * vd) * 0.125f); // exe product order
+            const float pi = ((rpm * (imep * vd)) * 0.016666668f) * cylinders;
             p_ind = pi;
             const float pf = rpm * rpm * rpm * 2e-08f;
             p_fric = pf;
@@ -194,7 +194,7 @@ void EngineModel::step_crank(int n)
         th += w * dt0;
         if (12.566371f < th) th -= 12.566371f; // 4*pi
         const float s = sinf(th), c = cosf(th);
-        X = sqrtf(L * L - s * crank_r * s * crank_r) + c * crank_r;
+        X = sqrtf(L * L - (s * crank_r) * (s * crank_r)) + c * crank_r;
         V = ((r0 + L) - X) * area + vmin;
         if (V < 1e-7f) {
             V = 1e-7f;

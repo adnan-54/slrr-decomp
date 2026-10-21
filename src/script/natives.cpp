@@ -4215,6 +4215,10 @@ bool snd_set_volume(Vm &, const Args &a, Value *out, std::string *err)
         !get_i("Sound.setVolume", a[0], &channel, err) ||
         !get_f("Sound.setVolume", a[1], &v, err))
         return false;
+    if ((uint32_t)channel >= 3) { // 0x4e4b80: other channels are ignored
+        *out = Value::make_null();
+        return true;
+    }
     audio::channel_volumes()[channel] = v;
     if (channel == 1) {
         // DAT_005dada4 is read by change_set; keep both copies equal.
