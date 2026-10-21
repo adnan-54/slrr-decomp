@@ -87,7 +87,7 @@ turbo (if rpm_turbo_mul > 0 and rpm_turbo_range > 0):
    T_in ·= s ; ρ_in ·= s ; P_in ·= s²          // boost is a pressure ratio − 1
 consumption limits (use the flow rates of the *previous* runCycle, i.e. previous rpm point):
    if 0 < max_fuel_consumption < fuel_rate(+0x198): H_in /= fuel_rate/max_fuel
-   if 0 < max_air_consumption  < air_rate(+0x19c):  ρ_in /= air_rate/max_air
+   if 0 < max_air_consumption  < air_rate(+0x19c):  P_in (+0x158) /= air_rate/max_air   // pressure, not ρ (re-verified 2026-10; tools/dyno_model.py divides rho_in: wrong)
 burn duration (+0x164) = time_burn·(1 − min(rpm·5e-5 (+0x20), 0.9))
 ```
 `EngineModel__boostGauge(rpm)` evaluates the same boost `b` and returns `(sqrt(b+1) − 1)/(sqrt(min(P_max, P_waste)) − 1)` (gauge fraction; note `sqrt(P)` not `sqrt(P+1)` in the denominator — preserved quirk).
@@ -164,6 +164,14 @@ W (+0x178) += (P + P0)/2 · (V − Vprev)        // trapezoidal p·dV
 
 ## How the vehicle uses it (`Vehicle__refreshParameters`)
 `d = e+0xc30`; if `d == 0` → 1-point zero tables. Else `e+0 = e+8 = d.count`, `e[4]` pairs `(i·step, d.torque[i])`, `e[0xc]` pairs `(i·step, d.nitroTorque[i] or d.torque[i])`, `e+0x14 = d.RPM_maxTorque`. `e+0xd4 = e+0xd8 = 1.0` (torque multipliers; `Chassis.setTorque` changes them) — so the in-game curve is the dyno's **indicated** torque in Nm; engine friction is added separately by `Engine__frictionTorque` (`notes/09-vehicle.md`), the dyno's `rpm³·2e-8` friction only affects the reported hp.
+
+## Details verified while writing task cards (2026-10)
+- Script fields are read with `Instance__getFloatField 0x4ec980`: a missing field or one whose descriptor is not `F` logs `vm_get_float_field: ...` and yields 0. All `DynoData.java` fields are `float` (also `cylinders`; struct `+0x14` holds a float, default 4.0f). `0x4ecff0` is a field-exists test (returns 0 when missing, 3 when present and no signature asked).
+- `stepCrank` caches `Vmin (+0x10)` and `Vtot (+0x70)` in locals clamped to ≥ 0 and writes them back at the end; the cycle-boundary `Vd` is `Vtot − Vmin` (not `+0x6c`). Volume: `V = ((r + L) − x)·A + Vmin`; if `V < 1e-7` the step ends with `V = 1e-7` after `t`/`θ` (and a possible cycle boundary) were already advanced. Polytropic exponents read from `0x59ab6c` = 1.3 (P) and `0x593704` = 0.3 (T).
+- Burn window (`ts = spark·Tc`, `te = ts + burn`, `te −= Tc` if `te > Tc`): inside = `ts < t ≤ te` (or `t > ts || t ≤ te` when `te ≤ ts`); inside → `b = (t − ts)/burn`, heat only if `b > 0` (a negative `b` is stored); outside → `b = 1` + heat if the previous `b > 0`, else 0.
+- `buildTables`: `count = (int)maxRPM / step` (int division), rpm stepped as int; peaks use strict `>`. The nitro pass calls it with `(int)(maxRPM / tablesize)` without the ≥ 1 clamp (0 → integer divide fault in the exe).
+- `setDefaults` calls `resetCycle` before any `updateGeometry` (reads uninitialised manifold/area on a fresh allocation; harmless, every rpm point resets again) and does not reset `fuel_rate/air_rate (+0x198/+0x19c)`: the first rpm point's consumption limit uses the previous `calcDyno`'s last rates (garbage on a fresh struct; only matters when `max_*_consumption > 0`).
+- `getTorque/getHP` return 0 when class `java.lang.Native` is missing, when the instance has no native, when `!(rpm ≥ 0)` (NaN too), when `count ≤ 1` and when `rpm ≥ (count−1)·step`.
 
 ## Open points
 - `+0x08` (1.029) and `+0x18` (1.0) are set but never read by the model.
