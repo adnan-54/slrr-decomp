@@ -12,21 +12,21 @@ static float clampf(float v, float lo, float hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+// Engine__torqueCurve 0x4a2dd0: 0 below the first point or past the last,
+// else lerp inside the first segment whose upper rpm is > q.
 static float sample_curve(const std::vector<TorquePoint> &pts, float rpm)
 {
-    if (pts.empty() || rpm < pts.front().rpm || rpm >= pts.back().rpm)
+    size_t n = pts.size();
+    if (n <= 1 || rpm < pts[0].rpm)
         return 0.0f;
-    for (size_t i = 1; i < pts.size(); i++) {
-        const TorquePoint &a = pts[i - 1];
-        const TorquePoint &b = pts[i];
-        if (rpm <= b.rpm) {
-            float den = b.rpm - a.rpm;
-            if (den <= 0.0f)
-                return a.value;
-            return a.value + (b.value - a.value) * (rpm - a.rpm) / den;
-        }
+    size_t i = 1;
+    while (pts[i].rpm <= rpm) {
+        if (++i >= n)
+            return 0.0f;
     }
-    return 0.0f; // unreachable (rpm < last), kept for -Wreturn-type clarity
+    const TorquePoint &a = pts[i - 1];
+    const TorquePoint &b = pts[i];
+    return a.value + (b.value - a.value) * (rpm - a.rpm) / (b.rpm - a.rpm);
 }
 
 float Engine::torque_at(float rpm) const { return sample_curve(torque_curve, rpm); }
