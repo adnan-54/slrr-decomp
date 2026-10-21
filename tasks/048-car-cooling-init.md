@@ -1,6 +1,6 @@
 ---
 id: 048
-status: draft
+status: todo
 branch: card/048
 depends: [047]
 ---
