@@ -3390,6 +3390,57 @@ bool ctl_user_get_axis_val(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4d4080 Controller.user_SetAxisSmooth: returns 1 even when unresolved.
+bool ctl_user_set_axis_smooth(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t vaxis;
+    float center_range, center_factor, opposite, same, power;
+    if (!want("Controller.user_SetAxisSmooth", a, 6, err) ||
+        !get_i("Controller.user_SetAxisSmooth", a[1], &vaxis, err) ||
+        !get_f("Controller.user_SetAxisSmooth", a[2], &center_range, err) ||
+        !get_f("Controller.user_SetAxisSmooth", a[3], &center_factor, err) ||
+        !get_f("Controller.user_SetAxisSmooth", a[4], &opposite, err) ||
+        !get_f("Controller.user_SetAxisSmooth", a[5], &same, err) ||
+        !get_f("Controller.user_SetAxisSmooth", a[6], &power, err))
+        return false;
+    if (input::Controller *c = controller_of(value_resource(a[0])))
+        c->set_axis_smooth(vaxis, center_range, center_factor, opposite, same,
+                           power);
+    *out = Value::make_int(1);
+    return true;
+}
+
+// 0x4d4180 Controller.user_SetAxisSpeed
+bool ctl_user_set_axis_speed(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t vaxis;
+    float speed;
+    if (!want("Controller.user_SetAxisSpeed", a, 2, err) ||
+        !get_i("Controller.user_SetAxisSpeed", a[1], &vaxis, err) ||
+        !get_f("Controller.user_SetAxisSpeed", a[2], &speed, err))
+        return false;
+    if (input::Controller *c = controller_of(value_resource(a[0])))
+        c->set_axis_speed(vaxis, speed);
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4d3fb0 Controller.user_SetAxisForce (native returns 1 in eax; Java sig V)
+bool ctl_user_set_axis_force(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t vaxis;
+    float force_c, force_f;
+    if (!want("Controller.user_SetAxisForce", a, 3, err) ||
+        !get_i("Controller.user_SetAxisForce", a[1], &vaxis, err) ||
+        !get_f("Controller.user_SetAxisForce", a[2], &force_c, err) ||
+        !get_f("Controller.user_SetAxisForce", a[3], &force_f, err))
+        return false;
+    if (input::Controller *c = controller_of(value_resource(a[0])))
+        c->set_axis_force(vaxis, force_c, force_f);
+    *out = Value::make_null();
+    return true;
+}
+
 // ---- java.io.Input ---------------------------------------------------------
 
 // 0x4de990 Input.getAxis
@@ -3412,6 +3463,47 @@ bool in_get_device_name(Vm &, const Args &a, Value *out, std::string *err)
         return false;
     const char *p = input::devices().device_name(i);
     *out = p ? Value::make_str(p) : Value::make_null();
+    return true;
+}
+
+// 0x4dea20 Input.mapAxis (static): instance -> its controller block.
+// INVENTED: unresolved instance is a no-op; the exe would dereference null.
+bool in_map_axis(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t l_axis, device, i_axis;
+    float i_from, i_to, l_from, l_to;
+    if (!want("Input.mapAxis", a, 8, err) ||
+        !get_i("Input.mapAxis", a[1], &l_axis, err) ||
+        !get_i("Input.mapAxis", a[2], &device, err) ||
+        !get_i("Input.mapAxis", a[3], &i_axis, err) ||
+        !get_f("Input.mapAxis", a[4], &i_from, err) ||
+        !get_f("Input.mapAxis", a[5], &i_to, err) ||
+        !get_f("Input.mapAxis", a[6], &l_from, err) ||
+        !get_f("Input.mapAxis", a[7], &l_to, err))
+        return false;
+    if (input::Controller *c = controller_of(value_resource(a[0])))
+        c->add(l_axis, device, i_axis, i_from, i_to, l_from, l_to);
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4deab0 Input.setAxisSmooth (static): set_axis_smooth with power = 1.0.
+// INVENTED: unresolved instance is a no-op; the exe would dereference null.
+bool in_set_axis_smooth(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t l_axis;
+    float center_range, center_factor, opposite, same;
+    if (!want("Input.setAxisSmooth", a, 6, err) ||
+        !get_i("Input.setAxisSmooth", a[1], &l_axis, err) ||
+        !get_f("Input.setAxisSmooth", a[2], &center_range, err) ||
+        !get_f("Input.setAxisSmooth", a[3], &center_factor, err) ||
+        !get_f("Input.setAxisSmooth", a[4], &opposite, err) ||
+        !get_f("Input.setAxisSmooth", a[5], &same, err))
+        return false;
+    if (input::Controller *c = controller_of(value_resource(a[0])))
+        c->set_axis_smooth(l_axis, center_range, center_factor, opposite, same,
+                           1.0f);
+    *out = Value::make_null();
     return true;
 }
 
@@ -3738,11 +3830,11 @@ const std::vector<Entry> &table()
     {"java.game.parts.DynoData", "getHP", "(FF)F", dd_get_hp, false},
     {"java.io.Controller", "user_Add", "(IIIFFFF)I", ctl_user_add, false},
     {"java.io.Controller", "user_Del", "(III)I", ctl_user_del, false},
-    {"java.io.Controller", "user_SetAxisSmooth", "(IFFFFF)I", nullptr, true},
-    {"java.io.Controller", "user_SetAxisSpeed", "(IF)V", nullptr, true},
+    {"java.io.Controller", "user_SetAxisSmooth", "(IFFFFF)I", ctl_user_set_axis_smooth, false},
+    {"java.io.Controller", "user_SetAxisSpeed", "(IF)V", ctl_user_set_axis_speed, false},
     {"java.io.Controller", "user_Reset", "()V", ctl_user_reset, false},
     {"java.io.Controller", "user_GetAxisVal", "(I)F", ctl_user_get_axis_val, false},
-    {"java.io.Controller", "user_SetAxisForce", "(IFF)V", nullptr, true},
+    {"java.io.Controller", "user_SetAxisForce", "(IFF)V", ctl_user_set_axis_force, false},
     {"java.game.GameLogic", "kismajomCheck", "([Ljava.lang.String;)I", nullptr, true},
     {"java.lang.System", "exit", "()V", nullptr, true},
     {"java.lang.System", "exit", "(Ljava.lang.String;)V", noop_void, false},
@@ -3813,8 +3905,8 @@ const std::vector<Entry> &table()
     {"java.lang.Math", "atan2", "(FF)F", math_atan2, false},
     {"java.io.Input", "getAxis", "(II)F", in_get_axis, false},
     {"java.io.Input", "getDeviceName", "(I)Ljava.lang.String;", in_get_device_name, false},
-    {"java.io.Input", "mapAxis", "(Ljava.util.resource.GameRef;IIIFFFF)V", nullptr, true},
-    {"java.io.Input", "setAxisSmooth", "(Ljava.util.resource.GameRef;IFFFF)V", nullptr, true},
+    {"java.io.Input", "mapAxis", "(Ljava.util.resource.GameRef;IIIFFFF)V", in_map_axis, false},
+    {"java.io.Input", "setAxisSmooth", "(Ljava.util.resource.GameRef;IFFFF)V", in_set_axis_smooth, false},
     {"java.io.Input", "activeAxis", "(I)I", in_active_axis, false},
     {"java.io.Input", "axisName", "(II)Ljava.lang.String;", in_axis_name, false},
     {"java.io.Input", "lastKey", "()I", in_last_key, false},

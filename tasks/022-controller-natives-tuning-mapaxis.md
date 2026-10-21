@@ -1,7 +1,7 @@
 ---
 id: 022
-status: todo
-branch:
+status: implemented
+branch: card/022
 depends: [021]
 ---
 # input: Controller tuning natives + Input.mapAxis / Input.setAxisSmooth
