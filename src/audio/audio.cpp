@@ -296,6 +296,30 @@ float ChannelVolumes::operator[](int channel) const
     return 0.0f;
 }
 
+ChannelVolumes &channel_volumes()
+{
+    static ChannelVolumes volumes;  // DAT_005dada0/a4/a8
+    return volumes;
+}
+
+HardwareCaps &hardware_caps()
+{
+    static HardwareCaps caps;  // BSS at 0x79a0d0 before GetCaps
+    return caps;
+}
+
+// 0x546be0
+bool has_3d_hardware()
+{
+    return hardware_caps().free_hw_3d_all > 3;
+}
+
+// 0x546bf0
+bool has_mix_hardware()
+{
+    return hardware_caps().free_hw_mixing_all > 3;
+}
+
 void AudioAssets::set(int32_t resource, int32_t bus, float volume)
 {
     assets[resource] = Asset{bus, volume};

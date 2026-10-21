@@ -1,7 +1,7 @@
 ---
 id: 002
-status: todo
-branch:
+status: implemented
+branch: card/002
 depends: []
 ---
 # audio: process-wide channel volumes + DirectSound hardware caps

@@ -168,6 +168,19 @@ struct ChannelVolumes {
     float operator[](int channel) const;
 };
 
+// DAT_005dada0/a4/a8: one process-wide instance.
+ChannelVolumes &channel_volumes();
+
+// DSCAPS at 0x79a0d0 (filled by GetCaps in 0x546da0): the two counters the exe
+// tests.
+struct HardwareCaps {
+    uint32_t free_hw_mixing_all = 0;  // DSCAPS+0x20, DAT_0079a0f0
+    uint32_t free_hw_3d_all = 0;      // DSCAPS+0x38, DAT_0079a108
+};
+HardwareCaps &hardware_caps();
+bool has_3d_hardware();   // 0x546be0
+bool has_mix_hardware();  // 0x546bf0
+
 // Sound assets as resolved by Resource__getTyped: bus at asset+0x60 and base
 // volume at asset+0x6c, keyed here by SfxRef resource id.
 struct AudioAssets {

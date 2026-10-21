@@ -77,6 +77,15 @@ bool Ds8Backend::init(void *hwnd)
     if (FAILED(DirectSoundCreate8(nullptr, &impl_->device, nullptr)) ||
         !impl_->device)
         return false;
+    // 0x546da0 GetCaps: the exe fails init when the device has no caps.
+    DSCAPS caps = {};
+    caps.dwSize = sizeof caps;
+    if (FAILED(impl_->device->GetCaps(&caps))) {
+        shutdown();
+        return false;
+    }
+    hardware_caps().free_hw_mixing_all = caps.dwFreeHwMixingAllBuffers;
+    hardware_caps().free_hw_3d_all = caps.dwFreeHw3DAllBuffers;
     if (FAILED(impl_->device->SetCooperativeLevel((HWND)hwnd,
                                                   DSSCL_PRIORITY))) {
         shutdown();
