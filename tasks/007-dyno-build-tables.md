@@ -1,7 +1,7 @@
 ---
 id: 007
-status: todo
-branch:
+status: implemented
+branch: card/007
 depends: [006]
 ---
 # dyno: setupRpmPoint (0x4f4ca0), runCycle (0x4f4560), buildTables (0x4f4640)
