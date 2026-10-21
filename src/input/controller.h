@@ -6,6 +6,7 @@
 
 namespace input {
 
+class Backend;
 class DeviceTable;
 
 // Frame clock (DAT_007a5b54 ms, DAT_007a5b60 stamp). Call once per frame
@@ -13,6 +14,9 @@ class DeviceTable;
 void begin_frame(float dt_seconds);
 float frame_ms();
 uint32_t frame_stamp();
+
+// 0x566160: frame clock, device poll, every controller's tick + FF pass.
+void update(float dt_seconds);
 
 // One virtual axis record (stride 0x30). Offsets: +0 value, +4 kind,
 // +8 stamp, +0xc center_range, +0x10 center_factor, +0x14 opposite,
@@ -51,6 +55,9 @@ class Controller {
     static constexpr int kMappingCount = 152;
 
     explicit Controller(DeviceTable &devices);
+    ~Controller();
+    Controller(const Controller &) = delete;
+    Controller &operator=(const Controller &) = delete;
 
     // user_Add: first free mapping, returns slot+1 (0 when full, -1 invalid).
     int add(int vaxis, int device, int index, float in_min, float in_max,
@@ -65,16 +72,20 @@ class Controller {
     void set_axis_speed(int vaxis, float speed);
     // Per-frame force pass over analog (kind 0) records.
     void tick();
+    void force_feedback_pass(Backend &backend);  // 0x566160 inner loop
 
     // 0x566160 tests and the native wrappers read these directly.
     const AxisRecord &axis(int vaxis) const { return axes_[vaxis]; }
     int mapping_count() const { return mapping_count_; }
 
   private:
+    friend void update(float);
+
     DeviceTable &devices_;
     int mapping_count_ = 0;
     AxisRecord axes_[kAxisCount];
     Mapping mappings_[kMappingCount];
+    Controller *next_ = nullptr;  // +0x2144
 };
 
 }  // namespace input

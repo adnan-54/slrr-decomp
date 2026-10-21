@@ -1,7 +1,7 @@
 ---
 id: 043
-status: todo
-branch:
+status: implemented
+branch: card/043
 depends: [020]
 ---
 # input: per-frame input update 0x566160 (poll + controller registry + tick + force feedback)

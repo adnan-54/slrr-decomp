@@ -14,6 +14,9 @@ float g_frame_ms = 0.0f;
 // 1 keeps a controller usable without begin_frame (reset records have stamp 0).
 uint32_t g_stamp = 1;
 const float kFrameScale = 1.0f;  // DAT_007a5b5c
+// 0x566010 registry (DAT_007a5b68 / DAT_007a5b64), newest first.
+Controller *g_controllers = nullptr;
+int g_controller_count = 0;
 
 }  // namespace
 
@@ -33,7 +36,25 @@ uint32_t frame_stamp()
     return g_stamp;
 }
 
-Controller::Controller(DeviceTable &devices) : devices_(devices) {}
+Controller::Controller(DeviceTable &devices) : devices_(devices)
+{
+    // 0x566010 register (newest first; the exe never unregisters)
+    next_ = g_controllers;
+    g_controllers = this;
+    g_controller_count++;
+}
+
+Controller::~Controller()
+{
+    // INVENTED: the exe never destroys controller blocks.
+    Controller **link = &g_controllers;
+    while (*link && *link != this)
+        link = &(*link)->next_;
+    if (*link) {
+        *link = next_;
+        g_controller_count--;
+    }
+}
 
 int Controller::add(int vaxis, int device, int index, float in_min, float in_max,
                     float out_min, float out_max)
@@ -217,6 +238,38 @@ void Controller::tick()
             delta *= 1.0f - f;
         }
         a.value = clamp_unit(a.value + delta);
+    }
+}
+
+void Controller::force_feedback_pass(Backend &backend)
+{
+    // 0x566160 inner loop
+    for (int i = 0; i < kMappingCount; i++) {
+        const Mapping &m = mappings_[i];
+        if (m.index >= 1)
+            continue;
+        if (m.vaxis < 0 || m.vaxis >= kAxisCount)  // INVENTED: bounds guard (exe indexes unchecked)
+            continue;
+        const AxisRecord &a = axes_[m.vaxis];
+        if (a.kind == 0 || devices_.type(m.device) != kJoystick)
+            continue;
+        if (m.device < 0 || m.device >= devices_.count())
+            continue;
+        backend.force_feedback(m.device, -a.force_c, a.force_f);
+    }
+}
+
+void update(float dt_seconds)
+{
+    // 0x566160
+    begin_frame(dt_seconds);
+    Backend *b = backend();
+    if (b)
+        devices().poll(*b);
+    for (Controller *c = g_controllers; c; c = c->next_) {
+        c->tick();
+        if (b)
+            c->force_feedback_pass(*b);
     }
 }
 

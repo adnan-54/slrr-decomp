@@ -55,6 +55,14 @@ class Backend {
     virtual float poll_interval_ms() = 0;
     // One buffered keyboard event as (ansi << 16) | scan; 0 when empty.
     virtual uint32_t read_key() { return 0; }
+    // 0x544b40 -> 0x5434e0: joystick force-feedback effect (a = -force_c, b = force_f).
+    // shortcut: no-op everywhere; the DirectInput effect (0x5434e0) is not decoded yet.
+    virtual void force_feedback(int device, float a, float b)
+    {
+        (void)device;
+        (void)a;
+        (void)b;
+    }
 };
 
 // Feeds states directly; the Linux/test backend.
