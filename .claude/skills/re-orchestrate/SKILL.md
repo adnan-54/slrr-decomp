@@ -19,7 +19,7 @@ echo "${ANTHROPIC_BASE_URL:-anthropic}"   # api.deepseek.com => DeepSeek mode
 ```
 
 - **Claude mode** (Claude plan, flat cost up to usage limits): RE, task cards, review, merge.
-- **DeepSeek mode** (`claude --settings .claude/settings2.json`, pay per token): only implement queued cards.
+- **DeepSeek mode** (`claude --settings .claude/settings-deepseek.json`, pay per token): only implement queued cards.
 
 The provider changes per *phase*, so a round is:
 `Claude: RE + cards` → `DeepSeek: implement cards` → `Claude: review + merge + next cards`.
