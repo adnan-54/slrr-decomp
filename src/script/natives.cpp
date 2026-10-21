@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "engine/math.h"
+#include "game/car.h"
 #include "game/runtime.h"
 #include "script/vm.h"
 
@@ -424,26 +425,10 @@ bool ypr_write(Vm &vm, Object *o, const float v[3], std::string *err)
            write_f(vm, o, "r", v[2], err);
 }
 
-// 0x569970 Math__matToYpr.
+// 0x569970 Math__matToYpr (shared with the car damage strings).
 void mat_to_ypr(const Mat34 &m, float out[3])
 {
-    float yaw, pitch, roll;
-    if (m.m[10] == 0.0f && m.m[2] == 0.0f) {
-        yaw = atan2f(m.m[0], -m.m[1]);
-        pitch = 3.1415927f;
-        roll = 0.0f;
-    } else {
-        yaw = atan2f(m.m[2], m.m[10]);
-        roll = atan2f(m.m[4], m.m[5]);
-        float c = cosf(roll);
-        if (c > 0.0f)
-            pitch = atan2f(-(m.m[6] * c), m.m[5]);
-        else
-            pitch = atan2f(m.m[6] * c, -m.m[5]);
-    }
-    out[0] = yaw;
-    out[1] = pitch;
-    out[2] = roll;
+    game::mat_to_ypr(m, out);
 }
 
 bool vec_length(Vm &vm, const Args &a, Value *out, std::string *err)
@@ -1240,6 +1225,1064 @@ bool gt_create_native_instance(Vm &, const Args &a, Value *out, std::string *err
     return true;
 }
 
+// ---- java.game.parts: Chassis / WheelRef / Part ---------------------------
+
+// A script object's handle target is the instance or type record carrying the
+// payload (Part/Chassis resolve typed data through the receiver).
+game::PartData *part_of(const Args &a)
+{
+    Runtime *rt = game_rt();
+    return rt ? game::part_data(*rt, value_resource(a[0])) : nullptr;
+}
+
+game::CarData *car_of(const Args &a)
+{
+    Runtime *rt = game_rt();
+    return rt ? game::car_data(*rt, value_resource(a[0])) : nullptr;
+}
+
+game::WheelData *wheel_of(const Args &a)
+{
+    if (a.empty() || a[0].kind != Value::Obj || !a[0].obj) return nullptr;
+    return game::wheel_data(a[0].obj);
+}
+
+game::Slot *slot_by_id(game::PartData *p, int32_t id)
+{
+    if (!p) return nullptr;
+    for (game::Slot &s : p->slots)
+        if (s.id == id) return &s;
+    return nullptr;
+}
+
+float health_factor(float w)
+{
+    return w >= 1.0f ? 0.100000024f : 1.0f - w * w * 0.6f;
+}
+
+bool car_float_get(const char *who, const Args &a, float game::CarData::*f,
+                   Value *out, std::string *err)
+{
+    if (!want(who, a, 1, err)) return false;
+    game::CarData *c = car_of(a);
+    *out = Value::make_float(c ? c->*f : 0.0f);
+    return true;
+}
+
+bool car_float_set(const char *who, const Args &a, float game::CarData::*f,
+                   Value *out, std::string *err)
+{
+    float v;
+    if (!want(who, a, 2, err) || !get_f(who, a[1], &v, err)) return false;
+    game::CarData *c = car_of(a);
+    if (c) c->*f = v;
+    *out = Value::make_null();
+    return true;
+}
+
+bool wheel_float_get(const char *who, const Args &a, float game::WheelData::*f,
+                     Value *out, std::string *err)
+{
+    if (!want(who, a, 1, err)) return false;
+    game::WheelData *w = wheel_of(a);
+    *out = Value::make_float(w ? w->*f : 0.0f);
+    return true;
+}
+
+bool wheel_float_set(const char *who, const Args &a, float game::WheelData::*f,
+                     Value *out, std::string *err)
+{
+    float v;
+    if (!want(who, a, 2, err) || !get_f(who, a[1], &v, err)) return false;
+    game::WheelData *w = wheel_of(a);
+    if (w) w->*f = v;
+    *out = Value::make_null();
+    return true;
+}
+
+bool ch_get_material_index(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Chassis.getMaterialIndex", a, 1, err)) return false;
+    game::CarData *c = car_of(a);
+    *out = Value::make_int(c ? c->material_index : -1);
+    return true;
+}
+
+bool ch_get_max_steer(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return car_float_get("Chassis.getMaxSteer", a, &game::CarData::max_steer, out, err);
+}
+
+bool ch_set_max_steer(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return car_float_set("Chassis.setMaxSteer", a, &game::CarData::max_steer, out, err);
+}
+
+bool ch_get_shifting(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Chassis.getShifting", a, 1, err)) return false;
+    game::CarData *c = car_of(a);
+    *out = Value::make_int(c ? c->shifting : 0);
+    return true;
+}
+
+bool ch_get_nitroing(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Chassis.getNitroing", a, 1, err)) return false;
+    game::CarData *c = car_of(a);
+    *out = Value::make_int(c ? (int32_t)((c->flags >> 11) & 1) : 0);
+    return true;
+}
+
+bool ch_get_engine_temp(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return car_float_get("Chassis.getEngineTemp", a, &game::CarData::engine_temp, out, err);
+}
+
+bool ch_get_ai_float(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t id;
+    if (!want("Chassis.getAIparam_float", a, 2, err) ||
+        !get_i("Chassis.getAIparam_float", a[1], &id, err))
+        return false;
+    game::CarData *c = car_of(a);
+    float v = 0.0f;  // shortcut: invalid ids read uninitialized exe stack
+    if (c) {
+        switch (id) {
+        case 0: v = c->throttle; break;
+        case 1: v = c->brake_input; break;
+        case 2: v = c->handbrake_input; break;
+        case 3: v = c->steer_input; break;
+        case 4: v = c->clutch_input; break;
+        case 5: v = c->nitro_input; break;
+        default: break;
+        }
+    }
+    *out = Value::make_float(v);
+    return true;
+}
+
+bool ch_get_ai_int(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t id;
+    if (!want("Chassis.getAIparam_int", a, 2, err) ||
+        !get_i("Chassis.getAIparam_int", a[1], &id, err))
+        return false;
+    game::CarData *c = car_of(a);
+    int32_t v = id;
+    if (c && id == 6) v = c->gear;
+    else if (c && id == 7) v = c->gear_copy;
+    else if (c && id == 8) v = c->horn_id;
+    *out = Value::make_int(v);
+    return true;
+}
+
+bool ch_set_ai_float(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t id;
+    float v;
+    if (!want("Chassis.setAIparam_float", a, 3, err) ||
+        !get_i("Chassis.setAIparam_float", a[1], &id, err) ||
+        !get_f("Chassis.setAIparam_float", a[2], &v, err))
+        return false;
+    if (game::CarData *c = car_of(a)) {
+        switch (id) {
+        case 0: c->throttle = v; break;
+        case 1: c->brake_input = v; break;
+        case 2: c->handbrake_input = v; break;
+        case 3: c->steer_input = v; break;
+        case 4: c->clutch_input = v; break;
+        case 5: c->nitro_input = v; break;
+        default: break;
+        }
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+bool ch_set_ai_int(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t id, v;
+    if (!want("Chassis.setAIparam_int", a, 3, err) ||
+        !get_i("Chassis.setAIparam_int", a[1], &id, err) ||
+        !get_i("Chassis.setAIparam_int", a[2], &v, err))
+        return false;
+    if (game::CarData *c = car_of(a)) {
+        if (id == 6) c->gear = v;
+        else if (id == 7) c->gear_copy = v;
+        else if (id == 8) c->horn_id = v;
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+bool ch_get_rpm(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Chassis.getRPM", a, 1, err)) return false;
+    game::CarData *c = car_of(a);
+    *out = Value::make_float(c ? c->rpm_smoothed * 9.549296f : 0.0f);
+    return true;
+}
+
+bool ch_set_rpm(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return car_float_set("Chassis.setRPM", a, &game::CarData::rpm_raw, out, err);
+}
+
+bool ch_get_torque(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float rpm, nitro;
+    if (!want("Chassis.getTorque", a, 3, err) ||
+        !get_f("Chassis.getTorque", a[1], &rpm, err) ||
+        !get_f("Chassis.getTorque", a[2], &nitro, err))
+        return false;
+    game::CarData *c = car_of(a);
+    if (!c) {
+        *out = Value::make_float(0.0f);
+        return true;
+    }
+    float t = c->torque_at(rpm) * c->torque_health * (1.0f - nitro) +
+              c->nitro_torque_at(rpm) * c->nitro_health * nitro;
+    *out = Value::make_float(t);
+    return true;
+}
+
+bool ch_set_torque(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("Chassis.setTorque", a, 2, err) ||
+        !get_f("Chassis.setTorque", a[1], &v, err))
+        return false;
+    if (game::CarData *c = car_of(a)) {
+        c->torque_base = v;
+        c->nitro_torque_base = v;
+        float f = health_factor(c->engine_damage);
+        c->torque_health = v * f;
+        c->nitro_health = f * v;
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+bool ch_set_cooling(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float lo, air, speed;
+    if (!want("Chassis.setCooling", a, 4, err) ||
+        !get_f("Chassis.setCooling", a[1], &lo, err) ||
+        !get_f("Chassis.setCooling", a[2], &air, err) ||
+        !get_f("Chassis.setCooling", a[3], &speed, err))
+        return false;
+    if (lo < 0.0f) lo = 10.0f;
+    if (air < 0.0f) air = 50.0f;
+    if (speed <= 0.0f) speed = 0.0f;
+    if (game::CarData *c = car_of(a)) {
+        c->cooling_low = lo;
+        c->cooling_air = air;
+        c->cooling_speed = speed;
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+bool ch_get_mileage(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return car_float_get("Chassis.getMileage", a, &game::CarData::mileage, out, err);
+}
+
+bool ch_set_mileage(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return car_float_set("Chassis.setMileage", a, &game::CarData::mileage, out, err);
+}
+
+bool ch_set_exhaust_min_vol(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return car_float_set("Chassis.setSfxExhaustMinVol", a,
+                         &game::CarData::exhaust_min_vol, out, err);
+}
+
+bool ch_set_steer_wheel_radius(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return car_float_set("Chassis.setSteerWheelRadius", a,
+                         &game::CarData::steer_wheel_radius, out, err);
+}
+
+bool ch_set_steer_wheel(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float radius, angle;
+    if (!want("Chassis.setSteerWheel", a, 3, err) ||
+        !get_f("Chassis.setSteerWheel", a[1], &radius, err) ||
+        !get_f("Chassis.setSteerWheel", a[2], &angle, err))
+        return false;
+    if (game::CarData *c = car_of(a)) {
+        c->steer_wheel_radius = radius;
+        c->steer_wheel_angle = angle;
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+bool ch_set_ackermann(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return car_float_set("Chassis.setAckermann", a, &game::CarData::ackermann,
+                         out, err);
+}
+
+bool ch_get_nitro(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return car_float_get("Chassis.getNitro", a, &game::CarData::nitro, out, err);
+}
+
+bool ve_has_crime(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return car_float_get("Vehicle.hasCrime", a, &game::CarData::crime, out, err);
+}
+
+bool ch_get_wheels(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Chassis.getWheels", a, 1, err)) return false;
+    game::CarData *c = car_of(a);
+    *out = Value::make_int(c ? (int32_t)c->wheels.size() : 0);
+    return true;
+}
+
+bool ch_get_wheel(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    int32_t i;
+    if (!want("Chassis.getWheel", a, 2, err) ||
+        !get_i("Chassis.getWheel", a[1], &i, err))
+        return false;
+    *out = Value::make_null();
+    game::CarData *c = car_of(a);
+    if (!c || i < 0 || (size_t)i >= c->wheels.size()) return true;
+    ClassState *cs = vm.find_class("java.game.parts.WheelRef");
+    if (!cs) {
+        *err = "Chassis.getWheel: java.game.parts.WheelRef is not loaded";
+        return false;
+    }
+    Object *o = vm.new_object(cs, err);
+    if (!o) return false;
+    game::bind_wheel(o, &c->wheels[(size_t)i]);
+    *out = Value::make_obj(o);
+    return true;
+}
+
+bool ch_get_wheel_damage(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t i;
+    if (!want("Chassis.getWheelDamage", a, 2, err) ||
+        !get_i("Chassis.getWheelDamage", a[1], &i, err))
+        return false;
+    *out = Value::make_null();
+    game::CarData *c = car_of(a);
+    // The exe guards `count < index` (off-by-one); use the safe bound.
+    if (!c || i < 0 || (size_t)i >= c->wheels.size()) return true;
+    const game::WheelData &w = c->wheels[(size_t)i];
+    *out = Value::make_str(w.flags & 0x20u ? game::wheel_damage(w)
+                                           : std::string());
+    return true;
+}
+
+bool ch_set_wheel_damage(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t i;
+    const std::string *s;
+    if (!want("Chassis.setWheelDamage", a, 3, err) ||
+        !get_i("Chassis.setWheelDamage", a[1], &i, err) ||
+        !get_s("Chassis.setWheelDamage", a[2], &s, err))
+        return false;
+    game::CarData *c = car_of(a);
+    if (c && i >= 0 && (size_t)i < c->wheels.size())
+        game::set_wheel_damage(c->wheels[(size_t)i], *s);
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_get_pos(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!want("WheelRef.getPos", a, 1, err)) return false;
+    *out = Value::make_null();
+    game::WheelData *w = wheel_of(a);
+    if (!w) return true;
+    float v[3] = {w->template_pos[0],
+                  w->hub[1] - w->template_pos[1] - w->base_len - w->travel,
+                  w->template_pos[2]};
+    Object *o = new_point(vm, "java.lang.Vector3", v, false, err);
+    if (!o) return false;
+    *out = Value::make_obj(o);
+    return true;
+}
+
+bool wr_get_ypr(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!want("WheelRef.getYpr", a, 1, err)) return false;
+    *out = Value::make_null();
+    game::WheelData *w = wheel_of(a);
+    if (!w) return true;
+    float v[3];
+    mat_to_ypr(w->rot, v);
+    Object *o = new_point(vm, "java.lang.Ypr", v, true, err);
+    if (!o) return false;
+    *out = Value::make_obj(o);
+    return true;
+}
+
+bool wr_get_drive(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return wheel_float_get("WheelRef.getDrive", a, &game::WheelData::drive, out, err);
+}
+
+bool wr_get_steer(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return wheel_float_get("WheelRef.getSteer", a, &game::WheelData::steer, out, err);
+}
+
+bool wr_get_radius(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return wheel_float_get("WheelRef.getRadius", a, &game::WheelData::radius, out, err);
+}
+
+bool wr_get_brake(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return wheel_float_get("WheelRef.getBrake", a, &game::WheelData::brake, out, err);
+}
+
+bool wr_get_hbrake(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return wheel_float_get("WheelRef.getHBrake", a, &game::WheelData::hbrake, out, err);
+}
+
+bool wr_set_pos(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    float v[3];
+    if (!want("WheelRef.setPos", a, 2, err) ||
+        !read_vec_arg(vm, "WheelRef.setPos", a[1], v, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) w->set_pos(v);
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_ypr(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!want("WheelRef.setYpr", a, 2, err)) return false;
+    game::WheelData *w = wheel_of(a);
+    if (a[1].kind == Value::Null) {
+        if (w) w->set_ypr(nullptr);
+        *out = Value::make_null();
+        return true;
+    }
+    Object *o;
+    float v[3];
+    if (!get_o("WheelRef.setYpr", a[1], &o, err) || !ypr_read(vm, o, v, err))
+        return false;
+    if (w) w->set_ypr(v);
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_drive(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("WheelRef.setDrive", a, 2, err) ||
+        !get_f("WheelRef.setDrive", a[1], &v, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) {
+        w->drive = v;
+        w->drive_eff = v;
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_steer(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return wheel_float_set("WheelRef.setSteer", a, &game::WheelData::steer, out, err);
+}
+
+bool wr_set_radius(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("WheelRef.setRadius", a, 2, err) ||
+        !get_f("WheelRef.setRadius", a[1], &v, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) w->set_radius(v);
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_width(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("WheelRef.setWidth", a, 2, err) ||
+        !get_f("WheelRef.setWidth", a[1], &v, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) w->half_width = v * 0.5f;
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_cpatch(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float half, angle, offset;
+    if (!want("WheelRef.setCPatch", a, 4, err) ||
+        !get_f("WheelRef.setCPatch", a[1], &half, err) ||
+        !get_f("WheelRef.setCPatch", a[2], &angle, err) ||
+        !get_f("WheelRef.setCPatch", a[3], &offset, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) {
+        w->cpatch_halfwidth = fabsf(half);
+        w->cpatch_sin = fabsf(half * sinf(angle));
+        w->cpatch_offset = offset;
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_friction(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("WheelRef.setFriction", a, 2, err) ||
+        !get_f("WheelRef.setFriction", a[1], &v, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) w->set_friction(v);
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_frictn_x(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("WheelRef.setFrictn_x", a, 2, err) ||
+        !get_f("WheelRef.setFrictn_x", a[1], &v, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) w->pacejka[12] = v;
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_sliction(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("WheelRef.setSliction", a, 2, err) ||
+        !get_f("WheelRef.setSliction", a[1], &v, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) w->pacejka[0] = v;
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_stiffness(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("WheelRef.setStiffness", a, 2, err) ||
+        !get_f("WheelRef.setStiffness", a[1], &v, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) w->pacejka[4] = v;
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_roll_res(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return wheel_float_set("WheelRef.setRollRes", a, &game::WheelData::roll_res,
+                           out, err);
+}
+
+bool wr_set_bearing(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return wheel_float_set("WheelRef.setBearing", a,
+                           &game::WheelData::damage_visual, out, err);
+}
+
+bool wr_set_max_load(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("WheelRef.setMaxLoad", a, 2, err) ||
+        !get_f("WheelRef.setMaxLoad", a[1], &v, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) w->pacejka[11] = v;
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_load_smooth(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("WheelRef.setLoadSmooth", a, 2, err) ||
+        !get_f("WheelRef.setLoadSmooth", a[1], &v, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) w->pacejka[14] = v;
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_pacejka(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t i;
+    float v;
+    if (!want("WheelRef.setPacejka", a, 3, err) ||
+        !get_i("WheelRef.setPacejka", a[1], &i, err) ||
+        !get_f("WheelRef.setPacejka", a[2], &v, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a))
+        if (i >= 0 && i < game::kPacejkaSlots) w->pacejka[i] = v;
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_force(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return wheel_float_set("WheelRef.setForce", a, &game::WheelData::spring_k,
+                           out, err);
+}
+
+bool wr_set_damping1(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("WheelRef.setDamping", a, 2, err) ||
+        !get_f("WheelRef.setDamping", a[1], &v, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) {
+        w->bump = v;
+        w->rebound = v * 0.7f;
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_damping2(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float bump, rebound;
+    if (!want("WheelRef.setDamping", a, 3, err) ||
+        !get_f("WheelRef.setDamping", a[1], &bump, err) ||
+        !get_f("WheelRef.setDamping", a[2], &rebound, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) {
+        w->bump = bump;
+        w->rebound = rebound;
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_rest_len(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("WheelRef.setRestLen", a, 2, err) ||
+        !get_f("WheelRef.setRestLen", a[1], &v, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) w->set_rest_len(v);
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_min_len(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return wheel_float_set("WheelRef.setMinLen", a, &game::WheelData::min_len,
+                           out, err);
+}
+
+bool wr_set_max_len(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return wheel_float_set("WheelRef.setMaxLen", a, &game::WheelData::max_len,
+                           out, err);
+}
+
+bool wr_set_brake(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("WheelRef.setBrake", a, 2, err) ||
+        !get_f("WheelRef.setBrake", a[1], &v, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) w->set_brake(v);
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_hbrake(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("WheelRef.setHBrake", a, 2, err) ||
+        !get_f("WheelRef.setHBrake", a[1], &v, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) w->set_hbrake(v);
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_arm(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v[7];
+    if (!want("WheelRef.setArm", a, 8, err)) return false;
+    for (int i = 0; i < 7; i++)
+        if (!get_f("WheelRef.setArm", a[(size_t)i + 1], &v[i], err)) return false;
+    if (game::WheelData *w = wheel_of(a))
+        w->set_arm(v[0], &v[1], &v[4]);
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_hub(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v[10];
+    if (!want("WheelRef.setHub", a, 11, err)) return false;
+    for (int i = 0; i < 10; i++)
+        if (!get_f("WheelRef.setHub", a[(size_t)i + 1], &v[i], err)) return false;
+    if (game::WheelData *w = wheel_of(a))
+        w->set_hub(v[0], &v[1], &v[4], &v[7]);
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_instant_center(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v[6];
+    if (!want("WheelRef.setInstantCenter", a, 7, err)) return false;
+    for (int i = 0; i < 6; i++)
+        if (!get_f("WheelRef.setInstantCenter", a[(size_t)i + 1], &v[i], err))
+            return false;
+    if (game::WheelData *w = wheel_of(a)) {
+        for (int i = 0; i < 3; i++) {
+            w->ic_h[i] = w->hub[i] + v[i];
+            w->ic_l[i] = w->hub[i] + v[3 + i];
+        }
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+bool wr_set_opp_wheel(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t i;
+    if (!want("WheelRef.setOppWheel", a, 2, err) ||
+        !get_i("WheelRef.setOppWheel", a[1], &i, err))
+        return false;
+    if (game::WheelData *w = wheel_of(a)) {
+        // The exe indexes without a bound check; return null instead.
+        w->opp = w->car && i >= 0 && (size_t)i < w->car->wheels.size()
+                     ? &w->car->wheels[(size_t)i]
+                     : nullptr;
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+bool pt_get_slots(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Part.getSlots", a, 1, err)) return false;
+    game::PartData *p = part_of(a);
+    *out = Value::make_int(p ? (int32_t)p->slots.size() : 0);
+    return true;
+}
+
+bool pt_get_slot_id(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t i;
+    if (!want("Part.getSlotID", a, 2, err) ||
+        !get_i("Part.getSlotID", a[1], &i, err))
+        return false;
+    game::PartData *p = part_of(a);
+    int32_t id = 0;
+    if (p && i < 0) {
+        for (const game::Slot &s : p->slots)
+            if (s.flags & 1u) {
+                id = s.id;
+                break;
+            }
+    } else if (p && (size_t)i < p->slots.size()) {
+        id = p->slots[(size_t)i].id;
+    }
+    *out = Value::make_int(id);
+    return true;
+}
+
+bool pt_get_slot_index(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t id;
+    if (!want("Part.getSlotIndex", a, 2, err) ||
+        !get_i("Part.getSlotIndex", a[1], &id, err))
+        return false;
+    game::PartData *p = part_of(a);
+    int32_t index = 0;
+    if (p)
+        for (size_t i = 0; i < p->slots.size(); i++)
+            if (p->slots[i].id == id) {
+                index = (int32_t)i;
+                break;
+            }
+    *out = Value::make_int(index);
+    return true;
+}
+
+bool pt_part_on_slot(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t id;
+    if (!want("Part.partOnSlot", a, 2, err) ||
+        !get_i("Part.partOnSlot", a[1], &id, err))
+        return false;
+    if (id == -1) {
+        *out = a[0];  // this part's own script instance
+        return true;
+    }
+    game::Slot *s = slot_by_id(part_of(a), id);
+    *out = s && s->attached ? Value::make_obj(s->attached) : Value::make_null();
+    return true;
+}
+
+bool pt_slot_id_on_slot(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t id;
+    if (!want("Part.slotIDOnSlot", a, 2, err) ||
+        !get_i("Part.slotIDOnSlot", a[1], &id, err))
+        return false;
+    game::Slot *s = slot_by_id(part_of(a), id);
+    *out = Value::make_int(s ? s->mate_id : 0);
+    return true;
+}
+
+bool pt_get_slot_damage(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t i;
+    if (!want("Part.getSlotDamage", a, 2, err) ||
+        !get_i("Part.getSlotDamage", a[1], &i, err))
+        return false;
+    game::PartData *p = part_of(a);
+    *out = Value::make_str(p && i >= 0 && (size_t)i < p->slots.size() &&
+                                   (p->slots[(size_t)i].flags & 0x20u)
+                               ? game::slot_damage(p->slots[(size_t)i])
+                               : std::string());
+    return true;
+}
+
+bool pt_set_slot_damage(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t i;
+    const std::string *s;
+    if (!want("Part.setSlotDamage", a, 3, err) ||
+        !get_i("Part.setSlotDamage", a[1], &i, err) ||
+        !get_s("Part.setSlotDamage", a[2], &s, err))
+        return false;
+    game::PartData *p = part_of(a);
+    if (p && i >= 0 && (size_t)i < p->slots.size())
+        game::set_slot_damage(p->slots[(size_t)i], *s);
+    *out = Value::make_null();
+    return true;
+}
+
+bool pt_set_slot_pos(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    int32_t id;
+    float pos[3] = {}, ypr[3] = {};
+    if (!want("Part.setSlotPos", a, 4, err) ||
+        !get_i("Part.setSlotPos", a[1], &id, err))
+        return false;
+    bool has_pos = a[2].kind != Value::Null;
+    bool has_ypr = a[3].kind != Value::Null;
+    if (has_pos && !read_vec_arg(vm, "Part.setSlotPos", a[2], pos, err))
+        return false;
+    if (has_ypr && !read_ypr_arg(vm, "Part.setSlotPos", a[3], ypr, err))
+        return false;
+    if (game::Slot *s = slot_by_id(part_of(a), id)) {
+        for (int i = 0; i < 3; i++) s->pos[i] = s->type_pos[i];
+        s->rot = s->type_rot;
+        s->flags &= ~0x20u;
+        if (has_pos) {
+            for (int i = 0; i < 3; i++) s->pos[i] += pos[i];
+            s->flags |= 0x20u;
+        }
+        if (has_ypr) {
+            Mat34 e;
+            euler_to_mat(&e, ypr);
+            mat_mul(&s->rot, &e, &s->type_rot);
+            s->flags |= 0x20u;
+        }
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+bool pt_get_car_ref(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Part.getCarRef", a, 1, err)) return false;
+    game::PartData *p = part_of(a);
+    *out = p && p->car_ref && p->car_ref->script
+               ? Value::make_obj(p->car_ref->script)
+               : Value::make_null();
+    return true;
+}
+
+bool pt_get_wear(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Part.getWear", a, 1, err)) return false;
+    game::PartData *p = part_of(a);
+    *out = Value::make_float(p ? 1.0f - p->wear : 1.0f);
+    return true;
+}
+
+bool pt_set_wear(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("Part.setWear", a, 2, err) ||
+        !get_f("Part.setWear", a[1], &v, err))
+        return false;
+    if (game::PartData *p = part_of(a)) p->wear = 1.0f - v;
+    *out = Value::make_float(v);
+    return true;
+}
+
+bool pt_set_max_wear(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("Part.setMaxWear", a, 2, err) ||
+        !get_f("Part.setMaxWear", a[1], &v, err))
+        return false;
+    if (game::PartData *p = part_of(a)) p->max_wear_inv = 1.0f / v;
+    *out = Value::make_null();
+    return true;
+}
+
+bool pt_get_tear(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Part.getTear", a, 1, err)) return false;
+    game::PartData *p = part_of(a);
+    *out = Value::make_float(p ? p->tear : 1.0f);
+    return true;
+}
+
+bool pt_set_tear(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float v;
+    if (!want("Part.setTear", a, 2, err) ||
+        !get_f("Part.setTear", a[1], &v, err))
+        return false;
+    if (game::PartData *p = part_of(a)) p->tear = v;
+    *out = Value::make_float(v);
+    return true;
+}
+
+bool pt_disable_slot(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t id, status;
+    if (!want("Part.disableSlot", a, 3, err) ||
+        !get_i("Part.disableSlot", a[1], &id, err) ||
+        !get_i("Part.disableSlot", a[2], &status, err))
+        return false;
+    // shortcut: mate-slot propagation on an installed part, upgrade when
+    // install_OK creates attachments.
+    if (game::Slot *s = slot_by_id(part_of(a), id)) {
+        s->flags &= ~0x50u;
+        if (status == 1) s->flags |= 0x10u;
+        else if (status == 2) s->flags |= 0x50u;
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+bool pt_is_slot_disabled(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t id;
+    if (!want("Part.isSlotDisabled", a, 2, err) ||
+        !get_i("Part.isSlotDisabled", a[1], &id, err))
+        return false;
+    game::Slot *s = slot_by_id(part_of(a), id);
+    int32_t v = 0;
+    if (s) v = (s->flags & 0x50u) ? 2 : (int32_t)((s->flags >> 4) & 1u);
+    *out = Value::make_int(v);
+    return true;
+}
+
+bool pt_get_texture(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Part.getTexture", a, 1, err)) return false;
+    game::PartData *p = part_of(a);
+    *out = Value::make_int(p ? p->texture : 0);
+    return true;
+}
+
+bool pt_set_texture(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t id;
+    if (!want("Part.setTexture", a, 2, err) ||
+        !get_i("Part.setTexture", a[1], &id, err))
+        return false;
+    (void)id;  // the exe requests the resource and returns 1; P+0x84 is not written
+    *out = Value::make_int(1);
+    return true;
+}
+
+bool pt_get_mesh(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Part.getMesh", a, 1, err)) return false;
+    game::PartData *p = part_of(a);
+    *out = Value::make_int(p ? p->mesh : 0);
+    return true;
+}
+
+bool pt_set_mesh(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t id;
+    if (!want("Part.setMesh", a, 2, err) ||
+        !get_i("Part.setMesh", a[1], &id, err))
+        return false;
+    (void)id;
+    *out = Value::make_int(1);
+    return true;
+}
+
+bool pt_get_render_type(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Part.getRenderType", a, 1, err)) return false;
+    game::PartData *p = part_of(a);
+    *out = Value::make_int(p ? p->render_type : 0);
+    return true;
+}
+
+bool pt_set_render_type(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t id;
+    if (!want("Part.setRenderType", a, 2, err) ||
+        !get_i("Part.setRenderType", a[1], &id, err))
+        return false;
+    (void)id;
+    *out = Value::make_int(1);
+    return true;
+}
+
+bool pt_get_car(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Part.getCar", a, 1, err)) return false;
+    game::PartData *p = part_of(a);
+    *out = Value::make_int(p ? p->car_id : 0);
+    return true;
+}
+
+bool pt_get_wheel_id(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Part.getWheelID", a, 1, err)) return false;
+    game::PartData *p = part_of(a);
+    int32_t v = p ? p->wheel_id : 0;
+    *out = Value::make_int(v > 100 && v < 401 ? (v - 101) % 10 : -1);
+    return true;
+}
+
+bool pt_set_sfx_loop_params(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float x, y;
+    if (!want("Part.setSfxLoopParams", a, 3, err) ||
+        !get_f("Part.setSfxLoopParams", a[1], &x, err) ||
+        !get_f("Part.setSfxLoopParams", a[2], &y, err))
+        return false;
+    game::PartData *p = part_of(a);
+    if (!p) {
+        *out = Value::make_int(0);
+        return true;
+    }
+    p->sfx_loop[0] = x;
+    p->sfx_loop[1] = y;
+    *out = Value::make_int(1);
+    return true;
+}
+
 }  // namespace
 
 namespace natives {
@@ -1248,20 +2291,20 @@ const std::vector<Entry> &table()
 {
     static const std::vector<Entry> rows = {
     {"java.game.parts.bodypart.Chassis", "getAngvel", "()Ljava.lang.Vector3;", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getMaterialIndex", "()I", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getMaxSteer", "()F", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "setMaxSteer", "(F)V", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getShifting", "()I", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getNitroing", "()I", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getEngineTemp", "()F", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getAIparam_float", "(I)F", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getAIparam_int", "(I)I", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "setAIparam_float", "(IF)V", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "setAIparam_int", "(II)V", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getRPM", "()F", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "setRPM", "(F)V", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getTorque", "(FF)F", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "setTorque", "(F)V", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "getMaterialIndex", "()I", ch_get_material_index, false},
+    {"java.game.parts.bodypart.Chassis", "getMaxSteer", "()F", ch_get_max_steer, false},
+    {"java.game.parts.bodypart.Chassis", "setMaxSteer", "(F)V", ch_set_max_steer, false},
+    {"java.game.parts.bodypart.Chassis", "getShifting", "()I", ch_get_shifting, false},
+    {"java.game.parts.bodypart.Chassis", "getNitroing", "()I", ch_get_nitroing, false},
+    {"java.game.parts.bodypart.Chassis", "getEngineTemp", "()F", ch_get_engine_temp, false},
+    {"java.game.parts.bodypart.Chassis", "getAIparam_float", "(I)F", ch_get_ai_float, false},
+    {"java.game.parts.bodypart.Chassis", "getAIparam_int", "(I)I", ch_get_ai_int, false},
+    {"java.game.parts.bodypart.Chassis", "setAIparam_float", "(IF)V", ch_set_ai_float, false},
+    {"java.game.parts.bodypart.Chassis", "setAIparam_int", "(II)V", ch_set_ai_int, false},
+    {"java.game.parts.bodypart.Chassis", "getRPM", "()F", ch_get_rpm, false},
+    {"java.game.parts.bodypart.Chassis", "setRPM", "(F)V", ch_set_rpm, false},
+    {"java.game.parts.bodypart.Chassis", "getTorque", "(FF)F", ch_get_torque, false},
+    {"java.game.parts.bodypart.Chassis", "setTorque", "(F)V", ch_set_torque, false},
     {"java.game.parts.bodypart.Chassis", "getMass", "()F", nullptr, true},
     {"java.game.parts.bodypart.Chassis", "getCM", "()Ljava.lang.Vector3;", nullptr, true},
     {"java.game.parts.bodypart.Chassis", "getMin", "()Ljava.lang.Vector3;", nullptr, true},
@@ -1269,90 +2312,90 @@ const std::vector<Entry> &table()
     {"java.game.Vehicle", "getHorn", "()I", nullptr, true},
     {"java.game.parts.bodypart.Chassis", "setHornSFX", "(Ljava.util.resource.ResourceRef;FI)V", nullptr, true},
     {"java.game.parts.bodypart.Chassis", "setNitroSFX", "(Ljava.util.resource.ResourceRef;F)V", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "setCooling", "(FFF)V", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "setCooling", "(FFF)V", ch_set_cooling, false},
     {"java.game.parts.bodypart.Chassis", "forceUpdate", "()V", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getMileage", "()F", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "setMileage", "(F)V", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "getMileage", "()F", ch_get_mileage, false},
+    {"java.game.parts.bodypart.Chassis", "setMileage", "(F)V", ch_set_mileage, false},
     {"java.game.parts.bodypart.Chassis", "setBuck", "(IIFFFF)I", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "setSfxExhaustMinVol", "(F)V", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "setSteerWheelRadius", "(F)V", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "setSteerWheel", "(FF)V", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "setAckermann", "(F)V", nullptr, true},
-    {"java.game.Vehicle", "hasCrime", "()F", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "setSfxExhaustMinVol", "(F)V", ch_set_exhaust_min_vol, false},
+    {"java.game.parts.bodypart.Chassis", "setSteerWheelRadius", "(F)V", ch_set_steer_wheel_radius, false},
+    {"java.game.parts.bodypart.Chassis", "setSteerWheel", "(FF)V", ch_set_steer_wheel, false},
+    {"java.game.parts.bodypart.Chassis", "setAckermann", "(F)V", ch_set_ackermann, false},
+    {"java.game.Vehicle", "hasCrime", "()F", ve_has_crime, false},
     {"java.game.parts.bodypart.Chassis", "getSfxTable", "(I)Ljava.game.parts.SfxTable;", nullptr, true},
     {"java.game.parts.SfxTable", "getItems", "()I", nullptr, true},
     {"java.game.parts.SfxTable", "clear", "()V", nullptr, true},
     {"java.game.parts.SfxTable", "addItem", "(Ljava.util.resource.ResourceRef;FFFFF)V", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getWheels", "()I", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getWheel", "(I)Ljava.game.parts.WheelRef;", nullptr, true},
-    {"java.game.parts.WheelRef", "getPos", "()Ljava.lang.Vector3;", nullptr, true},
-    {"java.game.parts.WheelRef", "getYpr", "()Ljava.lang.Ypr;", nullptr, true},
-    {"java.game.parts.WheelRef", "getDrive", "()F", nullptr, true},
-    {"java.game.parts.WheelRef", "getSteer", "()F", nullptr, true},
-    {"java.game.parts.WheelRef", "getRadius", "()F", nullptr, true},
-    {"java.game.parts.WheelRef", "getBrake", "()F", nullptr, true},
-    {"java.game.parts.WheelRef", "getHBrake", "()F", nullptr, true},
-    {"java.game.parts.WheelRef", "setPos", "(Ljava.lang.Vector3;)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setYpr", "(Ljava.lang.Ypr;)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setDrive", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setSteer", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setRadius", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setWidth", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setCPatch", "(FFF)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setFriction", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setFrictn_x", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setSliction", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setStiffness", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setRollRes", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setBearing", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setMaxLoad", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setLoadSmooth", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setPacejka", "(IF)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setForce", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setDamping", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setDamping", "(FF)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setRestLen", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setMinLen", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setMaxLen", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setBrake", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setHBrake", "(F)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setArm", "(FFFFFFF)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setHub", "(FFFFFFFFFF)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setInstantCenter", "(FFFFFF)V", nullptr, true},
-    {"java.game.parts.WheelRef", "setOppWheel", "(I)V", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "getWheels", "()I", ch_get_wheels, false},
+    {"java.game.parts.bodypart.Chassis", "getWheel", "(I)Ljava.game.parts.WheelRef;", ch_get_wheel, false},
+    {"java.game.parts.WheelRef", "getPos", "()Ljava.lang.Vector3;", wr_get_pos, false},
+    {"java.game.parts.WheelRef", "getYpr", "()Ljava.lang.Ypr;", wr_get_ypr, false},
+    {"java.game.parts.WheelRef", "getDrive", "()F", wr_get_drive, false},
+    {"java.game.parts.WheelRef", "getSteer", "()F", wr_get_steer, false},
+    {"java.game.parts.WheelRef", "getRadius", "()F", wr_get_radius, false},
+    {"java.game.parts.WheelRef", "getBrake", "()F", wr_get_brake, false},
+    {"java.game.parts.WheelRef", "getHBrake", "()F", wr_get_hbrake, false},
+    {"java.game.parts.WheelRef", "setPos", "(Ljava.lang.Vector3;)V", wr_set_pos, false},
+    {"java.game.parts.WheelRef", "setYpr", "(Ljava.lang.Ypr;)V", wr_set_ypr, false},
+    {"java.game.parts.WheelRef", "setDrive", "(F)V", wr_set_drive, false},
+    {"java.game.parts.WheelRef", "setSteer", "(F)V", wr_set_steer, false},
+    {"java.game.parts.WheelRef", "setRadius", "(F)V", wr_set_radius, false},
+    {"java.game.parts.WheelRef", "setWidth", "(F)V", wr_set_width, false},
+    {"java.game.parts.WheelRef", "setCPatch", "(FFF)V", wr_set_cpatch, false},
+    {"java.game.parts.WheelRef", "setFriction", "(F)V", wr_set_friction, false},
+    {"java.game.parts.WheelRef", "setFrictn_x", "(F)V", wr_set_frictn_x, false},
+    {"java.game.parts.WheelRef", "setSliction", "(F)V", wr_set_sliction, false},
+    {"java.game.parts.WheelRef", "setStiffness", "(F)V", wr_set_stiffness, false},
+    {"java.game.parts.WheelRef", "setRollRes", "(F)V", wr_set_roll_res, false},
+    {"java.game.parts.WheelRef", "setBearing", "(F)V", wr_set_bearing, false},
+    {"java.game.parts.WheelRef", "setMaxLoad", "(F)V", wr_set_max_load, false},
+    {"java.game.parts.WheelRef", "setLoadSmooth", "(F)V", wr_set_load_smooth, false},
+    {"java.game.parts.WheelRef", "setPacejka", "(IF)V", wr_set_pacejka, false},
+    {"java.game.parts.WheelRef", "setForce", "(F)V", wr_set_force, false},
+    {"java.game.parts.WheelRef", "setDamping", "(F)V", wr_set_damping1, false},
+    {"java.game.parts.WheelRef", "setDamping", "(FF)V", wr_set_damping2, false},
+    {"java.game.parts.WheelRef", "setRestLen", "(F)V", wr_set_rest_len, false},
+    {"java.game.parts.WheelRef", "setMinLen", "(F)V", wr_set_min_len, false},
+    {"java.game.parts.WheelRef", "setMaxLen", "(F)V", wr_set_max_len, false},
+    {"java.game.parts.WheelRef", "setBrake", "(F)V", wr_set_brake, false},
+    {"java.game.parts.WheelRef", "setHBrake", "(F)V", wr_set_hbrake, false},
+    {"java.game.parts.WheelRef", "setArm", "(FFFFFFF)V", wr_set_arm, false},
+    {"java.game.parts.WheelRef", "setHub", "(FFFFFFFFFF)V", wr_set_hub, false},
+    {"java.game.parts.WheelRef", "setInstantCenter", "(FFFFFF)V", wr_set_instant_center, false},
+    {"java.game.parts.WheelRef", "setOppWheel", "(I)V", wr_set_opp_wheel, false},
     {"java.game.parts.bodypart.Chassis", "getWheelPos", "(I)Ljava.lang.Vector3;", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getWheelDamage", "(I)Ljava.lang.String;", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "setWheelDamage", "(ILjava.lang.String;)V", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "getWheelDamage", "(I)Ljava.lang.String;", ch_get_wheel_damage, false},
+    {"java.game.parts.bodypart.Chassis", "setWheelDamage", "(ILjava.lang.String;)V", ch_set_wheel_damage, false},
     {"java.game.parts.bodypart.Chassis", "setOSD", "(IF)V", nullptr, true},
     {"java.game.parts.bodypart.Chassis", "getOSD", "(I)F", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getNitro", "()F", nullptr, true},
-    {"java.game.parts.Part", "getSlots", "()I", nullptr, true},
-    {"java.game.parts.Part", "getSlotID", "(I)I", nullptr, true},
-    {"java.game.parts.Part", "getSlotIndex", "(I)I", nullptr, true},
-    {"java.game.parts.Part", "partOnSlot", "(I)Ljava.game.parts.Part;", nullptr, true},
-    {"java.game.parts.Part", "slotIDOnSlot", "(I)I", nullptr, true},
-    {"java.game.parts.Part", "getSlotDamage", "(I)Ljava.lang.String;", nullptr, true},
-    {"java.game.parts.Part", "setSlotDamage", "(ILjava.lang.String;)V", nullptr, true},
-    {"java.game.parts.Part", "setSlotPos", "(ILjava.lang.Vector3;Ljava.lang.Ypr;)V", nullptr, true},
-    {"java.game.parts.Part", "getCarRef", "()Ljava.game.parts.Part;", nullptr, true},
-    {"java.game.parts.Part", "getWear", "()F", nullptr, true},
-    {"java.game.parts.Part", "setWear", "(F)F", nullptr, true},
-    {"java.game.parts.Part", "setMaxWear", "(F)V", nullptr, true},
-    {"java.game.parts.Part", "getTear", "()F", nullptr, true},
-    {"java.game.parts.Part", "setTear", "(F)F", nullptr, true},
-    {"java.game.parts.Part", "disableSlot", "(II)V", nullptr, true},
-    {"java.game.parts.Part", "isSlotDisabled", "(I)I", nullptr, true},
-    {"java.game.parts.Part", "getTexture", "()I", nullptr, true},
-    {"java.game.parts.Part", "setTexture", "(I)I", nullptr, true},
-    {"java.game.parts.Part", "getMesh", "()I", nullptr, true},
-    {"java.game.parts.Part", "setMesh", "(I)I", nullptr, true},
-    {"java.game.parts.Part", "getRenderType", "()I", nullptr, true},
-    {"java.game.parts.Part", "setRenderType", "(I)I", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "getNitro", "()F", ch_get_nitro, false},
+    {"java.game.parts.Part", "getSlots", "()I", pt_get_slots, false},
+    {"java.game.parts.Part", "getSlotID", "(I)I", pt_get_slot_id, false},
+    {"java.game.parts.Part", "getSlotIndex", "(I)I", pt_get_slot_index, false},
+    {"java.game.parts.Part", "partOnSlot", "(I)Ljava.game.parts.Part;", pt_part_on_slot, false},
+    {"java.game.parts.Part", "slotIDOnSlot", "(I)I", pt_slot_id_on_slot, false},
+    {"java.game.parts.Part", "getSlotDamage", "(I)Ljava.lang.String;", pt_get_slot_damage, false},
+    {"java.game.parts.Part", "setSlotDamage", "(ILjava.lang.String;)V", pt_set_slot_damage, false},
+    {"java.game.parts.Part", "setSlotPos", "(ILjava.lang.Vector3;Ljava.lang.Ypr;)V", pt_set_slot_pos, false},
+    {"java.game.parts.Part", "getCarRef", "()Ljava.game.parts.Part;", pt_get_car_ref, false},
+    {"java.game.parts.Part", "getWear", "()F", pt_get_wear, false},
+    {"java.game.parts.Part", "setWear", "(F)F", pt_set_wear, false},
+    {"java.game.parts.Part", "setMaxWear", "(F)V", pt_set_max_wear, false},
+    {"java.game.parts.Part", "getTear", "()F", pt_get_tear, false},
+    {"java.game.parts.Part", "setTear", "(F)F", pt_set_tear, false},
+    {"java.game.parts.Part", "disableSlot", "(II)V", pt_disable_slot, false},
+    {"java.game.parts.Part", "isSlotDisabled", "(I)I", pt_is_slot_disabled, false},
+    {"java.game.parts.Part", "getTexture", "()I", pt_get_texture, false},
+    {"java.game.parts.Part", "setTexture", "(I)I", pt_set_texture, false},
+    {"java.game.parts.Part", "getMesh", "()I", pt_get_mesh, false},
+    {"java.game.parts.Part", "setMesh", "(I)I", pt_set_mesh, false},
+    {"java.game.parts.Part", "getRenderType", "()I", pt_get_render_type, false},
+    {"java.game.parts.Part", "setRenderType", "(I)I", pt_set_render_type, false},
     {"java.game.parts.Part", "getLogo", "()I", nullptr, true},
-    {"java.game.parts.Part", "getCar", "()I", nullptr, true},
-    {"java.game.parts.Part", "getWheelID", "()I", nullptr, true},
+    {"java.game.parts.Part", "getCar", "()I", pt_get_car, false},
+    {"java.game.parts.Part", "getWheelID", "()I", pt_get_wheel_id, false},
     {"java.game.parts.Part", "getMass", "()F", nullptr, true},
-    {"java.game.parts.Part", "setSfxLoopParams", "(FF)I", nullptr, true},
+    {"java.game.parts.Part", "setSfxLoopParams", "(FF)I", pt_set_sfx_loop_params, false},
     {"java.game.parts.Part", "flap", "(I)I", nullptr, true},
     {"java.game.parts.Part", "install_OK", "(Ljava.util.resource.GameRef;ILjava.util.resource.GameRef;ILjava.lang.Vector3;)[I", nullptr, true},
     {"java.game.parts.DynoData", "newNative", "()V", nullptr, true},

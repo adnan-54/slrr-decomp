@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "game/car.h"
 #include "game/runtime.h"
 #include "resource/manager.h"
 #include "script/classfile.h"
@@ -1378,6 +1379,11 @@ static void runtime_tests(const std::string &game, Checker &c)
         "system\\scripts\\util\\resource\\GameRef.class",
         "system\\scripts\\util\\resource\\GroundRef.class",
         "cars\\racers\\Axis_data\\scripts\\Axis_FL_door.class",
+        "cars\\racers\\Axis_data\\scripts\\Axis_200S.class",
+        "parts\\scripts\\Part.class",
+        "parts\\scripts\\BodyPart.class",
+        "parts\\scripts\\WheelRef.class",
+        "parts\\scripts\\bodypart\\Chassis.class",
     };
     ClassPath cp;
     for (const char *rel : kFiles) {
@@ -1754,6 +1760,740 @@ static void runtime_tests(const std::string &game, Checker &c)
     c.check(ran && inst_t2 && inst_t2->parent == fl &&
                 inst_t2->script_class == "java.game.cars.Axis_FL_door",
             "runtime: createNativeInstance(typeID) resolves and parents");
+
+    // ---- car payloads: Chassis / WheelRef / Part ----
+    ClassEntry *part_entry = cp.find("java.game.parts.Part");
+    ClassEntry *chassis_entry = cp.find("java.game.parts.bodypart.Chassis");
+    ClassEntry *wheel_entry = cp.find("java.game.parts.WheelRef");
+    const ClassUnit *part_unit = part_entry ? part_entry->unit : nullptr;
+    const ClassUnit *chassis_unit = chassis_entry ? chassis_entry->unit : nullptr;
+    const ClassUnit *wheel_unit = wheel_entry ? wheel_entry->unit : nullptr;
+    c.check(part_unit && chassis_unit && wheel_unit,
+            "runtime: car classes loaded (Part/Chassis/WheelRef)");
+
+    if (part_unit && chassis_unit && wheel_unit) {
+        auto cint = [&](const ClassUnit *u, Object *self, const char *name,
+                        const char *sig, const std::vector<Value> &args,
+                        int32_t want, const std::string &what) {
+            Value v;
+            std::string e;
+            bool ran = call_instance(vm, *u, name, sig, self, args, &v, &e);
+            expect_int(c, ran, v, want, what, e);
+        };
+        auto cfloat = [&](const ClassUnit *u, Object *self, const char *name,
+                          const char *sig, const std::vector<Value> &args,
+                          float want, float tol, const std::string &what) {
+            Value v;
+            std::string e;
+            bool ran = call_instance(vm, *u, name, sig, self, args, &v, &e);
+            expect_float(c, ran, v, want, tol, what, e);
+        };
+        auto cstr = [&](const ClassUnit *u, Object *self, const char *name,
+                        const char *sig, const std::vector<Value> &args,
+                        const std::string &want, const std::string &what) {
+            Value v;
+            std::string e;
+            bool ran = call_instance(vm, *u, name, sig, self, args, &v, &e);
+            expect_str(c, ran, v, want, what, e);
+        };
+        auto pos_of = [&](Object *w, float p[3]) {
+            Value v;
+            std::string e;
+            bool ran = call_instance(vm, *wheel_unit, "getPos",
+                                     "()Ljava.lang.Vector3;", w, {}, &v, &e);
+            return ran && v.kind == Value::Obj &&
+                   obj_float(vm, v.obj, "x", &p[0], &e) &&
+                   obj_float(vm, v.obj, "y", &p[1], &e) &&
+                   obj_float(vm, v.obj, "z", &p[2], &e);
+        };
+        auto ypr_of = [&](Object *w, float p[3]) {
+            Value v;
+            std::string e;
+            bool ran = call_instance(vm, *wheel_unit, "getYpr",
+                                     "()Ljava.lang.Ypr;", w, {}, &v, &e);
+            return ran && v.kind == Value::Obj &&
+                   obj_float(vm, v.obj, "y", &p[0], &e) &&
+                   obj_float(vm, v.obj, "p", &p[1], &e) &&
+                   obj_float(vm, v.obj, "r", &p[2], &e);
+        };
+
+        // Record 6 is the Axis car (`_main_200S.cfg` supplies the four wheels).
+        Runtime::Resource *car_type = rt.resolve(6, &rm.package(1));
+        c.check(car_type && car_type->name == "Axis_200S" &&
+                    car_type->script_class == "java.game.cars.Axis_200S",
+                "car: id 6 resolves to Axis_200S");
+        Runtime::Resource *car_inst =
+            car_type ? rt.instantiate(car_type, car_type, "test_car", "", true, &err)
+                     : nullptr;
+        Object *car_obj = car_inst ? car_inst->script : nullptr;
+        c.check(car_inst && car_obj && car_inst->script_class ==
+                                              "java.game.cars.Axis_200S",
+                "car: instantiate Axis_200S script");
+        if (!car_inst || !car_obj) {
+            rt.deactivate();
+            return;
+        }
+        rt.bind(rt.attach(car_obj), car_inst);
+
+        cint(chassis_unit, car_obj, "getWheels", "()I", {}, 4, "car: getWheels");
+        Object *wobj[4] = {};
+        for (int i = 0; i < 4; i++) {
+            Value v;
+            std::string e;
+            bool ran = call_instance(vm, *chassis_unit, "getWheel",
+                                     "(I)Ljava.game.parts.WheelRef;", car_obj,
+                                     {vi(i)}, &v, &e);
+            wobj[i] = v.kind == Value::Obj ? v.obj : nullptr;
+            c.check(ran && wobj[i] != nullptr,
+                    "car: getWheel(" + std::to_string(i) + ")");
+        }
+        {
+            Value v;
+            std::string e;
+            bool ran = call_instance(vm, *chassis_unit, "getWheel",
+                                     "(I)Ljava.game.parts.WheelRef;", car_obj,
+                                     {vi(4)}, &v, &e);
+            c.check(ran && v.kind == Value::Null, "car: getWheel(4) is null");
+            ran = call_instance(vm, *chassis_unit, "getWheel",
+                                "(I)Ljava.game.parts.WheelRef;", car_obj,
+                                {vi(-1)}, &v, &e);
+            c.check(ran && v.kind == Value::Null, "car: getWheel(-1) is null");
+        }
+
+        game::CarData *car = car_inst ? game::car_data(rt, car_inst) : nullptr;
+        game::WheelData *wheels[4] = {};
+        for (int i = 0; i < 4; i++)
+            wheels[i] = wobj[i] ? game::wheel_data(wobj[i]) : nullptr;
+        c.check(car && car->wheels.size() == 4, "car: four wheel records");
+        c.check(car && wheels[0] == &car->wheels[0] &&
+                    wheels[3] == &car->wheels[3],
+                "car: WheelRef payloads point at the wheel array");
+
+        if (car && wheels[0] && wheels[1] && wheels[2] && wheels[3]) {
+            game::WheelData *w0 = wheels[0], *w2 = wheels[2];
+
+            // createCar defaults from _main_200S.cfg.
+            c.check(w0->base_len == 0.29f && w0->travel == 0.1f &&
+                        w0->rest_len == 0.39f && w0->max_len == 0.39f &&
+                        w0->min_len == -1.0f && w0->free_len == 0.705f &&
+                        w0->radius == 0.315f,
+                    "car: front wheel lengths from the cfg");
+            c.check(std::fabs(w2->travel - 0.07f) < 1e-6f &&
+                        std::fabs(w2->rest_len - 0.36f) < 1e-6f &&
+                        std::fabs(w2->free_len - 0.675f) < 1e-6f,
+                    "car: rear wheel lengths from the cfg");
+            c.check(w0->friction == 1.0f && w0->friction_eff == 1.0f &&
+                        w0->pacejka[0] == 1.4f && w0->pacejka[2] == 1.49f &&
+                        w0->pacejka[4] == 15.2f && w0->pacejka[6] == 0.0f &&
+                        w0->pacejka[8] == -1.0f && w0->pacejka[11] == 8000.0f &&
+                        w0->pacejka[12] == 1.0f && w0->pacejka[13] == 0.015f &&
+                        w0->pacejka[14] == 0.4f && w0->pacejka[16] == 0.0f,
+                    "car: Pacejka defaults and friction");
+            c.check(w0->drive == 1.0f && w0->drive_eff == 1.0f &&
+                        w0->steer == 1.0f && w0->brake == 1.0f &&
+                        w0->brake_eff == 1.0f && w0->hbrake == 0.0f &&
+                        w2->steer == 0.0f && w2->hbrake == 1.0f &&
+                        w2->hbrake_eff == 1.0f,
+                    "car: drive/steer/brake flags from the wheel lines");
+            c.check(w0->damage_visual == 27.0f && w0->template_damage == 27.0f &&
+                        w0->opp == &car->wheels[1] &&
+                        car->wheels[1].opp == &car->wheels[0] &&
+                        car->wheels[2].opp == &car->wheels[3],
+                    "car: damage base and opposite wheels");
+            c.check(w0->spin == 0.0f && w0->spin_angle == 0.0f &&
+                        w0->half_width == 0.1f && w0->roll_res == 0.015f &&
+                        std::fabs(w0->hub[1] + 0.182f) < 1e-6f,
+                    "car: createCar wheel state (front hub y = template+.39)");
+
+            float p[3];
+            c.check(pos_of(wobj[0], p) && std::fabs(p[0] + 0.68f) < 1e-5f &&
+                        std::fabs(p[1]) < 1e-5f && std::fabs(p[2] + 1.3f) < 1e-5f,
+                    "car: FL getPos returns the template pose");
+            c.check(ypr_of(wobj[0], p) && std::fabs(p[0]) < 1e-6f &&
+                        std::fabs(p[1]) < 1e-6f && std::fabs(p[2]) < 1e-6f,
+                    "car: FL getYpr starts at zero");
+            c.check(pos_of(wobj[2], p) && std::fabs(p[0] + 0.68f) < 1e-5f &&
+                        std::fabs(p[2] - 1.125f) < 1e-5f,
+                    "car: RL getPos from the cfg");
+            c.check(pos_of(wobj[3], p) && std::fabs(p[0] - 0.73f) < 1e-5f,
+                    "car: RR getPos from the cfg");
+            cfloat(wheel_unit, wobj[0], "getDrive", "()F", {}, 1.0f, 1e-6f,
+                   "car: getDrive");
+            cfloat(wheel_unit, wobj[0], "getSteer", "()F", {}, 1.0f, 1e-6f,
+                   "car: getSteer");
+            cfloat(wheel_unit, wobj[0], "getRadius", "()F", {}, 0.315f, 1e-6f,
+                   "car: getRadius");
+
+            // Pacejka aliases.
+            {
+                Value v;
+                std::string e;
+                bool ran =
+                    call_instance(vm, *wheel_unit, "setPacejka", "(IF)V",
+                                  wobj[0], {vi(0), vf(2.5f)}, &v, &e) &&
+                    call_instance(vm, *wheel_unit, "setPacejka", "(IF)V",
+                                  wobj[0], {vi(16), vf(3.5f)}, &v, &e) &&
+                    call_instance(vm, *wheel_unit, "setPacejka", "(IF)V",
+                                  wobj[0], {vi(17), vf(9.0f)}, &v, &e) &&
+                    call_instance(vm, *wheel_unit, "setPacejka", "(IF)V",
+                                  wobj[0], {vi(-1), vf(9.0f)}, &v, &e);
+                c.check(ran && w0->pacejka[0] == 2.5f &&
+                            w0->pacejka[16] == 3.5f,
+                        "car: setPacejka bounds 0..16");
+                ran = call_instance(vm, *wheel_unit, "setSliction", "(F)V",
+                                    wobj[0], {vf(0.7f)}, &v, &e) &&
+                      call_instance(vm, *wheel_unit, "setStiffness", "(F)V",
+                                    wobj[0], {vf(12.0f)}, &v, &e) &&
+                      call_instance(vm, *wheel_unit, "setFrictn_x", "(F)V",
+                                    wobj[0], {vf(0.9f)}, &v, &e) &&
+                      call_instance(vm, *wheel_unit, "setMaxLoad", "(F)V",
+                                    wobj[0], {vf(5000.0f)}, &v, &e) &&
+                      call_instance(vm, *wheel_unit, "setLoadSmooth", "(F)V",
+                                    wobj[0], {vf(0.5f)}, &v, &e);
+                c.check(ran && w0->pacejka[0] == 0.7f &&
+                            w0->pacejka[4] == 12.0f &&
+                            w0->pacejka[12] == 0.9f &&
+                            w0->pacejka[11] == 5000.0f &&
+                            w0->pacejka[14] == 0.5f,
+                        "car: Pacejka alias setters");
+            }
+
+            // setFriction writes base + p2 and applies tyre wear to the effective value.
+            {
+                Value v;
+                std::string e;
+                bool ran = call_instance(vm, *wheel_unit, "setFriction", "(F)V",
+                                         wobj[0], {vf(2.0f)}, &v, &e);
+                c.check(ran && w0->friction == 2.0f && w0->pacejka[2] == 2.0f &&
+                            w0->friction_eff == 2.0f,
+                        "car: setFriction writes p2 and effective");
+                w0->tyre_wear = 0.5f;
+                ran = call_instance(vm, *wheel_unit, "setFriction", "(F)V",
+                                    wobj[0], {vf(2.0f)}, &v, &e);
+                c.check(ran && std::fabs(w0->friction_eff - 1.7f) < 1e-6f,
+                        "car: setFriction applies tyre wear (2*(1-0.25*0.6))");
+                w0->tyre_wear = 0.0f;
+                w0->brake_wear = 0.5f;
+                ran = call_instance(vm, *wheel_unit, "setBrake", "(F)V",
+                                    wobj[0], {vf(3.0f)}, &v, &e);
+                c.check(ran && w0->brake == 3.0f &&
+                            std::fabs(w0->brake_eff - 2.55f) < 1e-6f,
+                        "car: setBrake effective uses brake wear");
+                w0->brake_wear = 0.0f;
+            }
+
+            // Drive, lengths, spring and geometry.
+            {
+                Value v;
+                std::string e;
+                bool ran = call_instance(vm, *wheel_unit, "setDrive", "(F)V",
+                                         wobj[0], {vf(0.25f)}, &v, &e);
+                c.check(ran && w0->drive == 0.25f && w0->drive_eff == 0.25f,
+                        "car: setDrive updates drive and effective");
+                cfloat(wheel_unit, wobj[0], "getDrive", "()F", {}, 0.25f, 1e-6f,
+                       "car: getDrive after setDrive");
+                ran = call_instance(vm, *wheel_unit, "setMaxLen", "(F)V",
+                                    wobj[0], {vf(0.8f)}, &v, &e) &&
+                      call_instance(vm, *wheel_unit, "setMinLen", "(F)V",
+                                    wobj[0], {vf(-0.4f)}, &v, &e) &&
+                      call_instance(vm, *wheel_unit, "setRestLen", "(F)V",
+                                    wobj[0], {vf(0.5f)}, &v, &e) &&
+                      call_instance(vm, *wheel_unit, "setForce", "(F)V",
+                                    wobj[0], {vf(1000.0f)}, &v, &e) &&
+                      call_instance(vm, *wheel_unit, "setDamping", "(F)V",
+                                    wobj[0], {vf(50.0f)}, &v, &e);
+                c.check(ran && w0->max_len == 0.8f && w0->min_len == -0.4f &&
+                            w0->rest_len == 0.5f &&
+                            std::fabs(w0->free_len - 0.815f) < 1e-6f &&
+                            w0->spring_k == 1000.0f && w0->bump == 50.0f &&
+                            std::fabs(w0->rebound - 35.0f) < 1e-6f,
+                        "car: length/spring setters (setMaxLen vs setMinLen)");
+                ran = call_instance(vm, *wheel_unit, "setDamping", "(FF)V",
+                                    wobj[0], {vf(60.0f), vf(20.0f)}, &v, &e) &&
+                      call_instance(vm, *wheel_unit, "setRadius", "(F)V",
+                                    wobj[0], {vf(0.4f)}, &v, &e) &&
+                      call_instance(vm, *wheel_unit, "setWidth", "(F)V",
+                                    wobj[0], {vf(0.5f)}, &v, &e) &&
+                      call_instance(vm, *wheel_unit, "setRollRes", "(F)V",
+                                    wobj[0], {vf(0.03f)}, &v, &e) &&
+                      call_instance(vm, *wheel_unit, "setBearing", "(F)V",
+                                    wobj[0], {vf(5.0f)}, &v, &e) &&
+                      call_instance(vm, *wheel_unit, "setCPatch", "(FFF)V",
+                                    wobj[0], {vf(-0.2f), vf(0.5f), vf(0.3f)},
+                                    &v, &e);
+                c.check(ran && w0->bump == 60.0f && w0->rebound == 20.0f &&
+                            w0->radius == 0.4f &&
+                            std::fabs(w0->free_len - 0.9f) < 1e-6f &&
+                            w0->half_width == 0.25f && w0->roll_res == 0.03f &&
+                            w0->damage_visual == 5.0f &&
+                            std::fabs(w0->cpatch_halfwidth - 0.2f) < 1e-6f &&
+                            std::fabs(w0->cpatch_sin - 0.0958851f) < 1e-5f &&
+                            w0->cpatch_offset == 0.3f,
+                        "car: damping/width/cpatch/bearing setters");
+                w0->damage_visual = 27.0f;  // undo setBearing before the damage test
+            }
+
+            // Pose: getPos inverts the template offset; instant centres shift.
+            {
+                Object *p123 = make_pt("java.lang.Vector3", 1.0f, 2.0f, 3.0f,
+                                       "x", "y", "z");
+                Value v;
+                std::string e;
+                bool ran = p123 && call_instance(vm, *wheel_unit, "setPos",
+                                                 "(Ljava.lang.Vector3;)V",
+                                                 wobj[0], {Value::make_obj(p123)},
+                                                 &v, &e);
+                c.check(ran && std::fabs(w0->hub[0] - 0.32f) < 1e-5f &&
+                            std::fabs(w0->hub[1] - 1.818f) < 1e-5f &&
+                            std::fabs(w0->hub[2] - 1.7f) < 1e-5f &&
+                            std::fabs(w0->ic_h[0] - 1.0f) < 1e-5f &&
+                            std::fabs(w0->ic_l[2] - 3.0f) < 1e-5f,
+                        "car: setPos writes hub and shifts instant centres");
+                float pp[3];
+                c.check(pos_of(wobj[0], pp) &&
+                            std::fabs(pp[0] + 0.68f) < 1e-5f &&
+                            std::fabs(pp[1] - 2.0f) < 1e-5f &&
+                            std::fabs(pp[2] + 1.3f) < 1e-5f,
+                        "car: getPos after setPos keeps the template x/z");
+
+                Object *yo = make_pt("java.lang.Ypr", 0.1f, 0.2f, 0.3f, "y", "p",
+                                     "r");
+                ran = yo && call_instance(vm, *wheel_unit, "setYpr",
+                                          "(Ljava.lang.Ypr;)V", wobj[0],
+                                          {Value::make_obj(yo)}, &v, &e);
+                float yp[3];
+                c.check(ran && w0->pose.m[0] == w0->rot.m[0] &&
+                            ypr_of(wobj[0], yp) &&
+                            std::fabs(yp[0] - 0.1f) < 1e-5f &&
+                            std::fabs(yp[1] - 0.2f) < 1e-5f &&
+                            std::fabs(yp[2] - 0.3f) < 1e-5f,
+                        "car: setYpr/getYpr round-trip and pose copy");
+                ran = call_instance(vm, *wheel_unit, "setYpr",
+                                    "(Ljava.lang.Ypr;)V", wobj[0],
+                                    {Value::make_null()}, &v, &e);
+                c.check(ran && ypr_of(wobj[0], yp) &&
+                            std::fabs(yp[0]) < 1e-6f &&
+                            std::fabs(yp[1]) < 1e-6f &&
+                            std::fabs(yp[2]) < 1e-6f,
+                        "car: setYpr(null) restores the template Ypr");
+            }
+
+            // Damage strings: long form sets the override, short form resets.
+            {
+                cstr(chassis_unit, car_obj, "getWheelDamage",
+                     "(I)Ljava.lang.String;", {vi(0)}, "",
+                     "car: getWheelDamage without override");
+                const std::string dmg =
+                    "1.000,2.000,3.000,0.000,0.000,0.000,7.000,1.000,1.000,9.000";
+                Value v;
+                std::string e;
+                bool ran = call_instance(vm, *chassis_unit, "setWheelDamage",
+                                         "(ILjava.lang.String;)V", car_obj,
+                                         {vi(0), Value::make_str(dmg)}, &v, &e);
+                cstr(chassis_unit, car_obj, "getWheelDamage",
+                     "(I)Ljava.lang.String;", {vi(0)}, dmg,
+                     "car: setWheelDamage round-trip");
+                c.check(ran && w0->hub[0] == 1.0f && w0->hub[1] == 2.0f &&
+                            w0->hub[2] == 3.0f && w0->wobble == 7.0f &&
+                            w0->wobble_phase == 9.0f &&
+                            w0->damage_visual == 1827.0f &&
+                            (w0->flags & 0x20u),
+                        "car: setWheelDamage writes hub/wobble/visual");
+                ran = call_instance(vm, *chassis_unit, "setWheelDamage",
+                                    "(ILjava.lang.String;)V", car_obj,
+                                    {vi(0), Value::make_str("")}, &v, &e);
+                cstr(chassis_unit, car_obj, "getWheelDamage",
+                     "(I)Ljava.lang.String;", {vi(0)}, "",
+                     "car: short setWheelDamage clears the override");
+                c.check(ran && !(w0->flags & 0x20u) &&
+                            std::fabs(w0->hub[0] + 0.68f) < 1e-6f &&
+                            w0->damage_visual == 27.0f && w0->wobble == 0.0f &&
+                            w0->brake_eff == w0->brake &&
+                            w0->drive_eff == w0->drive,
+                        "car: short form restores template pose/effects");
+            }
+
+            // Arm, hub and instant-centre geometry on the rear wheel.
+            {
+                float hub0[3] = {w2->hub[0], w2->hub[1], w2->hub[2]};
+                Value v;
+                std::string e;
+                bool ran = call_instance(
+                    vm, *wheel_unit, "setArm", "(FFFFFFF)V", wobj[2],
+                    {vf(1.5f), vf(0.0f), vf(2.0f), vf(0.0f), vf(1.0f),
+                     vf(2.0f), vf(3.0f)}, &v, &e);
+                c.check(ran && w2->arm_len == 1.5f && w2->arm_axis[1] == 1.0f &&
+                            std::fabs(w2->arm_pivot[0] - (hub0[0] + 1.0f)) <
+                                1e-5f &&
+                            std::fabs(w2->arm_pivot[1] -
+                                      (hub0[1] + 2.0f - 0.36f)) < 1e-5f,
+                        "car: setArm normalises the axis and offsets the pivot");
+                ran = call_instance(
+                    vm, *wheel_unit, "setHub", "(FFFFFFFFFF)V", wobj[2],
+                    {vf(0.0f), vf(0.1f), vf(0.2f), vf(0.3f), vf(0.0f),
+                     vf(2.0f), vf(0.0f), vf(0.4f), vf(0.5f), vf(0.6f)}, &v, &e);
+                c.check(ran && w2->hub_len == 0.0f && w2->hub_p1[0] == 0.1f &&
+                            w2->hub_p2[0] == 0.0f && w2->hub_p2[1] == 1.0f &&
+                            std::fabs(w2->hub_pc[0] - (hub0[0] + 0.3f)) <
+                                1e-5f &&
+                            std::fabs(w2->hub_pc[1] - (hub0[1] - 0.06f)) <
+                                1e-5f,
+                        "car: setHub normalises p2 and offsets pc");
+                ran = call_instance(vm, *wheel_unit, "setInstantCenter",
+                                    "(FFFFFF)V", wobj[2],
+                                    {vf(1.0f), vf(2.0f), vf(3.0f), vf(4.0f),
+                                     vf(5.0f), vf(6.0f)}, &v, &e);
+                c.check(ran && std::fabs(w2->ic_h[1] - (hub0[1] + 2.0f)) <
+                                    1e-5f &&
+                            std::fabs(w2->ic_l[2] - (hub0[2] + 6.0f)) < 1e-5f,
+                        "car: setInstantCenter adds hub-relative vectors");
+                // setOppWheel/getSlotIndex/isSlotDisabled/getBrake/getHBrake are
+                // in the exe native table but not declared by the shipped Axis
+                // class shell, so they cannot be reached through this VM.
+            }
+
+            // Chassis engine block.
+            cint(chassis_unit, car_obj, "getMaterialIndex", "()I", {}, -1,
+                 "car: getMaterialIndex default");
+            cfloat(chassis_unit, car_obj, "getMaxSteer", "()F", {}, 0.7f, 1e-6f,
+                   "car: getMaxSteer default");
+            cint(chassis_unit, car_obj, "getShifting", "()I", {}, 0,
+                 "car: getShifting default");
+            cfloat(chassis_unit, car_obj, "getEngineTemp", "()F", {}, 20.0f,
+                   1e-6f, "car: getEngineTemp default");
+            {
+                Value v;
+                std::string e;
+                bool ran = call_instance(vm, *chassis_unit, "setMaxSteer",
+                                         "(F)V", car_obj, {vf(0.6f)}, &v, &e);
+                cfloat(chassis_unit, car_obj, "getMaxSteer", "()F", {}, 0.6f,
+                       1e-6f, "car: setMaxSteer");
+                c.check(ran && car->max_steer == 0.6f, "car: max_steer stored");
+                ran = call_instance(vm, *chassis_unit, "setAIparam_float",
+                                    "(IF)V", car_obj, {vi(3), vf(0.4f)}, &v,
+                                    &e);
+                cfloat(chassis_unit, car_obj, "getAIparam_float", "(I)F",
+                       {vi(3)}, 0.4f, 1e-6f, "car: AI steer parameter");
+                cfloat(chassis_unit, car_obj, "getAIparam_float", "(I)F",
+                       {vi(9)}, 0.0f, 0.0f, "car: invalid AI float id");
+                ran = call_instance(vm, *chassis_unit, "setAIparam_int",
+                                    "(II)V", car_obj, {vi(6), vi(2)}, &v, &e) &&
+                      call_instance(vm, *chassis_unit, "setAIparam_int",
+                                    "(II)V", car_obj, {vi(8), vi(5)}, &v, &e);
+                c.check(ran && car->gear == 2 && car->horn_id == 5,
+                        "car: setAIparam_int writes gear/horn");
+                cint(chassis_unit, car_obj, "getAIparam_int", "(I)I", {vi(6)},
+                     2, "car: getAIparam_int gear");
+                cint(chassis_unit, car_obj, "getAIparam_int", "(I)I", {vi(3)},
+                     3, "car: invalid AI int id returns the id");
+            }
+
+            car->torque_rpm = {1000.0f, 2000.0f};
+            car->torque_nm = {100.0f, 200.0f};
+            car->nitro_rpm = {1000.0f, 2000.0f};
+            car->nitro_nm = {50.0f, 100.0f};
+            cfloat(chassis_unit, car_obj, "getTorque", "(FF)F",
+                   {vf(1500.0f), vf(0.0f)}, 150.0f, 1e-4f,
+                   "car: getTorque interpolates the curve");
+            cfloat(chassis_unit, car_obj, "getTorque", "(FF)F",
+                   {vf(1500.0f), vf(1.0f)}, 75.0f, 1e-4f,
+                   "car: getTorque blends the nitro curve");
+            cfloat(chassis_unit, car_obj, "getTorque", "(FF)F",
+                   {vf(500.0f), vf(0.0f)}, 0.0f, 0.0f,
+                   "car: getTorque below the first rpm");
+            cfloat(chassis_unit, car_obj, "getTorque", "(FF)F",
+                   {vf(2000.0f), vf(0.0f)}, 0.0f, 0.0f,
+                   "car: getTorque at the last rpm is 0 (exe loop)");
+            {
+                Value v;
+                std::string e;
+                bool ran = call_instance(vm, *chassis_unit, "setTorque", "(F)V",
+                                         car_obj, {vf(200.0f)}, &v, &e);
+                c.check(ran && car->torque_base == 200.0f &&
+                            car->nitro_torque_base == 200.0f &&
+                            car->torque_health == 200.0f &&
+                            car->nitro_health == 200.0f,
+                        "car: setTorque writes base and health");
+                cfloat(chassis_unit, car_obj, "getTorque", "(FF)F",
+                       {vf(1500.0f), vf(0.0f)}, 30000.0f, 0.01f,
+                       "car: torque scales with health");
+                car->engine_damage = 0.5f;
+                ran = call_instance(vm, *chassis_unit, "setTorque", "(F)V",
+                                    car_obj, {vf(100.0f)}, &v, &e);
+                c.check(ran && std::fabs(car->torque_health - 85.0f) < 1e-5f &&
+                            std::fabs(car->nitro_health - 85.0f) < 1e-5f,
+                        "car: setTorque applies the engine damage factor");
+                cfloat(chassis_unit, car_obj, "getTorque", "(FF)F",
+                       {vf(1500.0f), vf(0.0f)}, 12750.0f, 0.01f,
+                       "car: damaged engine torque");
+                cfloat(chassis_unit, car_obj, "getTorque", "(FF)F",
+                       {vf(1500.0f), vf(1.0f)}, 6375.0f, 0.01f,
+                       "car: damaged engine nitro torque");
+                car->engine_damage = 0.0f;
+            }
+
+            car->rpm_smoothed = 100.0f;
+            cfloat(chassis_unit, car_obj, "getRPM", "()F", {}, 954.9296f, 1e-3f,
+                   "car: getRPM uses 9.549296");
+            {
+                Value v;
+                std::string e;
+                bool ran = call_instance(vm, *chassis_unit, "setRPM", "(F)V",
+                                         car_obj, {vf(30.0f)}, &v, &e);
+                c.check(ran && car->rpm_raw == 30.0f, "car: setRPM stores rad/s");
+                ran = call_instance(vm, *chassis_unit, "setCooling", "(FFF)V",
+                                    car_obj, {vf(-1.0f), vf(-1.0f), vf(0.0f)},
+                                    &v, &e);
+                c.check(ran && car->cooling_low == 10.0f &&
+                            car->cooling_air == 50.0f &&
+                            car->cooling_speed == 0.0f,
+                        "car: setCooling clamps negatives");
+                ran = call_instance(vm, *chassis_unit, "setCooling", "(FFF)V",
+                                    car_obj, {vf(5.0f), vf(6.0f), vf(7.0f)},
+                                    &v, &e);
+                c.check(ran && car->cooling_low == 5.0f &&
+                            car->cooling_air == 6.0f &&
+                            car->cooling_speed == 7.0f,
+                        "car: setCooling stores values");
+                ran = call_instance(vm, *chassis_unit, "setMileage", "(F)V",
+                                    car_obj, {vf(123.5f)}, &v, &e);
+                cfloat(chassis_unit, car_obj, "getMileage", "()F", {}, 123.5f,
+                       1e-6f, "car: mileage round-trip");
+                ran = call_instance(vm, *chassis_unit, "setSfxExhaustMinVol",
+                                    "(F)V", car_obj, {vf(1.5f)}, &v, &e) &&
+                      call_instance(vm, *chassis_unit, "setSteerWheelRadius",
+                                    "(F)V", car_obj, {vf(0.33f)}, &v, &e) &&
+                      call_instance(vm, *chassis_unit, "setSteerWheel", "(FF)V",
+                                    car_obj, {vf(0.3f), vf(0.2f)}, &v, &e) &&
+                      call_instance(vm, *chassis_unit, "setAckermann", "(F)V",
+                                    car_obj, {vf(0.4f)}, &v, &e);
+                c.check(ran && car->exhaust_min_vol == 1.5f &&
+                            car->steer_wheel_radius == 0.3f &&
+                            car->steer_wheel_angle == 0.2f &&
+                            car->ackermann == 0.4f,
+                        "car: exhaust/steer/ackermann setters");
+                car->nitro = 12.5f;
+                cfloat(chassis_unit, car_obj, "getNitro", "()F", {}, 12.5f,
+                       1e-6f, "car: getNitro");
+                car->flags = 0x800u;
+                cint(chassis_unit, car_obj, "getNitroing", "()I", {}, 1,
+                     "car: getNitroing reads flag 0x800");
+                car->flags = 0;
+            }
+
+            // Subsystem-dependent natives stay explicit stubs with their name.
+            {
+                Value v;
+                std::string e;
+                bool ran = call_instance(vm, *chassis_unit, "getMass", "()F",
+                                         car_obj, {}, &v, &e);
+                c.check(!ran && e.find("not implemented (stub)") !=
+                                     std::string::npos &&
+                            e.find("Chassis.getMass") != std::string::npos,
+                        "car: Chassis.getMass remains an explicit stub");
+                ran = call_instance(vm, *chassis_unit, "getOSD", "(I)F", car_obj,
+                                    {vi(0)}, &v, &e);
+                c.check(!ran && e.find("not implemented (stub)") !=
+                                     std::string::npos,
+                        "car: Chassis.getOSD remains an explicit stub");
+            }
+        } else {
+            c.check(false, "car: car payload and wheel array available");
+        }
+
+        // ---- Part payload from FL_door.cfg ----
+        Runtime::Resource *part_inst =
+            rt.instantiate(fl, fl, "test_part", "", true, &err);
+        Object *part_obj = part_inst ? part_inst->script : nullptr;
+        c.check(part_inst && part_obj &&
+                    part_inst->script_class == "java.game.cars.Axis_FL_door",
+                "car: instantiate part 0xD2 as Axis_FL_door");
+        game::PartData *part = part_inst ? game::part_data(rt, part_inst) : nullptr;
+        if (part_obj && part) {
+            rt.bind(rt.attach(part_obj), part_inst);
+            cint(part_unit, part_obj, "getSlots", "()I", {}, 3,
+                 "car: Part.getSlots");
+            cint(part_unit, part_obj, "getSlotID", "(I)I", {vi(0)}, 4,
+                 "car: slot 0 id 4");
+            cint(part_unit, part_obj, "getSlotID", "(I)I", {vi(1)}, 6,
+                 "car: slot 1 id 6");
+            cint(part_unit, part_obj, "getSlotID", "(I)I", {vi(2)}, 11,
+                 "car: slot 2 id 11");
+            cint(part_unit, part_obj, "getSlotID", "(I)I", {vi(-1)}, 0,
+                 "car: getSlotID(-1) without an installed slot");
+            cint(part_unit, part_obj, "getSlotID", "(I)I", {vi(3)}, 0,
+                 "car: getSlotID out of range");
+            cint(part_unit, part_obj, "slotIDOnSlot", "(I)I", {vi(4)}, 0,
+                 "car: slotIDOnSlot without an attachment");
+            cint(part_unit, part_obj, "getTexture", "()I", {}, 0x00020025,
+                 "car: texture from FL_door.cfg");
+            cint(part_unit, part_obj, "getMesh", "()I", {}, 0x5A,
+                 "car: mesh from FL_door.cfg");
+            cint(part_unit, part_obj, "getRenderType", "()I", {}, 0x59,
+                 "car: render type from FL_door.cfg");
+            cfloat(part_unit, part_obj, "getWear", "()F", {}, 1.0f, 1e-6f,
+                   "car: getWear default");
+            cfloat(part_unit, part_obj, "getTear", "()F", {}, 1.0f, 1e-6f,
+                   "car: getTear default");
+            cint(part_unit, part_obj, "getCar", "()I", {}, 0,
+                 "car: getCar default");
+            cint(part_unit, part_obj, "getWheelID", "()I", {}, -1,
+                 "car: getWheelID out of range");
+            {
+                Value v;
+                std::string e;
+                bool ran = call_instance(vm, *part_unit, "partOnSlot",
+                                         "(I)Ljava.game.parts.Part;", part_obj,
+                                         {vi(-1)}, &v, &e);
+                c.check(ran && v.kind == Value::Obj && v.obj == part_obj,
+                        "car: partOnSlot(-1) returns the receiver");
+                ran = call_instance(vm, *part_unit, "partOnSlot",
+                                    "(I)Ljava.game.parts.Part;", part_obj,
+                                    {vi(4)}, &v, &e);
+                c.check(ran && v.kind == Value::Null,
+                        "car: partOnSlot(empty) is null");
+                ran = call_instance(vm, *part_unit, "getCarRef",
+                                    "()Ljava.game.parts.Part;", part_obj, {},
+                                    &v, &e);
+                c.check(ran && v.kind == Value::Null,
+                        "car: getCarRef without a car is null");
+                ran = call_instance(vm, *part_unit, "getSlotDamage",
+                                    "(I)Ljava.lang.String;", part_obj, {vi(0)},
+                                    &v, &e);
+                c.check(ran && v.kind == Value::Str && v.s.empty(),
+                        "car: getSlotDamage without override is empty");
+                ran = call_instance(vm, *part_unit, "getMass", "()F", part_obj,
+                                    {}, &v, &e);
+                c.check(!ran && e.find("not implemented (stub)") !=
+                                     std::string::npos,
+                        "car: Part.getMass remains an explicit stub");
+            }
+
+            // Wear/tear and model bookkeeping.
+            {
+                Value v;
+                std::string e;
+                bool ran = call_instance(vm, *part_unit, "setWear", "(F)F",
+                                         part_obj, {vf(0.8f)}, &v, &e);
+                c.check(ran && v.kind == Value::Float &&
+                            std::fabs(v.f - 0.8f) < 1e-6f &&
+                            std::fabs(part->wear - 0.2f) < 1e-6f,
+                        "car: setWear stores 1-v and returns v");
+                cfloat(part_unit, part_obj, "getWear", "()F", {}, 0.8f, 1e-6f,
+                       "car: getWear after setWear");
+                ran = call_instance(vm, *part_unit, "setTear", "(F)F", part_obj,
+                                    {vf(0.5f)}, &v, &e);
+                c.check(ran && v.kind == Value::Float && v.f == 0.5f &&
+                            part->tear == 0.5f,
+                        "car: setTear stores and returns v");
+                ran = call_instance(vm, *part_unit, "setMaxWear", "(F)V",
+                                    part_obj, {vf(0.25f)}, &v, &e);
+                c.check(ran && std::fabs(part->max_wear_inv - 4.0f) < 1e-6f,
+                        "car: setMaxWear stores 1/v");
+                ran = call_instance(vm, *part_unit, "setTexture", "(I)I",
+                                    part_obj, {vi(7)}, &v, &e);
+                c.check(ran && v.kind == Value::Int && v.i == 1 &&
+                            part->texture == 0x00020025,
+                        "car: setTexture returns 1 without changing the field");
+                ran = call_instance(vm, *part_unit, "setMesh", "(I)I", part_obj,
+                                    {vi(7)}, &v, &e);
+                c.check(ran && v.kind == Value::Int && v.i == 1 &&
+                            part->mesh == 0x5A,
+                        "car: setMesh returns 1 without changing the field");
+                ran = call_instance(vm, *part_unit, "setRenderType", "(I)I",
+                                    part_obj, {vi(7)}, &v, &e);
+                c.check(ran && v.kind == Value::Int && v.i == 1 &&
+                            part->render_type == 0x59,
+                        "car: setRenderType returns 1 without changing the field");
+                // Hidden native: the shipped class marks it non-native, so call
+                // the registered handler directly (still the native path).
+                Value recv = Value::make_obj(part_obj);
+                ran = call_native(vm, *part_unit, "setSfxLoopParams", "(FF)I",
+                                  &recv, {vf(0.5f), vf(0.25f)}, &v, &e);
+                c.check(ran && v.kind == Value::Int && v.i == 1 &&
+                            part->sfx_loop[0] == 0.5f &&
+                            part->sfx_loop[1] == 0.25f,
+                        "car: setSfxLoopParams writes and returns 1");
+                part->wheel_id = 105;
+                cint(part_unit, part_obj, "getWheelID", "()I", {}, 4,
+                     "car: getWheelID ((105-101)%10)");
+                part->wheel_id = 0;
+            }
+
+            // Slot disable/pose/damage.
+            {
+                Value v;
+                std::string e;
+                bool ran = call_instance(vm, *part_unit, "disableSlot", "(II)V",
+                                         part_obj, {vi(4), vi(1)}, &v, &e);
+                c.check(ran && (part->slots[0].flags & 0x10u) &&
+                            !(part->slots[0].flags & 0x40u),
+                        "car: disableSlot(1) sets 0x10");
+                ran = call_instance(vm, *part_unit, "disableSlot", "(II)V",
+                                    part_obj, {vi(4), vi(2)}, &v, &e);
+                c.check(ran && (part->slots[0].flags & 0x50u) == 0x50u,
+                        "car: disableSlot(2) sets 0x40|0x10");
+                ran = call_instance(vm, *part_unit, "disableSlot", "(II)V",
+                                    part_obj, {vi(4), vi(0)}, &v, &e);
+                c.check(ran && !(part->slots[0].flags & 0x50u),
+                        "car: disableSlot(0) clears the flags");
+
+                Object *dp = make_pt("java.lang.Vector3", 0.1f, 0.2f, 0.3f,
+                                     "x", "y", "z");
+                Object *dy = make_pt("java.lang.Ypr", 0.1f, 0.2f, 0.3f, "y",
+                                     "p", "r");
+                ran = dp && dy && call_instance(
+                    vm, *part_unit, "setSlotPos",
+                    "(ILjava.lang.Vector3;Ljava.lang.Ypr;)V", part_obj,
+                    {vi(4), Value::make_obj(dp), Value::make_obj(dy)}, &v, &e);
+                c.check(ran && (part->slots[0].flags & 0x20u) &&
+                            std::fabs(part->slots[0].pos[0] - 0.006f) < 1e-5f &&
+                            std::fabs(part->slots[0].pos[1] - 0.19f) < 1e-5f &&
+                            std::fabs(part->slots[0].pos[2] + 0.245f) < 1e-5f,
+                        "car: setSlotPos applies position deltas");
+                ran = call_instance(vm, *part_unit, "setSlotPos",
+                                    "(ILjava.lang.Vector3;Ljava.lang.Ypr;)V",
+                                    part_obj,
+                                    {vi(4), Value::make_null(),
+                                     Value::make_null()}, &v, &e);
+                c.check(ran && !(part->slots[0].flags & 0x20u) &&
+                            std::fabs(part->slots[0].pos[0] + 0.094f) < 1e-6f &&
+                            std::fabs(part->slots[0].pos[1] + 0.010f) < 1e-6f &&
+                            std::fabs(part->slots[0].pos[2] + 0.545f) < 1e-6f,
+                        "car: setSlotPos(null,null) restores the type pose");
+                const std::string sd = "1.000,2.000,3.000,0.000,0.000,0.000";
+                ran = call_instance(vm, *part_unit, "setSlotDamage",
+                                    "(ILjava.lang.String;)V", part_obj,
+                                    {vi(0), Value::make_str(sd)}, &v, &e);
+                cstr(part_unit, part_obj, "getSlotDamage",
+                     "(I)Ljava.lang.String;", {vi(0)}, sd,
+                     "car: setSlotDamage round-trip");
+                c.check(ran && part->slots[0].pos[0] == 1.0f &&
+                            part->slots[0].pos[1] == 2.0f &&
+                            part->slots[0].pos[2] == 3.0f &&
+                            (part->slots[0].flags & 0x20u),
+                        "car: setSlotDamage writes the pose");
+                ran = call_instance(vm, *part_unit, "setSlotDamage",
+                                    "(ILjava.lang.String;)V", part_obj,
+                                    {vi(0), Value::make_str("")}, &v, &e);
+                cstr(part_unit, part_obj, "getSlotDamage",
+                     "(I)Ljava.lang.String;", {vi(0)}, "",
+                     "car: short setSlotDamage clears the override");
+                c.check(ran && !(part->slots[0].flags & 0x20u) &&
+                            part->slots[0].pos[0] == 1.0f,
+                        "car: short form keeps the last pose (exe semantics)");
+                ran = call_instance(vm, *part_unit, "setSlotPos",
+                                    "(ILjava.lang.Vector3;Ljava.lang.Ypr;)V",
+                                    part_obj,
+                                    {vi(4), Value::make_null(),
+                                     Value::make_null()}, &v, &e);
+                c.check(ran && part->slots[0].pos[0] == -0.094f,
+                        "car: setSlotPos restores the type pose again");
+            }
+        } else {
+            c.check(false, "car: part payload from FL_door.cfg available");
+        }
+    }
 
     // ---- subsystem natives stay explicit stubs ----
     ran = call_instance(vm, *gr_unit, "getInfo", "(II)I", gr, {vi(0), vi(0)}, &out,

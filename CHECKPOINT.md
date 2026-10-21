@@ -41,7 +41,7 @@ Update this file (section "State") and commit whenever you stop. Last update: se
 | `notes/14-audio-input.md` | DirectInput8 devices/hotkeys, DirectSound8 mixer/SFX |
 | `notes/15-toolchain.md` | mingw-w64 i686 decision, PE/ASI proof, ABI risks |
 | `notes/16-package-registry.md` | resource id scheme, classpath registry, gaps |
-| `notes/17-scx-mesh.md` | SCX mesh format (in progress) |
+| `notes/17-scx-mesh.md` | SCX mesh format and loaders v1–v6, material grammar, collision/render binding, cross-check |
 | `notes/classes.md` | RTTI class table |
 | `analysis/names.json` | ~1,817 address→name map (apply to Ghidra); `natives.tsv` (422 natives), `procs.tsv`, `strings.tsv`, `slrr.json` |
 | `tools/` | `parse_rpk.py`, `rtti*.py`, `strxref.py`, `natives.py`, `native_notes.py`, `decomp.py`, `SlrrCli/` |
@@ -49,13 +49,11 @@ Update this file (section "State") and commit whenever you stop. Last update: se
 
 ## State (update this on every checkpoint)
 Done (RE): arch map; RPK/RDB formats + C++ refinements; RTTI map; car/part/wheel/engine/SfxTable/DynoData structs (notes/13); Vehicle::update incl. inline Pacejka, drivetrain split and raycast suspension/trigger spring (notes/09); collision shapes are V-Clip feature kinds and the constraint-list solver is dead in 2.3.1 (notes/11); render pipeline + materials/shadows/flares/palette/gamma (notes/12); DirectInput8 + DirectSound8 systems (notes/14); toolchain proof (notes/15).
-Done (code, `src/`, `make -C src clean check` green): strict TUFA parser + full VM (branches/objects/arrays/invokes/scheduler; conformance 2,907 files/9,717 bodies/639k instr, 0 failures); native registry 422 (38 implemented — Math/System/String/Vector3 with exe quirks — 384 explicit engine stubs); RPK/RDB loaders; package+classpath registry (part 0xD2 → `java.game.cars.Axis_FL_door` + `FL_door.cfg`); cfg parser (3,189/3,194 shipped cfgs); physics core (RK4, manifolds, friction/restitution, direct resolve loop); boot path (`game.Init` static init → 100, `Vector3.length()` → 5).
-In progress: vehicle simulation port (`src/vehicle/`); SCX mesh format decode (notes/17).
-Known open spots: SCX mesh loader/shape 6; missing `.class` refs that exist only as `.java` (runtime source compilation); 384 native stubs; CMaterial partial classes/font atlas; VM `>>>`; engine/service startup (GameType, type registry, streaming); no way to run PE32 here (no wine32).
+Done (code, `src/`, `make -C src clean check` green): strict TUFA parser + full VM (branches/objects/arrays/invokes/scheduler; conformance 2,907 files/9,717 bodies/639k instr, 0 failures); RPK/RDB loaders; package+classpath registry (part 0xD2 → `java.game.cars.Axis_FL_door` + `FL_door.cfg`); cfg parser (3,189/3,194 shipped cfgs); physics core (RK4, manifolds, friction/restitution, direct resolve loop); boot path (`game.Init` static init → 100, `Vector3.length()` → 5); vehicle simulation + SCX mesh/collision loader; Win32/mingw PE32 DLL proof; runtime resource/instance model (GameRef/ResourceRef/GameType natives); car payload model (`src/game/car.*`) with Chassis 26/39, WheelRef 35/35, Part 25/29 and Vehicle.hasCrime implemented. Native registry 422 (156 implemented, 266 explicit engine stubs).
+In progress: none; car-native group complete (classdump runtime tests cover wheels/Pacejka/engine/part slots).
+Known open spots: Chassis subsystem natives (mass/CM/OSD/SFX/force update) and Part getLogo/getMass/flap/install_OK stay explicit stubs; missing `.class` refs that exist only as `.java` (runtime source compilation); 266 native stubs; CMaterial partial classes/font atlas; VM `>>>`; engine/service startup (GameType, type registry, streaming); no way to run PE32 here (no wine32).
 
 ## Next-steps queue (in order)
-1. Finish vehicle sim; wire `vehiclecheck` into `make check`; then mesh collision (shape 6) on the SCX decode.
-2. SCX loader in `src/` for meshes (render sections + collision).
-3. Game runtime on top of the registry: GameType/GameRef/ResourceRef natives, type registry from `.rdb`, OS/service startup.
-4. Render/audio/input native implementations on D3D9/DirectSound8/DirectInput8 (toolchain ready); ASI hook DLL first.
-5. Hybrid validation against the original exe on Windows/wine32 (blocked here); then full exe build.
+1. Remaining car natives once render/audio/physics services exist (Chassis mass/CM/OSD/SFX/force update, Part logo/flap/install_OK).
+2. Render/audio/input native implementations on D3D9/DirectSound8/DirectInput8 (toolchain ready); ASI hook DLL first.
+3. Hybrid validation against the original exe on Windows/wine32 (blocked here); then full exe build.
