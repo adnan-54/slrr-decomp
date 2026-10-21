@@ -1,7 +1,7 @@
 ---
 id: 020
-status: todo
-branch:
+status: implemented
+branch: card/020
 depends: []
 ---
 # input: process-wide device/hotkey tables + Input device natives

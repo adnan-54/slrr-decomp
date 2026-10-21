@@ -26,6 +26,8 @@
 #include "engine/math.h"
 #include "game/car.h"
 #include "game/runtime.h"
+#include "input/device.h"
+#include "input/hotkeys.h"
 #include "platform/fs.h"
 #include "script/vm.h"
 #include "vehicle/dyno.h"
@@ -3315,6 +3317,62 @@ bool pt_set_sfx_loop_params(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// ---- java.io.Input ---------------------------------------------------------
+
+// 0x4de990 Input.getAxis
+bool in_get_axis(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t d, i;
+    if (!want("Input.getAxis", a, 2, err) || !get_i("Input.getAxis", a[0], &d, err) ||
+        !get_i("Input.getAxis", a[1], &i, err))
+        return false;
+    *out = Value::make_float(input::devices().get_axis(d, i));
+    return true;
+}
+
+// 0x4de9c0 Input.getDeviceName
+bool in_get_device_name(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t i;
+    if (!want("Input.getDeviceName", a, 1, err) ||
+        !get_i("Input.getDeviceName", a[0], &i, err))
+        return false;
+    const char *p = input::devices().device_name(i);
+    *out = p ? Value::make_str(p) : Value::make_null();
+    return true;
+}
+
+// 0x4de6d0 Input.activeAxis
+bool in_active_axis(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t d;
+    if (!want("Input.activeAxis", a, 1, err) || !get_i("Input.activeAxis", a[0], &d, err))
+        return false;
+    *out = Value::make_int(input::devices().active_axis(d));
+    return true;
+}
+
+// 0x4de700 Input.axisName
+bool in_axis_name(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t d, i;
+    if (!want("Input.axisName", a, 2, err) || !get_i("Input.axisName", a[0], &d, err) ||
+        !get_i("Input.axisName", a[1], &i, err))
+        return false;
+    *out = Value::make_str(input::devices().axis_name(d, i));
+    return true;
+}
+
+// 0x4de9f0 Input.lastKey (raw bytes; returns the packed (ansi << 16) | scan)
+bool in_last_key(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Input.lastKey", a, 0, err)) return false;
+    input::Backend *b = input::backend();
+    // INVENTED: no keyboard backend means no key; the exe always has one.
+    *out = Value::make_int(b ? (int32_t)input::hotkeys().last_key(*b) : 0);
+    return true;
+}
+
 // ---- java.sound.Sound ------------------------------------------------------
 
 // 0x4e48f0 Sound.changeMusicSet(int id)
@@ -3680,13 +3738,13 @@ const std::vector<Entry> &table()
     {"java.lang.Math", "exp", "(F)F", math_exp, false},
     {"java.lang.Math", "pow", "(FF)F", math_pow, false},
     {"java.lang.Math", "atan2", "(FF)F", math_atan2, false},
-    {"java.io.Input", "getAxis", "(II)F", nullptr, true},
-    {"java.io.Input", "getDeviceName", "(I)Ljava.lang.String;", nullptr, true},
+    {"java.io.Input", "getAxis", "(II)F", in_get_axis, false},
+    {"java.io.Input", "getDeviceName", "(I)Ljava.lang.String;", in_get_device_name, false},
     {"java.io.Input", "mapAxis", "(Ljava.util.resource.GameRef;IIIFFFF)V", nullptr, true},
     {"java.io.Input", "setAxisSmooth", "(Ljava.util.resource.GameRef;IFFFF)V", nullptr, true},
-    {"java.io.Input", "activeAxis", "(I)I", nullptr, true},
-    {"java.io.Input", "axisName", "(II)Ljava.lang.String;", nullptr, true},
-    {"java.io.Input", "lastKey", "()I", nullptr, true},
+    {"java.io.Input", "activeAxis", "(I)I", in_active_axis, false},
+    {"java.io.Input", "axisName", "(II)Ljava.lang.String;", in_axis_name, false},
+    {"java.io.Input", "lastKey", "()I", in_last_key, false},
     {"java.io.Input", "createHotkey", "(IILjava.io.Hotkey;Ljava.util.resource.GameRef;Ljava.render.Osd;I)V", nullptr, true},
     {"java.io.Input", "deleteHotkey", "(Ljava.io.Hotkey;)V", nullptr, true},
     {"java.io.Input", "checkHotkeys", "(Ljava.util.resource.GameRef;Ljava.render.Osd;)V", nullptr, true},

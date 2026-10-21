@@ -12,6 +12,7 @@
 namespace input {
 
 class Backend;
+class HotkeyTable;
 
 struct DeviceRecord {
     int type = 0;
@@ -56,5 +57,12 @@ class DeviceTable {
     float mouse_sensitivity_ = 0.5f;  // DAT_00794b70
     float poll_ms_ = 0.0f;            // DAT_00794b74 (mouse velocity divisor)
 };
+
+// Process-wide tables, like the exe globals 0x78d0f0 (devices) / 0x5fe478 (hotkeys).
+DeviceTable &devices();
+HotkeyTable &hotkeys();
+// Null until installed; install_backend runs devices().init(*b) (exe: 0x565fc0 at startup).
+Backend *backend();
+void install_backend(Backend *b);
 
 }  // namespace input

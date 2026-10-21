@@ -5,6 +5,8 @@
 
 #include <cmath>
 
+#include "input/hotkeys.h"
+
 namespace input {
 
 // 256-entry keyboard control name table (PTR_DAT_005e0098). Unused scan codes
@@ -344,6 +346,36 @@ const char *DeviceTable::device_name(int device) const
     if (device < 0 || device >= count_)
         return nullptr;
     return devices_[device].device_name;
+}
+
+DeviceTable &devices()
+{
+    static DeviceTable table;  // 0x78d0f0
+    return table;
+}
+
+HotkeyTable &hotkeys()
+{
+    static HotkeyTable table;  // 0x5fe478
+    return table;
+}
+
+static Backend *&installed_backend()
+{
+    static Backend *b = nullptr;
+    return b;
+}
+
+Backend *backend()
+{
+    return installed_backend();
+}
+
+void install_backend(Backend *b)
+{
+    installed_backend() = b;
+    if (b)
+        devices().init(*b);  // 0x565fc0 at startup
 }
 
 }  // namespace input
