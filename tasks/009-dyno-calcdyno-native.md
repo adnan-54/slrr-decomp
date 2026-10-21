@@ -1,7 +1,7 @@
 ---
 id: 009
-status: todo
-branch:
+status: implemented
+branch: card/009
 depends: [007, 008]
 ---
 # natives: DynoData.calcDyno (0x4cba80)

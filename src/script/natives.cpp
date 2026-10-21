@@ -2854,6 +2854,151 @@ bool dd_get_hp(Vm &vm, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4ec980 Instance__getFloatField: missing or non-numeric field reads as 0.
+float dd_get_f(Vm &vm, Object *self, const char *name)
+{
+    std::string e;
+    Value v;
+    if (!vm.get_instance_field(self, name, &v, &e)) return 0.0f;
+    if (v.kind == Value::Float) return v.f;
+    if (v.kind == Value::Int) return (float)v.i;
+    return 0.0f;
+}
+
+// 0x4ecff0: field lookup only.
+bool dd_has(Vm &vm, Object *self, const char *name)
+{
+    std::string e;
+    Value v;
+    return vm.get_instance_field(self, name, &v, &e);
+}
+
+// 0x4ed080 Instance__setFloatField: failures (missing field) are ignored.
+void dd_set_f(Vm &vm, Object *self, const char *name, float value)
+{
+    std::string e;
+    vm.set_instance_field(self, name, Value::make_float(value), &e);
+}
+
+// 0x4ed060: arr[i] = max(table[i], 0), array length taken from the script side.
+// INVENTED: i >= table.size() -> write 0 (the exe reads past the table when the
+// script array is longer than count).
+void dd_fill_array(Vm &vm, Object *self, const char *name, const std::vector<float> &table)
+{
+    std::string e;
+    Value v;
+    if (!vm.get_instance_field(self, name, &v, &e) || v.kind != Value::Array || !v.arr)
+        return;
+    for (size_t i = 0; i < v.arr->elems.size(); i++) {
+        float x = i < table.size() ? table[i] : 0.0f;
+        v.arr->elems[i] = Value::make_float(x <= 0.0f ? 0.0f : x);
+    }
+}
+
+// 0x4cba80 DynoData.calcDyno
+bool dd_calc_dyno(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *self;
+    float tablesize;
+    if (!want("DynoData.calcDyno", a, 2, err) ||
+        !receiver_object("DynoData.calcDyno", a, &self, err) ||
+        !get_f("DynoData.calcDyno", a[1], &tablesize, err))
+        return false;
+
+    bool temp = false;
+    EngineModel *e = nullptr;
+    if (vm.find_class("java.lang.Native")) e = game::dyno_data(self);
+    std::unique_ptr<EngineModel> temp_model;
+    if (!e) {
+        temp = true;
+        e = new EngineModel;
+        temp_model.reset(e);
+    }
+    e->set_defaults();
+    e->cylinders = dd_get_f(vm, self, "cylinders");
+    e->bore_r = dd_get_f(vm, self, "bore") * 0.5f;
+    e->crank_r = dd_get_f(vm, self, "stroke") * 0.5f;
+    e->v_min = dd_get_f(vm, self, "Vmin");
+    e->in_min = dd_get_f(vm, self, "in_min");
+    e->in_max = dd_get_f(vm, self, "in_max");
+    e->out_min = dd_get_f(vm, self, "out_min");
+    e->out_max = dd_get_f(vm, self, "out_max");
+    e->in_open = dd_get_f(vm, self, "time_in_open");
+    e->in_close = dd_get_f(vm, self, "time_in_close");
+    e->out_open = dd_get_f(vm, self, "time_out_open");
+    float oc = dd_get_f(vm, self, "time_out_close");
+    e->in_open_base = e->in_open;
+    e->out_close = oc;
+    e->in_duration = e->in_close - e->in_open;
+    e->out_open_base = e->out_open;
+    e->out_duration = oc - e->out_open;
+    e->time_burn = dd_get_f(vm, self, "time_burn");
+    e->rpm_limit = dd_get_f(vm, self, "RPM_limit");
+    e->spark_min = dd_get_f(vm, self, "time_spark_min");
+    e->spark_inc = dd_get_f(vm, self, "time_spark_inc");
+    e->spark_rpm0 = dd_get_f(vm, self, "time_spark_RPM0");
+    e->spark_rpm1 = dd_get_f(vm, self, "time_spark_RPM1");
+    e->turbo_mul = dd_get_f(vm, self, "rpm_turbo_mul");
+    e->turbo_opt = dd_get_f(vm, self, "rpm_turbo_opt");
+    e->turbo_range = dd_get_f(vm, self, "rpm_turbo_range");
+    e->turbo_band = 0.0f;
+    e->p_turbo_max = dd_get_f(vm, self, "P_turbo_max");
+    e->p_turbo_waste =
+        dd_has(vm, self, "P_turbo_waste") ? dd_get_f(vm, self, "P_turbo_waste") : e->p_turbo_max;
+    e->mixture_h = dd_get_f(vm, self, "mixture_H");
+    e->afr = dd_get_f(vm, self, "mixture_ratio");
+    e->max_air = dd_get_f(vm, self, "max_air_consumption");
+    e->max_fuel = dd_get_f(vm, self, "max_fuel_consumption");
+    e->t_intake = 293.15f;
+    if (dd_has(vm, self, "intercooling"))
+        e->t_intake = e->t_intake * dd_get_f(vm, self, "intercooling");
+    e->update_mixture();
+    e->update_geometry();
+    float mr = dd_get_f(vm, self, "maxRPM");
+    if (0.0f < mr)
+        e->max_rpm = mr;
+    else
+        dd_set_f(vm, self, "maxRPM", e->max_rpm);
+    float st = e->max_rpm / tablesize;
+    e->table_set = 0;
+    if (st <= 1.0f) st = 1.0f;
+    e->build_tables((int)st);
+    if (temp) {
+        dd_set_f(vm, self, "table_stepsize", st);
+        dd_set_f(vm, self, "torque", 1.0f);
+        dd_fill_array(vm, self, "torquetable", e->torque_table[0]);
+        dd_fill_array(vm, self, "HPtable", e->power_table[0]);
+    }
+    dd_set_f(vm, self, "Displacement", e->displacement);
+    dd_set_f(vm, self, "Compression", e->compression);
+    dd_set_f(vm, self, "maxTorque", e->max_torque);
+    dd_set_f(vm, self, "RPM_maxTorque", e->rpm_max_torque);
+    dd_set_f(vm, self, "maxHP", e->max_hp);
+    dd_set_f(vm, self, "RPM_maxHP", e->rpm_max_hp);
+    // nitro pass: intercooling is dropped
+    e->t_intake = 293.15f;
+    float nh = dd_get_f(vm, self, "nitro_H");
+    float nc = dd_get_f(vm, self, "nitro_cooling");
+    if (0.0001f < nh - 1.0f || 0.0001f < nc - 1.0f) {
+        e->mixture_h = e->mixture_h * nh;
+        e->t_intake = e->t_intake * nc;
+        float keep = e->max_rpm;
+        e->update_mixture();
+        e->update_geometry();
+        e->max_rpm = keep;
+        e->table_set = 1;
+        e->build_tables((int)(keep / tablesize));  // no >= 1 clamp here
+        if (!temp) {
+            *out = Value::make_float(0.0f);  // persistent model: done
+            return true;
+        }
+        dd_set_f(vm, self, "torque2", 1.0f);
+        dd_fill_array(vm, self, "torquetable2", e->torque_table[1]);
+    }
+    *out = Value::make_float(0.0f);
+    return true;
+}
+
 bool pt_get_slots(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!want("Part.getSlots", a, 1, err)) return false;
@@ -3457,7 +3602,7 @@ const std::vector<Entry> &table()
     {"java.game.parts.Part", "install_OK", "(Ljava.util.resource.GameRef;ILjava.util.resource.GameRef;ILjava.lang.Vector3;)[I", nullptr, true},
     {"java.game.parts.DynoData", "newNative", "()V", dd_new_native, false},
     {"java.game.parts.DynoData", "deleteNative", "()V", dd_delete_native, false},
-    {"java.game.parts.DynoData", "calcDyno", "(F)F", nullptr, true},
+    {"java.game.parts.DynoData", "calcDyno", "(F)F", dd_calc_dyno, false},
     {"java.game.parts.DynoData", "getTorque", "(FF)F", dd_get_torque, false},
     {"java.game.parts.DynoData", "getHP", "(FF)F", dd_get_hp, false},
     {"java.io.Controller", "user_Add", "(IIIFFFF)I", nullptr, true},
