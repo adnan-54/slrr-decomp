@@ -1,8 +1,8 @@
 // Rigid-body integration, force model and contact solver (notes/08-physics.md,
 // notes/11-collision-shapes.md §5). The exe keeps two state buffers and reruns
 // the RK4 integration from the start-of-step state on every sub-iteration; the
-// port reproduces that: solver forces are consumed by the next integration and
-// the last pass leaves the accepted velocities in place.
+// port reproduces that: solver impulses, forces and the position offset sit in
+// the start state and act through every later re-integration.
 #include <math.h>
 
 #include "physics/physics.h"
@@ -139,16 +139,13 @@ struct BodyState {
     Quat rot;
 };
 
-// Step-start state for one root body. RK4 restarts from it on every
-// sub-iteration; it stays immutable for the whole step. Solver impulses are
-// accumulated separately and replayed as an initial-velocity offset, so the
-// last working state (start + impulses + gravity) is the true end-of-step
-// state carried into the next step.
+// Step-start state for one root body: the exe's active state buffer (index
+// +0x20c). RK4 restarts from it on every sub-iteration (0x5001c0 integrates
+// active -> other); PhysBody__applyImpulseAt 0x505450 adds solver impulses to
+// it, so they reach the working (other) state at the next integration.
 struct StepState {
     RigidBody *body;
     BodyState start;
-    Vec3 impulse{0.0f, 0.0f, 0.0f};          // accumulated linear impulse
-    Vec3 impulse_momentum{0.0f, 0.0f, 0.0f}; // accumulated r x impulse
 };
 
 static BodyState evaluate(const RigidBody &b, const BodyState &s, Vec3 force, Vec3 torque)
@@ -201,11 +198,10 @@ static void integrate_body(RigidBody &b, const BodyState &start, float h)
     BodyState k3 = evaluate(b, stepped(start, k2, h * 0.5f), force, torque);
     BodyState k4 = evaluate(b, stepped(start, k3, h), force, torque);
 
-    // The position-correction offset (state s[6..8]) is kept out of pos for
-    // contact queries and folded in at the end of the step, so `d` stays the
-    // uncorrected separation the resolve formula expects (notes/11 §5).
+    // 0x506530 adds the active state's position offset s[6..8] after the RK4
+    // sum, so contact queries on the integrated state see the correction.
     b.pos = start.pos + k1.pos * (h / 6.0f) + k2.pos * (h / 3.0f) +
-            k3.pos * (h / 3.0f) + k4.pos * (h / 6.0f);
+            k3.pos * (h / 3.0f) + k4.pos * (h / 6.0f) + b.pos_correction;
     b.vel = start.vel + k1.vel * (h / 6.0f) + k2.vel * (h / 3.0f) +
             k3.vel * (h / 3.0f) + k4.vel * (h / 6.0f);
     b.angular_momentum = start.momentum + k1.momentum * (h / 6.0f) +
@@ -240,25 +236,16 @@ static void integrate_body(RigidBody &b, const BodyState &start, float h)
         b.angular_momentum = b.angular_momentum * factor;
     }
 
-    // Solver forces are consumed by this integration (applyForceAt: "consumed
-    // by the next integration").
-    b.force = Vec3{0.0f, 0.0f, 0.0f};
-    b.torque = Vec3{0.0f, 0.0f, 0.0f};
+    // Solver forces stay in the active state for the whole step and are
+    // re-applied by every sub-iteration's integration (0x5051e0 accumulates).
+    b.integrated = true; // 0x5001c0 sets other-state flags bit0
 }
 
 // ---- Contact resolution (notes/11 §5, c_collision__resolve 0x4f0dd0) ----
 
-static float contact_k(const RigidBody &a, const RigidBody &b, Vec3 n, Vec3 pa, Vec3 pb)
+static bool is_dynamic(const RigidBody &b)
 {
-    // K = n . ((I^-1 (r x n)) x r) + invMass, the documented form; the scalar
-    // triple product reduces it to (r x n) . I^-1 (r x n).
-    Mat34 ra = a.rotation();
-    Vec3 ca = vec_cross(mat_vec(ra, pa), n);
-    float k = vec_dot(ca, mat_vec(a.world_inv_inertia(), ca));
-    Mat34 rb = b.rotation();
-    Vec3 cb = vec_cross(mat_vec(rb, pb), n);
-    k += vec_dot(cb, mat_vec(b.world_inv_inertia(), cb));
-    return k + a.def.inv_mass + b.def.inv_mass;
+    return b.def.inv_mass > 0.0f && (b.def.flags & 4u) == 0;
 }
 
 static StepState *find_step_state(std::vector<StepState> &states, RigidBody *body)
@@ -269,72 +256,75 @@ static StepState *find_step_state(std::vector<StepState> &states, RigidBody *bod
     return nullptr;
 }
 
-// Replay the step's accumulated impulses after the gravity/force integration.
-// Applying them here (velocity level, not as an initial offset) keeps a resting
-// body from riding the support impulse across the whole step.
-static void state_apply_accumulated(RigidBody &b, const StepState &st)
+// One contact side in the active (start) state: 0x4f0dd0 takes r = R p from
+// PhysBody__rotateToWorld 0x5061f0 and I^-1 from state +0xa4, both active.
+struct ContactSide {
+    bool dyn;
+    Vec3 r;
+    Mat34 inv_inertia; // world
+    float inv_mass;
+};
+
+static ContactSide contact_side(const StepState &st, bool dyn, const Vec3 &p_local)
 {
-    if (b.def.inv_mass <= 0.0f)
-        return;
-    b.vel += st.impulse * b.def.inv_mass;
-    b.angular_momentum += st.impulse_momentum;
+    ContactSide s{dyn, Vec3{0.0f, 0.0f, 0.0f}, Mat34{}, 0.0f};
+    if (!dyn)
+        return s; // a non-dynamic side adds nothing to K
+    const RigidBody &b = *st.body;
+    Quat q = st.start.rot;
+    quat_normalize(&q);
+    Mat34 r;
+    quat_to_mat(&r, &q);
+    Mat34 rt, tmp;
+    mat_transpose(&rt, &r);
+    mat_mul(&tmp, &r, &b.def.inv_inertia);
+    mat_mul(&s.inv_inertia, &tmp, &rt);
+    s.r = mat_vec(r, p_local);
+    s.inv_mass = b.def.inv_mass;
+    return s;
 }
 
-// applyImpulseAt: the working body keeps the impulse for the final state; the
-// step accumulator replays it when the next sub-iteration re-integrates.
-static void state_apply_impulse(RigidBody &b, StepState *st, const Vec3 &impulse,
-                                const Vec3 &p_local)
+// K term of one side along d: d . ((I^-1 (r x d)) x r) + invMass.
+static float side_k(const ContactSide &s, const Vec3 &d)
 {
-    b.apply_impulse_at(impulse, p_local);
-    if (!st || b.def.inv_mass <= 0.0f)
-        return;
-    st->impulse += impulse;
-    Vec3 r = mat_vec(b.rotation(), p_local);
-    st->impulse_momentum += vec_cross(r, impulse);
+    if (!s.dyn)
+        return 0.0f;
+    Vec3 u = mat_vec(s.inv_inertia, vec_cross(s.r, d));
+    return vec_dot(d, vec_cross(u, s.r)) + s.inv_mass;
 }
 
-// Gauss-Jordan with partial pivoting for the <=4 point manifold LCP. The
-// augmented column n holds the right-hand side.
-static bool solve_linear(float A[4][5], int n)
+// PhysBody__applyImpulseAt 0x505450: v += J invm, L += r x J on the active state.
+static void side_impulse(StepState &st, const ContactSide &s, const Vec3 &j)
 {
-    for (int col = 0; col < n; col++) {
-        int piv = col;
-        for (int r = col + 1; r < n; r++)
-            if (fabsf(A[r][col]) > fabsf(A[piv][col]))
-                piv = r;
-        if (fabsf(A[piv][col]) < 1e-9f)
-            return false;
-        if (piv != col)
-            for (int k = col; k <= n; k++) {
-                float t = A[col][k];
-                A[col][k] = A[piv][k];
-                A[piv][k] = t;
-            }
-        float inv = 1.0f / A[col][col];
-        for (int k = col; k <= n; k++)
-            A[col][k] *= inv;
-        for (int r = 0; r < n; r++) {
-            if (r == col || A[r][col] == 0.0f)
-                continue;
-            float f = A[r][col];
-            for (int k = col; k <= n; k++)
-                A[r][k] -= f * A[col][k];
-        }
-    }
-    return true;
+    st.start.vel += j * s.inv_mass;
+    st.start.momentum += vec_cross(s.r, j);
 }
 
-// Resolve one body pair as a block: solve the normal impulses of its manifold
-// together (notes/11 §5 is per-contact PGS; the block keeps a face manifold
-// from oscillating and lets the normal resultant shift to counter friction
-// torque like a real contact patch). Friction and position correction stay
-// per-contact and in list order.
-static int resolve_pair(Contact *cs, int n, float dt, std::vector<StepState> &states)
+// PhysBody__applyForceAt 0x5051e0: force += F, torque += r x F (active state).
+static void side_force(RigidBody &b, const ContactSide &s, const Vec3 &f)
 {
-    RigidBody &a = *cs[0].a;
-    RigidBody &b = *cs[0].b;
-    bool dyn_a = a.def.inv_mass > 0.0f && (a.def.flags & 4u) == 0;
-    bool dyn_b = b.def.inv_mass > 0.0f && (b.def.flags & 4u) == 0;
+    b.force += f;
+    b.torque += vec_cross(s.r, f);
+}
+
+// c_collision__resolve 0x4f0dd0, reached through constraint__vf4_resolve
+// 0x4f0db0 for modes 6/7. Returns 0 (nothing applied), 1, or 2 (friction
+// clamped). Velocities come from the integrated (other) state, PhysBody__
+// pointVelocity 0x505e80, so impulses of this pass show only after the next
+// integration.
+static int resolve_contact(Contact &c, float dt, std::vector<StepState> &states)
+{
+    if (c.mode != 6 && c.mode != 7)
+        return 0; // 0x4f0db0
+    if (c.separation > 0.05f)
+        return 0;
+    RigidBody &a = *c.a;
+    RigidBody &b = *c.b;
+    // INVENTED: the exe's dyn test is only !(def flags & 4); static bodies here
+    // are built with inv_mass 0 and no flag, so inv_mass 0 also counts as static.
+    // Body flag 0x80 (also excluded by the exe) is not modelled.
+    bool dyn_a = is_dynamic(a);
+    bool dyn_b = is_dynamic(b);
     if (!dyn_a && !dyn_b)
         return 0;
     // TODO: compound children (root-frame lift) and the 0x20000 special case are
@@ -344,178 +334,100 @@ static int resolve_pair(Contact *cs, int n, float dt, std::vector<StepState> &st
     if (!sa || !sb)
         return 0;
 
-    // Collect the still-live contacts of the manifold (c_collision d <= 0.05).
-    int idx[4], m = 0;
-    for (int i = 0; i < n && m < 4; i++)
-        if (cs[i].separation <= 0.05f)
-            idx[m++] = i;
-    if (m == 0)
-        return 0;
-
-    Mat34 rotA = a.rotation(), rotB = b.rotation();
-    Mat34 ia = a.world_inv_inertia(), ib = b.world_inv_inertia();
-    Vec3 nrm[4], ra[4], rb[4];
-    float e[4], vn[4], target[4], lambda0[4];
-    for (int i = 0; i < m; i++) {
-        Contact &c = cs[idx[i]];
-        nrm[i] = c.normal;
-        ra[i] = mat_vec(rotA, c.local_a);
-        rb[i] = mat_vec(rotB, c.local_b);
-        e[i] = c.restitution;
-        lambda0[i] = c.normal_impulse;
-        Vec3 vrel = a.point_velocity(c.local_a) - b.point_velocity(c.local_b);
-        vn[i] = vec_dot(c.normal, vrel);
-        // notes/11 §5 mode 6 restitution rhs. Mode 7 targets zero approach:
-        // the documented resting spring bias is a force, and replayed as a
-        // velocity-level impulse it would leave a permanent 0.09 m/s separation
-        // at d = 0.021, so the documented position correction replaces it.
-        target[i] = (c.mode == 6 && vn[i] < -0.2f)
-                        ? -(1.0f + e[i]) * (vn[i] + 0.2f)
-                        : 0.0f;
-    }
-
-    // Manifold effective mass: K[i][j] is the vn change at point i from a unit
-    // normal impulse at point j (contact_k is the diagonal).
-    float K[4][4];
-    for (int i = 0; i < m; i++)
-        for (int j = 0; j < m; j++) {
-            Vec3 ca = vec_cross(ra[j], nrm[j]);
-            Vec3 cb = vec_cross(rb[j], nrm[j]);
-            float k = vec_dot(nrm[i], nrm[j]) * (a.def.inv_mass + b.def.inv_mass);
-            k += vec_dot(nrm[i], vec_cross(mat_vec(ia, ca), ra[i]));
-            k += vec_dot(nrm[i], vec_cross(mat_vec(ib, cb), rb[i]));
-            K[i][j] = k;
-        }
-
-    // Small LCP: lambda >= 0, vn_after >= target, equal where lambda > 0.
-    // Enumerate active sets; the true one has non-negative total impulses and
-    // no untouched point still approaching. 2^4 at most.
-    float delta[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    bool solved = false;
-    for (int mask = (1 << m) - 1; mask >= 0 && !solved; mask--) {
-        int act[4], na = 0;
-        for (int i = 0; i < m; i++)
-            if (mask & (1 << i))
-                act[na++] = i;
-        float A[4][5] = {};
-        for (int r = 0; r < na; r++) {
-            for (int c = 0; c < na; c++)
-                A[r][c] = K[act[r]][act[c]];
-            A[r][na] = target[act[r]] - vn[act[r]];
-        }
-        if (na > 0 && !solve_linear(A, na))
-            continue;
-        float d[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-        bool valid = true;
-        for (int r = 0; r < na; r++) {
-            d[act[r]] = A[r][na];
-            if (lambda0[act[r]] + d[act[r]] < -1e-6f)
-                valid = false;
-        }
-        for (int i = 0; i < m && valid; i++) {
-            if (mask & (1 << i))
-                continue;
-            float v = vn[i];
-            for (int j = 0; j < m; j++)
-                v += K[i][j] * d[j];
-            if (v < target[i] - 1e-5f)
-                valid = false;
-        }
-        if (valid) {
-            for (int i = 0; i < m; i++)
-                delta[i] = d[i];
-            solved = true;
-        }
-    }
-    if (!solved) {
-        // Numerical fallback: full solve with the total impulse clamped at zero.
-        float A[4][5] = {};
-        for (int r = 0; r < m; r++) {
-            for (int c = 0; c < m; c++)
-                A[r][c] = K[r][c];
-            A[r][m] = target[r] - vn[r];
-        }
-        if (!solve_linear(A, m))
-            return 0;
-        for (int i = 0; i < m; i++) {
-            delta[i] = A[i][m];
-            if (lambda0[i] + delta[i] < 0.0f)
-                delta[i] = -lambda0[i];
-        }
+    const Vec3 n = c.normal;
+    Vec3 vrel = a.point_velocity(c.local_a) - b.point_velocity(c.local_b);
+    float vn = vec_dot(n, vrel);
+    float imp = 0.0f;  // mode 6: velocity-level impulse
+    float bias = 0.0f; // mode 7: applied as a force
+    if (c.mode == 6) {
+        if (vn < -0.2f)
+            imp = -((c.restitution + 1.0f) * (vn + 0.2f));
+    } else {
+        // INVENTED: a static body's bit0 is never set by 0x5001c0; its initial
+        // value is not traced and is taken as clear.
+        if (!(a.integrated && b.integrated) && !(c.separation - 0.03f >= 0.0f))
+            bias = (0.03f - c.separation) * 10.0f;
+        if (vn < -0.2f)
+            bias -= (c.restitution + 1.0f) * (vn + 0.2f);
     }
 
     int result = 0;
-    for (int i = 0; i < m; i++) {
-        if (delta[i] == 0.0f)
-            continue;
-        Contact &c = cs[idx[i]];
-        state_apply_impulse(a, sa, c.normal * delta[i], c.local_a);
-        state_apply_impulse(b, sb, -c.normal * delta[i], c.local_b);
-        c.normal_impulse += delta[i];
+    float total = imp + bias;
+    if (total > 0.0f) {
+        ContactSide pa = contact_side(*sa, dyn_a, c.local_a);
+        ContactSide pb = contact_side(*sb, dyn_b, c.local_b);
+        float inv_k = 1.0f / (side_k(pa, n) + side_k(pb, n));
+        if (imp > 0.0f) {
+            float p = inv_k * imp;
+            if (dyn_a)
+                side_impulse(*sa, pa, n * p);
+            if (dyn_b)
+                side_impulse(*sb, pb, n * -p);
+            c.normal_impulse += p;
+        }
+        if (bias > 0.0f) {
+            float f = (inv_k * bias) / dt;
+            if (dyn_a)
+                side_force(a, pa, n * f);
+            if (dyn_b)
+                side_force(b, pb, n * -f);
+            c.bias_force += f;
+        }
         result = 1;
-    }
-
-    for (int i = 0; i < m; i++) {
-        Contact &c = cs[idx[i]];
-        Vec3 vrel = a.point_velocity(c.local_a) - b.point_velocity(c.local_b);
-        float vn2 = vec_dot(c.normal, vrel);
-        // Friction cap uses the step's accumulated normal impulse; the exe's
-        // friction is a force, so it is applied to next pass's integration.
-        float normal_force = c.normal_impulse / dt;
+        // Friction cap from this call's normal response only; vt uses the
+        // pre-response vrel.
+        float normal_force = total * inv_k * (1.0f / dt);
         if (normal_force > 0.001f && c.friction > 0.0f) {
-            Vec3 vt = vrel - c.normal * vn2;
+            Vec3 vt = vrel - n * vn;
             float vt2 = vec_dot(vt, vt);
             if (vt2 > 0.001f) {
                 float speed = sqrtf(vt2);
                 Vec3 t = vt * (1.0f / speed);
-                float kt = contact_k(a, b, t, c.local_a, c.local_b);
-                if (kt > 0.0f) {
-                    float f = (speed / kt) / dt;
-                    if (f > c.friction * normal_force) {
-                        f = c.friction * normal_force;
-                        result = 2;
-                    } else {
-                        result = 1;
-                    }
-                    a.apply_force_at(-t * f, c.local_a);
-                    b.apply_force_at(t * f, c.local_b);
-                    c.friction_force += f;
+                float f = (speed / (side_k(pa, t) + side_k(pb, t))) * (1.0f / dt);
+                float cap = c.friction * normal_force;
+                if (f > cap) {
+                    f = cap;
+                    result = 2;
                 }
-            }
-        }
-
-        if (c.separation < 0.021f) {
-            float off_a = vec_dot(c.normal, a.pos_correction);
-            float off_b = vec_dot(c.normal, b.pos_correction);
-            float correction = (0.021f - c.separation) - (off_a - off_b);
-            if (correction > 0.0f) {
-                if (!dyn_a) {
-                    b.pos_correction -= c.normal * correction;
-                } else if (!dyn_b) {
-                    a.pos_correction += c.normal * correction;
-                } else {
-                    a.pos_correction += c.normal * (correction * 0.5f);
-                    b.pos_correction -= c.normal * (correction * 0.5f);
-                }
-                result = 1;
+                if (dyn_a)
+                    side_force(a, pa, t * -f);
+                if (dyn_b)
+                    side_force(b, pb, t * f);
+                c.friction_force += f;
             }
         }
     }
 
-    if (result != 0) {
-        // Wake both roots (clear other-state flags bit0). Sleeping is not decoded.
-        a.settled = false;
-        b.settled = false;
+    // Position offset s[6..8] of the active state; returns 1 even after a
+    // clamped friction.
+    if (c.separation < 0.021f) {
+        float correction = (0.021f - c.separation) -
+                           (vec_dot(n, a.pos_correction) - vec_dot(n, b.pos_correction));
+        if (correction > 0.0f) {
+            if (!dyn_a) {
+                b.pos_correction -= n * correction;
+            } else if (!dyn_b) {
+                a.pos_correction += n * correction;
+            } else {
+                a.pos_correction += n * (correction * 0.5f);
+                b.pos_correction += n * (correction * -0.5f);
+            }
+            result = 1;
+        }
     }
+
+    if (result == 0)
+        return 0;
+    // Clear other-state flags bit0 of the dynamic sides (forces re-integration).
+    // The world+0x14 counter is not kept.
+    if (dyn_a)
+        a.integrated = false;
+    if (dyn_b)
+        b.integrated = false;
     return result;
 }
 
 // ---- Contact generation / refresh (Collide__bodyPair 0x4fb370) ----
-
-static bool is_dynamic(const RigidBody &b)
-{
-    return b.def.inv_mass > 0.0f && (b.def.flags & 4u) == 0;
-}
 
 // notes/11 §4/§5: a pair is added below 0.02 m but an existing contact is kept
 // until it separates beyond 0.05 m (0x4f9af0 drops it above rA+rB+0.05).
@@ -638,8 +550,11 @@ int World::step(float dt)
         b.torque = Vec3{0.0f, 0.0f, 0.0f};
         b.ext_force = Vec3{0.0f, 0.0f, 0.0f};
         b.ext_torque = Vec3{0.0f, 0.0f, 0.0f};
+        // INVENTED: where the exe resets s[6..8] between steps is not traced;
+        // the integrated pose already contains it (0x506530).
         b.pos_correction = Vec3{0.0f, 0.0f, 0.0f};
         if (is_dynamic(b)) {
+            b.integrated = false; // 0x4f8460 clears other-state flags bit0
             float mass = 1.0f / b.def.inv_mass;
             b.ext_force = gravity * mass + b.vel * b.def.linear_drag;
             // TODO: buoyancy (body def flag 0x80) and the ground/water plane
@@ -651,44 +566,41 @@ int World::step(float dt)
 
     update_contacts(*this, true);
 
+    // 0x502060: integrate every root once, then sub-iterate. The exe skips
+    // bodies whose flags bit0 is still set; re-integrating them from unchanged
+    // inputs gives the same state.
+    for (StepState &s : states)
+        integrate_body(*s.body, s.start, h);
     int iterations = 0;
     for (int it = 0; it < 20; it++) {
-        // Every sub-iteration re-integrates all roots from the immutable
-        // start-of-step state (gravity/forces only), then replays the impulses
-        // accumulated so far as a velocity-level change.
-        for (StepState &s : states) {
-            integrate_body(*s.body, s.start, h);
-            state_apply_accumulated(*s.body, s);
-        }
-        update_contacts(*this, false); // contact refresh, no new pairs mid-step
-        int corrections = 0;
-        // Manifold points of a pair are contiguous; resolve each pair as a block.
-        size_t first = 0;
-        while (first < contacts.size()) {
-            size_t last = first + 1;
-            while (last < contacts.size() && contacts[last].a == contacts[first].a &&
-                   contacts[last].b == contacts[first].b)
-                last++;
-            corrections += resolve_pair(&contacts[first], int(last - first), h, states);
-            first = last;
-        }
         iterations = it + 1;
-        if (corrections == 0)
+        update_contacts(*this, false); // contact refresh, no new pairs mid-step
+        // 0x4f9af0 clears the converged flag (world+0x39c) when a contact is
+        // within 0.02 m; only then are the contacts resolved.
+        bool converged = true;
+        for (const Contact &c : contacts)
+            if (c.separation < 0.02f)
+                converged = false;
+        if (!converged) {
+            int sum = 0;
+            for (Contact &c : contacts)
+                sum += resolve_contact(c, h, states);
+            if (sum == 0)
+                converged = true;
+        }
+        for (StepState &s : states)
+            integrate_body(*s.body, s.start, h);
+        if (converged)
             break;
     }
     last_iterations = iterations;
 
     // Impact pass (PhysicsWorld__resolveImpacts 0x4ffd20): impacts become
     // resting contacts. Script event dispatch is not part of this core.
+    // TODO: the exe runs it inside the loop's event phase, only when
+    // 0x4fc610 dispatched events, and resolves each mode-6 contact first.
     for (Contact &c : contacts)
         if (c.mode == 6)
             c.mode = 7;
-
-    // Fold the accumulated state s[6..8] offset into the pose; it only spans
-    // this step (the next step's contact query starts from the corrected pose).
-    for (RigidBody *b : bodies) {
-        b->pos += b->pos_correction;
-        b->pos_correction = Vec3{0.0f, 0.0f, 0.0f};
-    }
     return 1;
 }
