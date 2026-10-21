@@ -24,6 +24,7 @@
 
 #include "audio/audio.h"
 #include "audio/music.h"
+#include "audio/sfx.h"
 #include "engine/math.h"
 #include "game/car.h"
 #include "game/runtime.h"
@@ -2737,6 +2738,35 @@ bool ve_has_crime(Vm &, const Args &a, Value *out, std::string *err)
     return car_float_get("Vehicle.hasCrime", a, &game::CarData::crime, out, err);
 }
 
+// 0x4b2ae0 java.game.Vehicle.getHorn
+bool veh_get_horn(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Vehicle.getHorn", a, 1, err)) return false;
+    int32_t v = 0;
+    if (game::CarData *c = car_of(a)) {
+        // INVENTED: the exe indexes e+0x840+horn_id*0x10 unchecked; clamp to
+        // the four horn records.
+        int32_t id = c->horn_id;
+        if (id >= 0 && id < 4)
+            v = c->engine_sfx.horn_resource[id] != 0 ? 1 : 0;
+    }
+    *out = Value::make_int(v);
+    return true;
+}
+
+// 0x4e6960 java.game.Vehicle.getSpeedSquare
+bool veh_get_speed_square(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Vehicle.getSpeedSquare", a, 1, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    float sq = 0.0f;
+    if (r)
+        sq = r->vel[0] * r->vel[0] + r->vel[1] * r->vel[1] +
+             r->vel[2] * r->vel[2];
+    *out = Value::make_float(sq);
+    return true;
+}
+
 bool ch_get_wheels(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!want("Chassis.getWheels", a, 1, err)) return false;
@@ -3744,6 +3774,56 @@ bool pt_set_sfx_loop_params(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// ---- java.game.parts.SfxTable ---------------------------------------------
+
+// Native handle payload (wrapper object -> raw table pointer).
+audio::SfxTable *sfx_table_of(const Args &a)
+{
+    if (a.empty() || a[0].kind != Value::Obj || !a[0].obj) return nullptr;
+    return game::sfx_table(a[0].obj);
+}
+
+// 0x4b5a90 java.game.parts.SfxTable.getItems
+bool sfx_get_items(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("SfxTable.getItems", a, 1, err)) return false;
+    audio::SfxTable *t = sfx_table_of(a);
+    *out = Value::make_int(t ? t->items_count() : 0);
+    return true;
+}
+
+// 0x4b5a60 java.game.parts.SfxTable.clear (0x498280 helper)
+bool sfx_clear(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("SfxTable.clear", a, 1, err)) return false;
+    if (audio::SfxTable *t = sfx_table_of(a)) t->clear();
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4b5980 java.game.parts.SfxTable.addItem
+bool sfx_add_item(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float pitch, pmin, pmax, vmin, vmax;
+    if (!want("SfxTable.addItem", a, 7, err) ||
+        !get_f("SfxTable.addItem", a[2], &pitch, err) ||
+        !get_f("SfxTable.addItem", a[3], &pmin, err) ||
+        !get_f("SfxTable.addItem", a[4], &pmax, err) ||
+        !get_f("SfxTable.addItem", a[5], &vmin, err) ||
+        !get_f("SfxTable.addItem", a[6], &vmax, err))
+        return false;
+    if (audio::SfxTable *t = sfx_table_of(a)) {
+        // INVENTED: the exe links the SfxRef RI (0x40cac0) and stores its
+        // pointer; audio::SfxTable keeps an int32 key -> use the resource id.
+        // shortcut: no addref/unlink of the resource; upgrade when SFX resource
+        // lifetime is modelled.
+        Runtime::Resource *r = value_resource(a[1]);
+        t->add_item(r ? (int32_t)r->id : 0, pitch, pmin, pmax, vmin, vmax);
+    }
+    *out = Value::make_null();
+    return true;
+}
+
 // ---- java.io.Controller ----------------------------------------------------
 
 // INVENTED: the exe allocates the block with the typed "controller" object; we
@@ -4326,7 +4406,7 @@ const std::vector<Entry> &table()
     {"java.game.parts.bodypart.Chassis", "getCM", "()Ljava.lang.Vector3;", nullptr, true},
     {"java.game.parts.bodypart.Chassis", "getMin", "()Ljava.lang.Vector3;", nullptr, true},
     {"java.game.parts.bodypart.Chassis", "getMax", "()Ljava.lang.Vector3;", nullptr, true},
-    {"java.game.Vehicle", "getHorn", "()I", nullptr, true},
+    {"java.game.Vehicle", "getHorn", "()I", veh_get_horn, false},
     {"java.game.parts.bodypart.Chassis", "setHornSFX", "(Ljava.util.resource.ResourceRef;FI)V", nullptr, true},
     {"java.game.parts.bodypart.Chassis", "setNitroSFX", "(Ljava.util.resource.ResourceRef;F)V", nullptr, true},
     {"java.game.parts.bodypart.Chassis", "setCooling", "(FFF)V", ch_set_cooling, false},
@@ -4340,9 +4420,9 @@ const std::vector<Entry> &table()
     {"java.game.parts.bodypart.Chassis", "setAckermann", "(F)V", ch_set_ackermann, false},
     {"java.game.Vehicle", "hasCrime", "()F", ve_has_crime, false},
     {"java.game.parts.bodypart.Chassis", "getSfxTable", "(I)Ljava.game.parts.SfxTable;", nullptr, true},
-    {"java.game.parts.SfxTable", "getItems", "()I", nullptr, true},
-    {"java.game.parts.SfxTable", "clear", "()V", nullptr, true},
-    {"java.game.parts.SfxTable", "addItem", "(Ljava.util.resource.ResourceRef;FFFFF)V", nullptr, true},
+    {"java.game.parts.SfxTable", "getItems", "()I", sfx_get_items, false},
+    {"java.game.parts.SfxTable", "clear", "()V", sfx_clear, false},
+    {"java.game.parts.SfxTable", "addItem", "(Ljava.util.resource.ResourceRef;FFFFF)V", sfx_add_item, false},
     {"java.game.parts.bodypart.Chassis", "getWheels", "()I", ch_get_wheels, false},
     {"java.game.parts.bodypart.Chassis", "getWheel", "(I)Ljava.game.parts.WheelRef;", ch_get_wheel, false},
     {"java.game.parts.WheelRef", "getPos", "()Ljava.lang.Vector3;", wr_get_pos, false},
@@ -4710,7 +4790,7 @@ const std::vector<Entry> &table()
     {"java.game.Painter", "doPaint", "(Ljava.util.resource.GameRef;IIIFFI)V", nullptr, true},
     {"java.game.Painter", "xPaint", "(Ljava.util.resource.GameRef;)V", nullptr, true},
     {"java.game.Navigator", "updateNavigator", "(Ljava.util.resource.GameRef;I)V", nullptr, true},
-    {"java.game.Vehicle", "getSpeedSquare", "()F", nullptr, true},
+    {"java.game.Vehicle", "getSpeedSquare", "()F", veh_get_speed_square, false},
     {"java.util.Replay", "writeFile", "(Ljava.lang.String;Ljava.lang.String;)V", nullptr, true},
     {"java.util.Replay", "readFile", "(ILjava.lang.String;Ljava.lang.String;)F", nullptr, true},
     {"java.lang.Debug", "writeFile", "(Ljava.lang.String;Ljava.lang.String;)V", nullptr, true},

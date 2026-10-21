@@ -1,7 +1,7 @@
 ---
 id: 052
-status: todo
-branch:
+status: implemented
+branch: card/052
 depends: []
 ---
 # car: SfxTable item natives, Vehicle.getHorn and getSpeedSquare

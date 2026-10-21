@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "audio/sfx.h"
 #include "engine/math.h"
 #include "game/runtime.h"
 
@@ -159,7 +160,9 @@ struct CarData {
     float nitro = 0.0f;          // +0x1f5c
     float crime = -1.0f;         // +0x2258
 
-    // Engine block e (notes/13 §9).
+    // Engine block e (notes/13 §9). The exe reaches it as `e = *(car+0x2050)`;
+    // its aggregate is modelled here like exhaust_min_vol/heat_capacity.
+    audio::EngineSfx engine_sfx;
     float max_steer = 0.7f;      // +0xa20
     int32_t material_index = -1; // +0xc2c
     EngineModel *dyno = nullptr; // +0xc30 DynoData native (owned by the DynoData object, card 008)
@@ -211,6 +214,10 @@ PartData *part_data(Runtime &rt, Runtime::Resource *r);
 CarData *car_data(Runtime &rt, Runtime::Resource *r);
 void bind_wheel(Object *wrapper, WheelData *w);
 WheelData *wheel_data(Object *wrapper);
+// SfxTable native handle payload. No producer yet (Chassis.getSfxTable 0x4b3890
+// is a stub), so sfx_table() is always null.
+void bind_sfx_table(Object *wrapper, audio::SfxTable *t);
+audio::SfxTable *sfx_table(Object *wrapper);
 // DynoData native handle (Native__instanceToHandle 0x4ecc70 / FUN_004ed320).
 EngineModel *dyno_data(Object *wrapper);
 EngineModel *attach_dyno(Object *wrapper);  // creates if missing, returns it

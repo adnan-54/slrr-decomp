@@ -42,6 +42,7 @@ Runtime *g_rt = nullptr;
 std::map<Runtime::Resource *, std::unique_ptr<PartData>> g_parts;
 std::map<Runtime::Resource *, std::unique_ptr<CarData>> g_cars;
 std::map<Object *, WheelData *> g_wheels;
+std::map<Object *, audio::SfxTable *> g_sfx_tables;
 std::map<Object *, std::unique_ptr<EngineModel>> g_dynos;
 
 // The cfg ref sits on the record's native line, possibly on a super record.
@@ -398,6 +399,17 @@ WheelData *wheel_data(Object *wrapper)
     return it == g_wheels.end() ? nullptr : it->second;
 }
 
+void bind_sfx_table(Object *wrapper, audio::SfxTable *t)
+{
+    if (wrapper && t) g_sfx_tables[wrapper] = t;
+}
+
+audio::SfxTable *sfx_table(Object *wrapper)
+{
+    auto it = g_sfx_tables.find(wrapper);
+    return it == g_sfx_tables.end() ? nullptr : it->second;
+}
+
 EngineModel *dyno_data(Object *wrapper)
 {
     auto it = g_dynos.find(wrapper);
@@ -461,6 +473,7 @@ void refresh_engine_curve(CarData &c)
 void reset(Runtime *rt)
 {
     g_wheels.clear();
+    g_sfx_tables.clear();
     g_dynos.clear();
     g_cars.clear();
     g_parts.clear();
