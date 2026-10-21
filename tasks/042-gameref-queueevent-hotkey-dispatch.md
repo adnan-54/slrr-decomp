@@ -1,7 +1,7 @@
 ---
 id: 042
-status: todo
-branch:
+status: implemented
+branch: card/042
 depends: [041, 023]
 ---
 # events: GameRef.queueEvent native (0x4db590) + hotkey events through queue_event

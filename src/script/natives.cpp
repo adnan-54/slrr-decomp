@@ -1524,6 +1524,28 @@ bool gr_set_state(Vm &vm, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4db590 GameRef.queueEvent(ro, type, param): dispatch through the receiver.
+bool gr_queue_event(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.queueEvent", err)) return false;
+    Object *o;
+    if (!receiver_object("GameRef.queueEvent", a, &o, err)) return false;
+    int32_t type;
+    if (!want("GameRef.queueEvent", a, 4, err) ||
+        !get_i("GameRef.queueEvent", a[2], &type, err))
+        return false;
+    Runtime::Resource *target = value_resource(a[0]);
+    if (!target) {  // exe only logs the missing handle
+        *out = Value::make_null();
+        return true;
+    }
+    Runtime::Resource *sender = value_resource(a[1]);
+    Value param = a[3].kind == Value::Str ? a[3] : Value::make_null();
+    game_rt()->queue_event(target, sender, (uint32_t)type, param);
+    *out = Value::make_null();
+    return true;
+}
+
 // ---- java.lang.GameType events -------------------------------------------
 
 // 0x4dc780: typed->event_mask |= m (typed+0xa0).
@@ -3759,13 +3781,18 @@ bool in_flush_hotkeys(Vm &, const Args &a, Value *out, std::string *err)
 }
 
 // 0x4de750 Input.checkHotkeys (static): instance -> its controller block.
-// shortcut: queued hotkey events are never dispatched or drained; upgrade when
-// the Game event queue (0x47d550) exists.
 bool in_check_hotkeys(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     if (!want("Input.checkHotkeys", a, 2, err)) return false;
     input::Controller *c = controller_of(value_resource(a[0]));
     input::hotkeys().check(c, input::devices(), obj(a[1]), hotkey_set_state, &vm);
+    std::vector<input::QueuedEvent> q;
+    q.swap(input::hotkeys().queue);
+    for (const input::QueuedEvent &ev : q)   // 0x4de750 tail -> 0x47d550
+        if (Runtime *rt = game_rt())
+            rt->queue_event(value_resource(Value::make_obj((Object *)ev.handler)), nullptr,
+                            0x100000, ev.hotkey ? Value::make_obj((Object *)ev.hotkey)
+                                                : Value::make_null());
     *out = Value::make_null();
     return true;
 }
@@ -4477,7 +4504,7 @@ const std::vector<Entry> &table()
     {"java.util.resource.GameRef", "getVel", "()Ljava.lang.Vector3;", gr_get_vel, true},
     {"java.util.resource.GameRef", "getInfo", "(II)I", nullptr, true},
     {"java.util.resource.GameRef", "getInfo", "(ILjava.lang.String;)I", nullptr, true},
-    {"java.util.resource.GameRef", "queueEvent", "(Ljava.util.resource.ResourceRef;ILjava.lang.String;)V", nullptr, true},
+    {"java.util.resource.GameRef", "queueEvent", "(Ljava.util.resource.ResourceRef;ILjava.lang.String;)V", gr_queue_event, false},
     {"java.util.resource.GameRef", "setParent", "(Ljava.util.resource.ResourceRef;)V", gr_set_parent, true},
     {"java.util.resource.GameRef", "setPos", "(Ljava.lang.Vector3;)V", gr_set_pos, true},
     {"java.util.resource.GameRef", "setMatrix", "(Ljava.lang.Vector3;Ljava.lang.Ypr;)V", gr_set_matrix, true},
