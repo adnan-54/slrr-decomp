@@ -3,9 +3,55 @@
 // natives in classdump --selfcheck exercise both layers.
 #include "game/runtime.h"
 
+#include <string.h>
+
 #include "script/vm.h"
 
 Runtime *Runtime::active_ = nullptr;
+
+// vm.h keeps ClassState opaque. vm.cpp defines it with `unit` as its first
+// member, so the declaring unit can be recovered via memcpy (same helper as
+// native dispatch in script/natives.cpp).
+// shortcut: relies on ClassState's leading member in vm.cpp; upgrade when Vm
+// exposes a ClassState -> ClassUnit accessor.
+static const ClassUnit *class_state_unit(ClassState *st)
+{
+    const ClassUnit *unit = nullptr;
+    if (st) ::memcpy(&unit, st, sizeof unit);
+    return unit;
+}
+
+// 0x47c960 dispatchScript: EVENT_HOTKEY passes the Hotkey object positionally;
+// every other code wraps sender (or target) as a ref and calls the handler with
+// [ref, ev, param].
+static void dispatch_script(Runtime &rt, Runtime::Resource *target,
+                            Runtime::Resource *sender, uint32_t code,
+                            const Value &param, const char *method)
+{
+    Object *script = target->script;
+    uint32_t ev = code & 0x0fffffffu;
+    std::string err;
+    if (code == 0x100000) {
+        rt.call_method(script, "handleEvent", {param}, nullptr, &err);
+        return;
+    }
+    Value ref = Value::make_null();
+    if (Object *o = rt.wrap(sender ? sender : target, &err))
+        ref = Value::make_obj(o);
+    if (!method) {
+        int32_t async = 0;
+        Value v;
+        Vm *vm = rt.vm();
+        if (vm && vm->get_instance_field(script, "asyncMode", &v, &err) &&
+            v.kind == Value::Int)
+            async = v.i;
+        method = async ? "handleEventAsync" : "handleEvent";
+    }
+    // INVENTED: param passes through for ev 1/4/0x20/0x40; the exe formats a
+    // contact record into a String (no caller of those codes exists yet).
+    rt.call_method(script, method, {ref, Value::make_int((int32_t)ev), param},
+                   nullptr, &err);
+}
 
 Runtime::Runtime(ResourceManager &resources, Vm *vm, ClassPath *classes)
     : resources_(&resources), vm_(vm), classes_(classes)
@@ -252,6 +298,66 @@ Object *Runtime::script_instance(Resource *r)
     if (!o) return nullptr;
     r->script = o;
     return o;
+}
+
+// 0x47dd70: resolve `name` on self and run it to completion (the exe spawns a
+// THRD-RUN thread with a zero time slice). Missing method / unfinished thread
+// means failure.
+bool Runtime::call_method(Object *self, const std::string &name,
+                          const std::vector<Value> &args, Value *result,
+                          std::string *err)
+{
+    if (!vm_ || !self) return false;
+    ClassState *decl = nullptr;
+    const MethodInfo *m = vm_->find_method(self->cls, name, "", (int)args.size(),
+                                           args, &decl, err);
+    const ClassUnit *unit = class_state_unit(decl);
+    if (!m || !unit) return false;
+    Value tmp;
+    return vm_->invoke(*unit, *m, self, args, result ? result : &tmp, err);
+}
+
+// 0x47c760 Game::queueEvent: synchronous dispatch. The target's script handler
+// runs first, then matching notifications forward to their watcher; one-shot
+// entries are removed after forwarding.
+void Runtime::queue_event(Resource *target, Resource *sender, uint32_t code,
+                          const Value &param, const char *method)
+{
+    if (!target) return;
+    // shortcut: no native type handlers (typed+0x4c) or streaming checks;
+    // upgrade when engine types exist.
+    if ((target->event_mask & code) && target->script)
+        dispatch_script(*this, target, sender, code, param, method);
+
+    // INVENTED: snapshot iteration; the exe walks the live list.
+    std::vector<Resource::Notification> list = target->notifications;
+    auto drop = [target](const Resource::Notification &n) {
+        for (size_t k = 0; k < target->notifications.size(); k++) {
+            const Resource::Notification &x = target->notifications[k];
+            if (x.watcher == n.watcher && x.mask == n.mask && x.alias == n.alias) {
+                target->notifications.erase(target->notifications.begin() + (long)k);
+                break;
+            }
+        }
+    };
+    for (size_t i = 0; i < list.size(); i++) {
+        const Resource::Notification &n = list[i];
+        // INVENTED: a null watcher never happens (no destroy hook) but the exe
+        // drops such entries; keep the check.
+        if (!n.watcher) {
+            drop(n);
+            continue;
+        }
+        if ((code & n.mask) == 0) continue;
+        uint32_t c = (n.alias & 0x0fffffffu) ? n.alias : code;
+        Value p = (n.alias & 0x10000000u)
+                      ? (n.has_message ? Value::make_str(n.message) : Value::make_null())
+                      : param;
+        if (!(sender && (n.mask & 0x40000000u)))
+            queue_event(n.watcher, sender ? sender : target, c & 0x0fffffffu, p,
+                        n.has_method ? n.method.c_str() : nullptr);
+        if (n.mask & 0x80000000u) drop(n);
+    }
 }
 
 Object *Runtime::wrap(Resource *r, std::string *err)

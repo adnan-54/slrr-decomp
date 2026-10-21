@@ -1,7 +1,7 @@
 ---
 id: 041
-status: todo
-branch:
+status: implemented
+branch: card/041
 depends: [040]
 ---
 # events: Runtime::queue_event (0x47c760) + script handleEvent call (0x47c960 / 0x47dd70)

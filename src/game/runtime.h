@@ -21,6 +21,7 @@
 
 class Vm;
 struct Object;
+struct Value;
 
 class Runtime {
   public:
@@ -114,6 +115,14 @@ class Runtime {
     void reparent(Resource *r, Resource *parent);
     // Script object for a node's script class, created once and cached.
     Object *script_instance(Resource *r);
+    // 0x47dd70: run `name` on self with args to completion. False when the
+    // method is missing or the thread did not finish (error text in *err).
+    bool call_method(Object *self, const std::string &name,
+                     const std::vector<Value> &args, Value *result, std::string *err);
+    // 0x47d550 -> 0x47c760: synchronous event dispatch. param is a Value::Str,
+    // Value::Int, Value::Obj or Value::Null; method null = default handler name.
+    void queue_event(Resource *target, Resource *sender, uint32_t code,
+                     const Value &param, const char *method = nullptr);
     // Wrapper object selected like FUN_004e7320 (GameRef/RenderRef/ResourceRef).
     Object *wrap(Resource *r, std::string *err);
     // Script class chain lookup used by GameRef.isScripted.

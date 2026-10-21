@@ -1663,6 +1663,8 @@ bool gt_create_native_instance(Vm &, const Args &a, Value *out, std::string *err
                         value_string(a, 3), false, err);
     if (!inst) return false;
     rt->bind(h, inst);
+    // 0x4dc510 -> 0x5240e0 receives the receiver script object (inferred typed+0x50)
+    if (!inst->script) inst->script = o;
     return true;
 }
 
