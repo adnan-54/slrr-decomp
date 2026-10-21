@@ -1,7 +1,7 @@
 ---
 id: 021
-status: todo
-branch:
+status: implemented
+branch: card/021
 depends: [020]
 ---
 # input: Controller natives user_Add / user_Del / user_Reset / user_GetAxisVal

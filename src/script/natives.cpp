@@ -26,6 +26,7 @@
 #include "engine/math.h"
 #include "game/car.h"
 #include "game/runtime.h"
+#include "input/controller.h"
 #include "input/device.h"
 #include "input/hotkeys.h"
 #include "platform/fs.h"
@@ -3317,6 +3318,78 @@ bool pt_set_sfx_loop_params(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// ---- java.io.Controller ----------------------------------------------------
+
+// INVENTED: the exe allocates the block with the typed "controller" object; we
+// create it on first use with reset defaults (AxisRecord/Mapping initializers
+// equal 0x566030's values).
+input::Controller *controller_of(Runtime::Resource *r)
+{
+    if (!r) return nullptr;
+    // shortcut: entries are never freed (no instance-destroy hook yet).
+    static std::map<Runtime::Resource *, std::unique_ptr<input::Controller>> m;
+    std::unique_ptr<input::Controller> &c = m[r];
+    if (!c) c.reset(new input::Controller(input::devices()));
+    return c.get();
+}
+
+// 0x4d3cb0 Controller.user_Add
+bool ctl_user_add(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t vaxis, device, paxis;
+    float in_min, in_max, out_min, out_max;
+    if (!want("Controller.user_Add", a, 7, err) ||
+        !get_i("Controller.user_Add", a[1], &vaxis, err) ||
+        !get_i("Controller.user_Add", a[2], &device, err) ||
+        !get_i("Controller.user_Add", a[3], &paxis, err) ||
+        !get_f("Controller.user_Add", a[4], &in_min, err) ||
+        !get_f("Controller.user_Add", a[5], &in_max, err) ||
+        !get_f("Controller.user_Add", a[6], &out_min, err) ||
+        !get_f("Controller.user_Add", a[7], &out_max, err))
+        return false;
+    input::Controller *c = controller_of(value_resource(a[0]));
+    *out = Value::make_int(c ? c->add(vaxis, device, paxis, in_min, in_max,
+                                      out_min, out_max)
+                             : 0);
+    return true;
+}
+
+// 0x4d3db0 Controller.user_Del
+bool ctl_user_del(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t vaxis, device, paxis;
+    if (!want("Controller.user_Del", a, 4, err) ||
+        !get_i("Controller.user_Del", a[1], &vaxis, err) ||
+        !get_i("Controller.user_Del", a[2], &device, err) ||
+        !get_i("Controller.user_Del", a[3], &paxis, err))
+        return false;
+    if (input::Controller *c = controller_of(value_resource(a[0])))
+        c->remove(vaxis, device, paxis);
+    *out = Value::make_int(0);  // always 0, even when resolved
+    return true;
+}
+
+// 0x4d3f10 Controller.user_Reset
+bool ctl_user_reset(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Controller.user_Reset", a, 1, err)) return false;
+    if (input::Controller *c = controller_of(value_resource(a[0]))) c->reset();
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4d3e60 Controller.user_GetAxisVal
+bool ctl_user_get_axis_val(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t vaxis;
+    if (!want("Controller.user_GetAxisVal", a, 2, err) ||
+        !get_i("Controller.user_GetAxisVal", a[1], &vaxis, err))
+        return false;
+    input::Controller *c = controller_of(value_resource(a[0]));
+    *out = Value::make_float(c ? c->get_axis_val(vaxis) : 0.0f);
+    return true;
+}
+
 // ---- java.io.Input ---------------------------------------------------------
 
 // 0x4de990 Input.getAxis
@@ -3663,12 +3736,12 @@ const std::vector<Entry> &table()
     {"java.game.parts.DynoData", "calcDyno", "(F)F", dd_calc_dyno, false},
     {"java.game.parts.DynoData", "getTorque", "(FF)F", dd_get_torque, false},
     {"java.game.parts.DynoData", "getHP", "(FF)F", dd_get_hp, false},
-    {"java.io.Controller", "user_Add", "(IIIFFFF)I", nullptr, true},
-    {"java.io.Controller", "user_Del", "(III)I", nullptr, true},
+    {"java.io.Controller", "user_Add", "(IIIFFFF)I", ctl_user_add, false},
+    {"java.io.Controller", "user_Del", "(III)I", ctl_user_del, false},
     {"java.io.Controller", "user_SetAxisSmooth", "(IFFFFF)I", nullptr, true},
     {"java.io.Controller", "user_SetAxisSpeed", "(IF)V", nullptr, true},
-    {"java.io.Controller", "user_Reset", "()V", nullptr, true},
-    {"java.io.Controller", "user_GetAxisVal", "(I)F", nullptr, true},
+    {"java.io.Controller", "user_Reset", "()V", ctl_user_reset, false},
+    {"java.io.Controller", "user_GetAxisVal", "(I)F", ctl_user_get_axis_val, false},
     {"java.io.Controller", "user_SetAxisForce", "(IFF)V", nullptr, true},
     {"java.game.GameLogic", "kismajomCheck", "([Ljava.lang.String;)I", nullptr, true},
     {"java.lang.System", "exit", "()V", nullptr, true},
