@@ -273,6 +273,54 @@ Device selection: `FUN_005447e0` supplies the axis kind for `user_Add`;
 `FUN_00544830` is shared by `getAxis`, the hotkey key test and the controller
 value evaluation; `FUN_00544930` is only used by `lastKey`.
 
+### 1.7 Corrections and additions (native glue pass, cards 020-026)
+
+All [V] by decompiling the cited addresses.
+
+- Controller block location: Controller natives resolve `this` -> handle -> RI
+  (+0xc) -> typed object; the block is `C = *(typed + 0x4c) + 0x1c`, passed as
+  ECX to 0x565aa0..0x566140. It is per Controller instance, not global.
+- `Input.mapAxis`/`setAxisSmooth`/`checkHotkeys` get the same block through
+  `Game(0x5fde90).getInfo(inst, 0x1b, 0)` (0x47c640 -> 0x47e450 -> typed
+  vtbl+0x3c); no null check (null C would crash). `Input.setAxisSmooth` calls
+  0x5660f0 with power fixed to 1.0.
+- 0x5660f0 (`user_SetAxisSmooth`) field map: a->A+0x0c center_range,
+  b->A+0x10 center_factor, c->A+0x14 opposite, d->A+0x18 same, e->A+0x20 power.
+  The A+0x2c smoothing setter is still not located.
+- 0x566030 reset: power default is **1.0** (not 0.0): A+0x0c=0.1, A+0x10..0x20=1.0,
+  A+0x24..0x2c=0; mappings only get vaxis=0.
+- Native return values: user_Del always 0; user_SetAxisSmooth always 1;
+  user_Add 0 when unresolved.
+- `createHotkey` 0x4de880 does no handler validation (the 0x1b getInfo is in
+  `checkHotkeys`); `deleteHotkey` clears only slot+0 for the first slot whose
+  +0x08 equals the Hotkey object; `flushHotkeys` 0x4de970 (raw bytes) zeroes +0x1c
+  of used slots. checkHotkeys writes the script field `"state"` of every
+  evaluated slot via 0x4ed490.
+- `lastKey` 0x4de9f0 (no Ghidra function, raw bytes): returns the **packed**
+  `(ansi << 16) | scan` value; `DAT_005dadb8` is a byte pointer into the ring
+  0x5fe3c0..0x5fe3cf, wrapped by -0x10 at 0x5fe3d0.
+- `axisName` always returns a String ("" for invalid ids); `getDeviceName`
+  returns null for an invalid device (0x55b980 maps a NULL char* to null).
+- MouseCursor natives read the object field `"cursor"`; getInfo 2 gives x,y,
+  0x3b gives x,y,z; `getPos(Vector3)` leaves z untouched; a fresh Vector3 is
+  allocated without a constructor (z = 0).
+
+### 1.8 `java.io.FindFile` (0x4d9e90 first, 0x4d9fb0 next, 0x4d9e40 close) [V]
+
+- `first(path, flags)` -> 0x5652c0: path copied to 256 bytes, `/` -> `\`;
+  `FindFirstFileA`/`FindNextFileA` wrapper 0x545520/0x5455e0/0x5454d0 (64 OS
+  slots at 0x799d90, is_dir = attr bit 4) collects **all** matches into one of
+  32 list slots (0x7a59d0, records of 0x104 = name[256] + is_dir), closes the OS
+  handle, then `qsort`s by 0x5280c0(a, b, 1) (ASCII case-folded, signed-char
+  compare). Returns the slot or <0 (-2 no match, -1 no free slot).
+- A packed/virtual-fs branch (0x527c40/0x527d80 over DAT_00773fb0) is guarded by
+  `DAT_007a5b50`, which has three reads and no writes -> dead in 2.3.1.
+- Filter in first/next: skip "." and ".."; files pass when `flags < 2`, dirs when
+  `flags != 1` (0 FILES_DIRS, 1 FILES_ONLY, 2 DIRS_ONLY). Fields `handle` and
+  `flags` live on the script object; `first` writes both (handle may be
+  negative), `next` reads both. `first` does not free the slot on exhaustion;
+  `close` sets handle = -1 and frees slot (0x565270).
+
 ---
 
 ## Part 2 — Audio
@@ -310,9 +358,9 @@ the 2.2.1 sources):
 | 0x4e49b0 `playTrack(int)` | `FUN_00568a50(index)` when a set is current. [V] |
 | 0x4e49e0 `playTrack(String)` | `FUN_00568a90(string)` when a set is current. [V] |
 | 0x4e4a10 `enableDebugDump(ResourceRef)` | no-op, returns 0. [V] |
-| 0x4e4a30 `firstTrack()` | tail-jump 0x568b10 (resets to first track / restarts). [V jump; exact index reset I] |
+| 0x4e4a30 `firstTrack()` | tail-jump 0x568b10: stop stream (0x5473b0), mode 5 → prev_mode, track = 0, `start_set` 0x568f40. [V] |
 | 0x4e4a40 `getMode()` | returns current set +0x14, or -1 if no set. [V] |
-| 0x4e4a60 `getNowPlaying()` | `FUN_00568b40` → current track index (+0x08). [V] |
+| 0x4e4a60 `getNowPlaying()` | `FUN_00568b40` → current track index (+0x08); with no set it returns an uninitialised stack slot (`push ecx`/`mov eax,[ebp-4]`), same for `getTotalTracks`. [V] |
 | 0x4e4a80 `getTotalTracks()` | `FUN_00568b50` → track count (+0x0c). [V] |
 | 0x4e4aa0 `getVolume(channel)` | returns effects/music/engine global, 0 for other channels. [V] |
 | 0x4e4af0 `has3DHardware()` | tail-jump 0x546be0. [V] |
@@ -323,6 +371,13 @@ the 2.2.1 sources):
 | 0x4e4b40 `setMode(int)` | clamp < 6, store set+0x14, return it. [V] |
 | 0x4e4b80 `setVolume(channel, v)` | writes channel global; channel 1 also `FUN_00568ed0(v)`. [V] |
 | 0x4e4c00 `stopMusic()` | tail-jump 0x569090 → `FUN_005473b0`; stops the current track, set stays selected. [V] |
+
+Hardware caps (verified 2026-10): `FUN_00546da0` sets `DSCAPS.dwSize = 0x60` at `0x79a0d0` and calls
+`IDirectSound8::GetCaps` (vtable +0x10) right after device creation; on failure it releases the
+device and returns -2. `DAT_0079a0f0` = DSCAPS+0x20 `dwFreeHwMixingAllBuffers`, `DAT_0079a108` =
+DSCAPS+0x38 `dwFreeHw3DAllBuffers`. So `hasMixHardware()` = `dwFreeHwMixingAllBuffers > 3`,
+`has3DHardware()` = `dwFreeHw3DAllBuffers > 3`; both 0 before init (BSS). `FUN_00546830` copies the
+same two tests into the config globals `0x79a0c0`/`0x79a0c4` when audio is initialised. [V]
 
 Music-set object fields (current set at `DAT_005fe3b8`; each set is 0x1c-0x40
 bytes in static storage): [V for +0x08/+0x0c/+0x14, I for the rest]
