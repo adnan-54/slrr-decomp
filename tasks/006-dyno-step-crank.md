@@ -1,7 +1,7 @@
 ---
 id: 006
-status: todo
-branch:
+status: implemented
+branch: card/006
 depends: [005]
 ---
 # dyno: EngineModel::step_crank (0x4f50e0)
