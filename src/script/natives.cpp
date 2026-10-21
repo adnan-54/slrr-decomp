@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "audio/audio.h"
 #include "audio/music.h"
 #include "engine/math.h"
 #include "game/car.h"
@@ -3202,6 +3203,60 @@ bool snd_set_mode(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4e4b80 Sound.setVolume(int channel, float v)
+bool snd_set_volume(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t channel;
+    float v;
+    if (!want("Sound.setVolume", a, 2, err) ||
+        !get_i("Sound.setVolume", a[0], &channel, err) ||
+        !get_f("Sound.setVolume", a[1], &v, err))
+        return false;
+    audio::channel_volumes()[channel] = v;
+    if (channel == 1) {
+        // DAT_005dada4 is read by change_set; keep both copies equal.
+        audio::music_system().set_channel_volume(v);
+        if (audio::music_system().current())
+            audio::music_system().set_volume(v);
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e4aa0 Sound.getVolume(int channel) -> float
+bool snd_get_volume(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t channel;
+    if (!want("Sound.getVolume", a, 1, err) ||
+        !get_i("Sound.getVolume", a[0], &channel, err))
+        return false;
+    const audio::ChannelVolumes &volumes = audio::channel_volumes();
+    *out = Value::make_float(volumes[channel]);
+    return true;
+}
+
+// 0x4e4af0 Sound.has3DHardware() -> 0x546be0
+bool snd_has_3d_hardware(Vm &, const Args &, Value *out, std::string *)
+{
+    *out = Value::make_int(audio::has_3d_hardware() ? 1 : 0);
+    return true;
+}
+
+// 0x4e4b00 Sound.hasMixHardware() -> 0x546bf0
+bool snd_has_mix_hardware(Vm &, const Args &, Value *out, std::string *)
+{
+    *out = Value::make_int(audio::has_mix_hardware() ? 1 : 0);
+    return true;
+}
+
+// 0x4e4a10 Sound.enableDebugDump(ResourceRef display) -> int
+bool snd_enable_debug_dump(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Sound.enableDebugDump", a, 1, err)) return false;
+    *out = Value::make_int(0);
+    return true;
+}
+
 }  // namespace
 
 namespace natives {
@@ -3441,11 +3496,11 @@ const std::vector<Entry> &table()
     {"java.sound.Sound", "stopMusic", "()V", snd_stop_music, false},
     {"java.sound.Sound", "getMode", "()I", snd_get_mode, false},
     {"java.sound.Sound", "setMode", "(I)I", snd_set_mode, false},
-    {"java.sound.Sound", "setVolume", "(IF)V", nullptr, true},
-    {"java.sound.Sound", "getVolume", "(I)F", nullptr, true},
-    {"java.sound.Sound", "has3DHardware", "()I", nullptr, true},
-    {"java.sound.Sound", "hasMixHardware", "()I", nullptr, true},
-    {"java.sound.Sound", "enableDebugDump", "(Ljava.util.resource.ResourceRef;)I", nullptr, true},
+    {"java.sound.Sound", "setVolume", "(IF)V", snd_set_volume, false},
+    {"java.sound.Sound", "getVolume", "(I)F", snd_get_volume, false},
+    {"java.sound.Sound", "has3DHardware", "()I", snd_has_3d_hardware, false},
+    {"java.sound.Sound", "hasMixHardware", "()I", snd_has_mix_hardware, false},
+    {"java.sound.Sound", "enableDebugDump", "(Ljava.util.resource.ResourceRef;)I", snd_enable_debug_dump, false},
     {"java.render.GfxEngine", "forceRendering", "()V", nullptr, true},
     {"java.render.GfxEngine", "printScreen", "(Ljava.lang.String;)V", nullptr, true},
     {"java.render.GfxEngine", "numDisplayModes", "()I", nullptr, true},
