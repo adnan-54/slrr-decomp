@@ -13,7 +13,7 @@ LIB_SRC  := script/classfile.cpp script/vm.cpp script/natives.cpp \
             mesh/scx.cpp render/device.cpp render/scene.cpp render/ui.cpp \
             render/recording.cpp input/backend.cpp input/device.cpp \
             input/controller.cpp input/hotkeys.cpp input/cursor.cpp \
-            input/platform_backend.cpp vehicle/vehicle.cpp app/boot.cpp \
+            input/platform_backend.cpp vehicle/vehicle.cpp vehicle/dyno.cpp app/boot.cpp \
             game/runtime.cpp game/car.cpp platform/fs.cpp \
             audio/audio.cpp audio/sfx.cpp audio/music.cpp audio/mixer.cpp \
             audio/dsound.cpp
