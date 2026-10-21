@@ -149,7 +149,8 @@ struct CarData {
     int32_t horn_id = 0;         // +0x1e00
     float rpm_raw = 0.0f;        // +0x1e7c
     float rpm_smoothed = 0.0f;   // +0x1e80
-    float engine_temp = 20.0f;   // +0x1ec0
+    float engine_temp = 20.0f;   // +0x1ec0  0x4992e0 writes 0x41a00000
+    float engine_temp_ambient = 20.0f;  // +0x1ec4  0x4992e0 writes 0x41a00000
     float engine_damage = 0.0f;  // +0x1e9c
     float torque_health = 1.0f;  // +0x1e04
     float nitro_health = 1.0f;   // +0x1e08
@@ -190,8 +191,9 @@ struct CarData {
     float c_drag = 0.0f;         // +0x91c
     float tank_nitro = 0.0f;     // +0xa4c
     float consumption_nitro = 0.0f;  // +0xa58
-    float heat_capacity = 0.0f;  // car+0x1ebc  INVENTED initial 0
-    float cooling_coeff = 0.0f;  // car+0x1ec8  INVENTED initial 0
+    // Car thermal starts, Vehicle__createCar 0x4992e0 (puVar8[0x7af..]).
+    float heat_capacity = 320000.0f;  // +0x1ebc  0x489c4000
+    float cooling_coeff = 9.375e-05f; // +0x1ec8  0x38c49ba6 = 30 / 320000
 
     // Engine torque curves: (rpm, torque) pairs, e+0/e+4 and e+8/e+0xc.
     std::vector<float> torque_rpm, torque_nm;
