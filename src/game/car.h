@@ -160,6 +160,8 @@ struct CarData {
     // Engine block e (notes/13 §9).
     float max_steer = 0.7f;      // +0xa20
     int32_t material_index = -1; // +0xc2c
+    EngineModel *dyno = nullptr; // +0xc30 DynoData native (owned by the DynoData object, card 008)
+    float rpm_max_torque = 0.0f; // +0x14 (from dyno +0x1c0)
     int32_t shifting = 0;        // +0x10
     float cooling_low = 10.0f;   // +0xa5c
     float cooling_air = 50.0f;   // +0xa60
@@ -190,6 +192,8 @@ WheelData *wheel_data(Object *wrapper);
 EngineModel *dyno_data(Object *wrapper);
 EngineModel *attach_dyno(Object *wrapper);  // creates if missing, returns it
 void detach_dyno(Object *wrapper);          // frees it
+// Curve block of Vehicle__refreshParameters 0x4aebf0 (dyno -> e+0..0xc, e+0x14).
+void refresh_engine_curve(CarData &c);
 // Drop all payloads when a new Runtime takes over (tests/tools create several).
 void reset(Runtime *rt = nullptr);
 

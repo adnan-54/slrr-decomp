@@ -417,6 +417,41 @@ void detach_dyno(Object *wrapper)
     g_dynos.erase(it);
 }
 
+// 0x4aebf0 Vehicle__refreshParameters (curve block).
+void refresh_engine_curve(CarData &c)
+{
+    EngineModel *d = c.dyno;
+    if (!d) {
+        c.rpm_max_torque = 0.0f;
+        c.torque_rpm.assign(1, 0.0f);
+        c.torque_nm.assign(1, 0.0f);
+        c.nitro_rpm.assign(1, 0.0f);
+        c.nitro_nm.assign(1, 0.0f);
+        return;
+    }
+    c.rpm_max_torque = d->rpm_max_torque;
+    if (d->torque_table[0].empty()) {
+        c.torque_rpm.assign(1, 0.0f);
+        c.torque_nm.assign(1, 0.0f);
+        c.nitro_rpm.assign(1, 0.0f);
+        c.nitro_nm.assign(1, 0.0f);
+        return;
+    }
+    size_t n = d->count > 0 ? (size_t)d->count : 0;
+    c.torque_rpm.resize(n);
+    c.torque_nm.resize(n);
+    c.nitro_rpm.resize(n);
+    c.nitro_nm.resize(n);
+    for (size_t i = 0; i < n; i++) {
+        float rpm = (float)i * (float)d->step;
+        c.torque_rpm[i] = rpm;
+        c.torque_nm[i] = d->torque_table[0][i];
+        c.nitro_rpm[i] = rpm;
+        c.nitro_nm[i] = d->torque_table[1].empty() ? d->torque_table[0][i]
+                                                   : d->torque_table[1][i];
+    }
+}
+
 // shortcut: payloads keyed by Runtime address; a Runtime destroyed and recreated
 // at the same address would see stale entries (tools create one per process).
 void reset(Runtime *rt)

@@ -1,7 +1,7 @@
 ---
 id: 045
-status: todo
-branch:
+status: implemented
+branch: card/045
 depends: [008]
 ---
 # vehicle: engine block dyno pointer (e+0xc30) + torque curves from DynoData (part of 0x4aebf0)
