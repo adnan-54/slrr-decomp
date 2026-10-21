@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "audio/music.h"
 #include "engine/math.h"
 #include "game/car.h"
 #include "game/runtime.h"
@@ -3085,6 +3086,122 @@ bool pt_set_sfx_loop_params(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// ---- java.sound.Sound ------------------------------------------------------
+
+// 0x4e48f0 Sound.changeMusicSet(int id)
+bool snd_change_music_set(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t id;
+    if (!want("Sound.changeMusicSet", a, 1, err) ||
+        !get_i("Sound.changeMusicSet", a[0], &id, err))
+        return false;
+    audio::music_system().change_set(id);
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e4b10 Sound.nextTrack() -> 0x568c70
+bool snd_next_track(Vm &, const Args &, Value *out, std::string *)
+{
+    audio::music_system().next();
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e4b20 Sound.prevTrack() -> 0x568ca0
+bool snd_prev_track(Vm &, const Args &, Value *out, std::string *)
+{
+    audio::music_system().prev();
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e4a30 Sound.firstTrack() -> 0x568b10
+bool snd_first_track(Vm &, const Args &, Value *out, std::string *)
+{
+    audio::music_system().first();
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e4b30 Sound.randomTrack() -> 0x568cd0
+bool snd_random_track(Vm &, const Args &, Value *out, std::string *)
+{
+    audio::music_system().random();
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e49b0 Sound.playTrack(int i) -> 0x568a50
+bool snd_play_track_int(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t index;
+    if (!want("Sound.playTrack", a, 1, err) ||
+        !get_i("Sound.playTrack", a[0], &index, err))
+        return false;
+    audio::music_system().play_track(index);
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e49e0 Sound.playTrack(String s) -> 0x568a90
+bool snd_play_track_string(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Sound.playTrack", a, 1, err)) return false;
+    if (a[0].kind == Value::Null) {
+        // INVENTED: the exe passes a null C string to 0x568a90; use "" instead.
+        audio::music_system().play_track(std::string());
+    } else {
+        const std::string *path;
+        if (!get_s("Sound.playTrack", a[0], &path, err)) return false;
+        audio::music_system().play_track(*path);
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e4a80 Sound.getTotalTracks() -> 0x568b50
+bool snd_get_total_tracks(Vm &, const Args &, Value *out, std::string *)
+{
+    // INVENTED: exe returns an uninitialised value when no set is current.
+    *out = Value::make_int(audio::music_system().count());
+    return true;
+}
+
+// 0x4e4a60 Sound.getNowPlaying() -> 0x568b40
+bool snd_get_now_playing(Vm &, const Args &, Value *out, std::string *)
+{
+    // INVENTED: exe returns an uninitialised value when no set is current.
+    *out = Value::make_int(audio::music_system().track());
+    return true;
+}
+
+// 0x4e4c00 Sound.stopMusic() -> 0x569090
+bool snd_stop_music(Vm &, const Args &, Value *out, std::string *)
+{
+    audio::music_system().stop();
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e4a40 Sound.getMode()
+bool snd_get_mode(Vm &, const Args &, Value *out, std::string *)
+{
+    *out = Value::make_int(audio::music_system().mode());
+    return true;
+}
+
+// 0x4e4b40 Sound.setMode(int m)
+bool snd_set_mode(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t mode;
+    if (!want("Sound.setMode", a, 1, err) ||
+        !get_i("Sound.setMode", a[0], &mode, err))
+        return false;
+    *out = Value::make_int(audio::music_system().set_mode(mode));
+    return true;
+}
+
 }  // namespace
 
 namespace natives {
@@ -3312,18 +3429,18 @@ const std::vector<Entry> &table()
     {"java.io.FindFile", "first", "(Ljava.lang.String;I)Ljava.lang.String;", nullptr, true},
     {"java.io.FindFile", "next", "()Ljava.lang.String;", nullptr, true},
     {"java.io.FindFile", "close", "()V", nullptr, true},
-    {"java.sound.Sound", "changeMusicSet", "(I)V", nullptr, true},
-    {"java.sound.Sound", "nextTrack", "()V", nullptr, true},
-    {"java.sound.Sound", "prevTrack", "()V", nullptr, true},
-    {"java.sound.Sound", "firstTrack", "()V", nullptr, true},
-    {"java.sound.Sound", "randomTrack", "()V", nullptr, true},
-    {"java.sound.Sound", "playTrack", "(I)V", nullptr, true},
-    {"java.sound.Sound", "playTrack", "(Ljava.lang.String;)V", nullptr, true},
-    {"java.sound.Sound", "getTotalTracks", "()I", nullptr, true},
-    {"java.sound.Sound", "getNowPlaying", "()I", nullptr, true},
-    {"java.sound.Sound", "stopMusic", "()V", nullptr, true},
-    {"java.sound.Sound", "getMode", "()I", nullptr, true},
-    {"java.sound.Sound", "setMode", "(I)I", nullptr, true},
+    {"java.sound.Sound", "changeMusicSet", "(I)V", snd_change_music_set, false},
+    {"java.sound.Sound", "nextTrack", "()V", snd_next_track, false},
+    {"java.sound.Sound", "prevTrack", "()V", snd_prev_track, false},
+    {"java.sound.Sound", "firstTrack", "()V", snd_first_track, false},
+    {"java.sound.Sound", "randomTrack", "()V", snd_random_track, false},
+    {"java.sound.Sound", "playTrack", "(I)V", snd_play_track_int, false},
+    {"java.sound.Sound", "playTrack", "(Ljava.lang.String;)V", snd_play_track_string, false},
+    {"java.sound.Sound", "getTotalTracks", "()I", snd_get_total_tracks, false},
+    {"java.sound.Sound", "getNowPlaying", "()I", snd_get_now_playing, false},
+    {"java.sound.Sound", "stopMusic", "()V", snd_stop_music, false},
+    {"java.sound.Sound", "getMode", "()I", snd_get_mode, false},
+    {"java.sound.Sound", "setMode", "(I)I", snd_set_mode, false},
     {"java.sound.Sound", "setVolume", "(IF)V", nullptr, true},
     {"java.sound.Sound", "getVolume", "(I)F", nullptr, true},
     {"java.sound.Sound", "has3DHardware", "()I", nullptr, true},
