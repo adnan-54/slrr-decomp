@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "platform/fs.h"
+
 namespace {
 
 // Little-endian cursor with bounds checks; err is set once, at the failure site.
@@ -499,21 +501,7 @@ bool classfile_parse(const void *data, size_t size, ClassFile *out, std::string 
 
 bool classfile_load(const char *path, ClassFile *out, std::string *err)
 {
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        if (err) *err = std::string("cannot open ") + path;
-        return false;
-    }
     std::vector<uint8_t> data;
-    uint8_t buf[4096];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof buf, f)) > 0)
-        data.insert(data.end(), buf, buf + n);
-    bool read_ok = !ferror(f);
-    fclose(f);
-    if (!read_ok) {
-        if (err) *err = std::string("read error in ") + path;
-        return false;
-    }
+    if (!fs::read_file(path, &data, err)) return false;
     return classfile_parse(data.data(), data.size(), out, err);
 }

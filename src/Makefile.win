@@ -1,0 +1,43 @@
+# 32-bit Windows (PE32 i386) build of the engine library.
+# Same sources as the Linux library in Makefile, plus platform/fs.cpp, linked
+# into probe.dll with a single exported C entry point.
+# Usage: make -C src -f Makefile.win -j4
+CXX := i686-w64-mingw32-g++
+AR  := i686-w64-mingw32-ar
+
+CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wpedantic -fno-strict-aliasing
+CPPFLAGS += -I.
+LDFLAGS  ?= -shared -static-libgcc -static-libstdc++
+
+BUILD := build-win
+
+LIB_SRC  := script/classfile.cpp script/vm.cpp script/natives.cpp \
+            resource/rpk.cpp resource/rdb.cpp resource/manager.cpp \
+            parts/cfg.cpp physics/shape.cpp physics/world.cpp \
+            physics/mesh.cpp mesh/scx.cpp \
+            vehicle/vehicle.cpp app/boot.cpp game/runtime.cpp \
+            platform/fs.cpp
+LIB_OBJ  := $(LIB_SRC:%.cpp=$(BUILD)/%.o)
+LIB      := $(BUILD)/libengine.a
+PROBE    := $(BUILD)/probe.dll
+
+all: $(PROBE)
+
+$(BUILD)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
+
+$(LIB): $(LIB_OBJ)
+	$(AR) rcs $@ $^
+
+# Whole-archive: every engine object is linked and resolved, not just the ones
+# the probe calls.
+$(PROBE): $(BUILD)/tools/probe.o $(LIB)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< \
+		-Wl,--whole-archive $(LIB) -Wl,--no-whole-archive
+
+clean:
+	rm -rf $(BUILD)
+
+-include $(LIB_OBJ:.o=.d) $(BUILD)/tools/probe.d
+.PHONY: all clean

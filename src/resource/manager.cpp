@@ -1,12 +1,12 @@
 // Resource/class registry. See manager.h; formats in notes/01-rpk-rdb-format.md.
 #include "resource/manager.h"
 
-#include <dirent.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #include <string>
 #include <vector>
+
+#include "platform/fs.h"
 
 namespace {
 
@@ -89,35 +89,30 @@ bool resolve_ci(const std::string &base, const std::vector<std::string> &parts,
 {
     std::string cur = base;
     for (const std::string &part : parts) {
-        DIR *d = opendir(cur.empty() ? "." : cur.c_str());
-        if (!d) return false;
+        std::vector<std::string> names;
+        if (!fs::list_dir(cur, &names)) return false;
         bool found = false;
-        while (struct dirent *e = readdir(d)) {
-            if (!iequals(e->d_name, part.c_str())) continue;
+        for (const std::string &name : names) {
+            if (!iequals(name.c_str(), part.c_str())) continue;
             if (cur.empty())
-                cur = e->d_name;
+                cur = name;
             else if (cur.back() == '/')
-                cur += e->d_name;
+                cur += name;
             else
-                cur += std::string("/") + e->d_name;
+                cur += std::string("/") + name;
             found = true;
             break;
         }
-        closedir(d);
         if (!found) return false;
     }
-    struct stat st;
-    if (parts.empty() || stat(cur.c_str(), &st) != 0) return false;
+    if (parts.empty() || !fs::exists(cur)) return false;
     *out = cur;
     return true;
 }
 
 bool file_size_of(const std::string &path, size_t *out)
 {
-    struct stat st;
-    if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
-    *out = (size_t)st.st_size;
-    return true;
+    return fs::is_file(path, out);
 }
 
 bool is_file_ref(const std::string &s)

@@ -2,11 +2,12 @@
 #include "parts/cfg.h"
 
 #include <errno.h>
-#include <stdio.h>
 #include <stdlib.h>
 
 #include <string>
 #include <vector>
+
+#include "platform/fs.h"
 
 namespace {
 
@@ -332,21 +333,7 @@ bool cfg_parse(const void *data, size_t size, const char *source, CfgFile *out,
 
 bool cfg_load(const char *path, CfgFile *out, std::string *err)
 {
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        if (err) *err = std::string("cannot open ") + path;
-        return false;
-    }
-    std::vector<char> data;
-    char buf[4096];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof buf, f)) > 0)
-        data.insert(data.end(), buf, buf + n);
-    bool read_ok = !ferror(f);
-    fclose(f);
-    if (!read_ok) {
-        if (err) *err = std::string("read error in ") + path;
-        return false;
-    }
-    return cfg_parse(data.data(), data.size(), path, out, err);
+    std::vector<uint8_t> data;
+    if (!fs::read_file(path, &data, err)) return false;
+    return cfg_parse((const char *)data.data(), data.size(), path, out, err);
 }
