@@ -1,7 +1,7 @@
 ---
 id: 046
-status: todo
-branch:
+status: implemented
+branch: card/046
 depends: [045, 041, 042, 009]
 ---
 # vehicle: Chassis.forceUpdate (0x4b5890) — refreshParameters core: updatevariables, dyno hookup, engine health

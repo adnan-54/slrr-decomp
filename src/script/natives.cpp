@@ -2565,6 +2565,59 @@ bool ch_set_torque(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4b5890 Chassis.forceUpdate -> 0x4aebf0 Vehicle__refreshParameters
+bool ch_force_update(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Chassis.forceUpdate", a, 1, err)) return false;
+    game::CarData *c = car_of(a);
+    Object *self = a[0].kind == Value::Obj ? a[0].obj : nullptr;
+    Runtime *rt = game_rt();
+    if (!c || !self || !rt) {
+        *out = Value::make_null();
+        return true;
+    }
+    c->flags &= ~0x800000u;
+    if (find_field(vm, self, "suspend_update", 0) != 0) {
+        // shortcut: Vehicle__applyTuningOverrides 0x498020 not ported.
+        *out = Value::make_null();
+        return true;
+    }
+    // shortcut: suspension wear (+0x16c/+0x170) and the +0x160/+0x168 rates are
+    // not modelled.
+    // INVENTED: WheelData() defaults stand in for the manager template M+0x2ec4.
+    game::WheelData def;
+    for (game::WheelData &w : c->wheels) {
+        w.tyre_wear = 0.0f;
+        w.brake_wear = 0.0f;
+        std::copy(std::begin(def.pacejka), std::end(def.pacejka), w.pacejka);
+    }
+    std::string e;  // Chassis.java updatevariables() runs dyno.calcDyno()
+    Value r;
+    rt->call_method(self, "updatevariables", {}, &r, &e);
+    // shortcut: installed parts' wear records (0x4a8060) not re-applied.
+    c->torque_base = 1.0f;
+    c->nitro_torque_base = 1.0f;
+    float f = health_factor(c->engine_damage);
+    c->torque_health = c->torque_base * f;
+    c->nitro_health = f * c->nitro_torque_base;
+    // INVENTED: resolved at refresh time; the exe stores e+0xc30 in
+    // Vehicle__onPartAttached 0x4942b0 (no part-attach events yet).
+    game::Slot *s = slot_by_id(part_of(a), 401);
+    Object *src = nullptr;
+    if (!s) src = self;
+    else if (s->attached) src = s->attached;
+    if (src) {
+        Value dv;
+        if (vm.get_instance_field(src, "dynodata", &dv, &e) && dv.kind == Value::Obj &&
+            dv.obj && vm.find_class("java.lang.Native"))
+            c->dyno = game::dyno_data(dv.obj);
+    }
+    game::refresh_engine_curve(*c);
+    // shortcut: Vehicle__applyTuningOverrides 0x498020 not ported.
+    *out = Value::make_null();
+    return true;
+}
+
 bool ch_set_cooling(Vm &, const Args &a, Value *out, std::string *err)
 {
     float lo, air, speed;
@@ -4193,7 +4246,7 @@ const std::vector<Entry> &table()
     {"java.game.parts.bodypart.Chassis", "setHornSFX", "(Ljava.util.resource.ResourceRef;FI)V", nullptr, true},
     {"java.game.parts.bodypart.Chassis", "setNitroSFX", "(Ljava.util.resource.ResourceRef;F)V", nullptr, true},
     {"java.game.parts.bodypart.Chassis", "setCooling", "(FFF)V", ch_set_cooling, false},
-    {"java.game.parts.bodypart.Chassis", "forceUpdate", "()V", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "forceUpdate", "()V", ch_force_update, false},
     {"java.game.parts.bodypart.Chassis", "getMileage", "()F", ch_get_mileage, false},
     {"java.game.parts.bodypart.Chassis", "setMileage", "(F)V", ch_set_mileage, false},
     {"java.game.parts.bodypart.Chassis", "setBuck", "(IIFFFF)I", nullptr, true},
