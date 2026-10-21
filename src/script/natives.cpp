@@ -1601,7 +1601,9 @@ bool add_notification(const Args &a, Value *out, std::string *err,
     Runtime::Resource *me = value_resource(a[0]);
     *out = Value::make_null();
     if (!me) {
-        std::fprintf(stderr, "vm_gameref_addnotif: scripted resource not found\n");
+        // 0x4da280 / 0x4da140 log prefixes
+        std::fprintf(stderr, "%s: scripted resource not found\n",
+                     with_method ? "vm_gameref_addnotif2" : "vm_gameref_addnotif");
         return true;
     }
     Runtime::Resource *t = value_resource(a[1]);
@@ -1688,8 +1690,8 @@ bool gt_create_native_instance(Vm &, const Args &a, Value *out, std::string *err
                         value_string(a, 3), false, err);
     if (!inst) return false;
     rt->bind(h, inst);
-    // 0x4dc510 -> 0x5240e0 receives the receiver script object (inferred typed+0x50)
-    if (!inst->script) inst->script = o;
+    // 0x5240e0: typed+0x50 = the receiver script object, unconditionally
+    inst->script = o;
     return true;
 }
 
