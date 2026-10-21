@@ -1,7 +1,7 @@
 ---
 id: 050
-status: todo
-branch:
+status: implemented
+branch: card/050
 depends: []
 ---
 # Part: getLogo / getMass / flap natives

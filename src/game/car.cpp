@@ -66,6 +66,10 @@ void fill_part(PartData &p, const CfgFile &cfg)
     if (!cfg.textures.empty()) p.texture = (int32_t)cfg.textures[0].id;
     if (!cfg.meshes.empty()) p.mesh = (int32_t)cfg.meshes[0].id;
     if (!cfg.renders.empty()) p.render_type = (int32_t)cfg.renders[0].id;
+    // INVENTED: which cfg body line P+0x1c binds to is UNRESOLVED; use the first.
+    // 0x4bf4d0 passes this mass to Physics__createBody, whose inverse mass is 1/m.
+    if (!cfg.bodies.empty() && cfg.bodies[0].mass > 0.0f)
+        p.inv_mass = 1.0f / cfg.bodies[0].mass;
     for (const CfgSlot &cs : cfg.slots) {
         Slot s;
         s.id = cs.id;

@@ -3683,6 +3683,40 @@ bool pt_get_car(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4cc6e0 Part.getLogo
+bool pt_get_logo(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Part.getLogo", a, 1, err)) return false;
+    // shortcut: no typed type manager (M+0x1120) in this rebuild; every 0x4cc6e0
+    // failure path returns 0. Java Part.getLogo() (Part.java:730) shadows it.
+    *out = Value::make_int(0);
+    return true;
+}
+
+// 0x4cc7d0 Part.getMass
+bool pt_get_mass(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Part.getMass", a, 1, err)) return false;
+    game::PartData *p = part_of(a);
+    float inv = p ? p->inv_mass : 0.0f;
+    *out = Value::make_float(inv > 0.0f ? 1.0f / inv : 0.0f);  // JBE 0x4cc878
+    return true;
+}
+
+// 0x4cc440 Part.flap
+bool pt_flap(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t mode;
+    if (!want("Part.flap", a, 2, err) || !get_i("Part.flap", a[1], &mode, err))
+        return false;
+    (void)mode;
+    // shortcut: no per-slot bone/render object (slot+0x28, flags +0x88) nor the
+    // 0x4b1030/0x4cb8d0/0x4b10c0/0x4b1770 trigger calls; the exe falls through the
+    // 0x4c5ed0 slot loop and returns 0. Upgrade when part physics/render bones exist.
+    *out = Value::make_int(0);
+    return true;
+}
+
 bool pt_get_wheel_id(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!want("Part.getWheelID", a, 1, err)) return false;
@@ -4374,12 +4408,12 @@ const std::vector<Entry> &table()
     {"java.game.parts.Part", "setMesh", "(I)I", pt_set_mesh, false},
     {"java.game.parts.Part", "getRenderType", "()I", pt_get_render_type, false},
     {"java.game.parts.Part", "setRenderType", "(I)I", pt_set_render_type, false},
-    {"java.game.parts.Part", "getLogo", "()I", nullptr, true},
+    {"java.game.parts.Part", "getLogo", "()I", pt_get_logo, false},
     {"java.game.parts.Part", "getCar", "()I", pt_get_car, false},
     {"java.game.parts.Part", "getWheelID", "()I", pt_get_wheel_id, false},
-    {"java.game.parts.Part", "getMass", "()F", nullptr, true},
+    {"java.game.parts.Part", "getMass", "()F", pt_get_mass, false},
     {"java.game.parts.Part", "setSfxLoopParams", "(FF)I", pt_set_sfx_loop_params, false},
-    {"java.game.parts.Part", "flap", "(I)I", nullptr, true},
+    {"java.game.parts.Part", "flap", "(I)I", pt_flap, false},
     {"java.game.parts.Part", "install_OK", "(Ljava.util.resource.GameRef;ILjava.util.resource.GameRef;ILjava.lang.Vector3;)[I", nullptr, true},
     {"java.game.parts.DynoData", "newNative", "()V", dd_new_native, false},
     {"java.game.parts.DynoData", "deleteNative", "()V", dd_delete_native, false},

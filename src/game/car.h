@@ -125,6 +125,7 @@ struct PartData {
     float tear = 1.0f;           // +0xb4
     float wear = 0.0f;           // +0xb8; getWear returns 1 - wear
     float max_wear_inv = 1.0f;   // +0xbc = 1/max wear
+    float inv_mass = 0.0f;       // P+0x1c body -> body+0xb4 -> def+0x5c -> +0x2c (inverse mass)
     int32_t texture = 0;         // +0x84
     int32_t mesh = 0;            // +0x94
     int32_t render_type = 0;     // +0xa4
