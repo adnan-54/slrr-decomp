@@ -65,7 +65,8 @@ check: all
 	cd .. && src/$(BUILD)/resman --selfcheck
 	cd .. && src/$(BUILD)/resman --sounds "bin/the game"
 	cd .. && src/$(BUILD)/cfgdump --selfcheck
-	cd .. && src/$(BUILD)/vmboot --selfcheck
+	# VM runaway once ate all RAM+swap and froze the CT: cap at 1.5 GB / 5 min
+	cd .. && ulimit -v 1500000 && timeout 300 src/$(BUILD)/vmboot --selfcheck
 	cd .. && src/$(BUILD)/scxcheck --selfcheck
 
 clean:
