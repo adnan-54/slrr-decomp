@@ -5017,6 +5017,98 @@ bool snd_enable_debug_dump(Vm &, const Args &a, Value *out, std::string *err)
 // text renderer is created yet.
 uint32_t g_default_text_color = 0xffffffffu;
 
+// java.render.GfxEngine display state (notes/12 §9): sorted mode list
+// DAT_005eb450 (count DAT_005eb454, 0x14-byte entries) and C3DLow's current
+// mode +0x1bc/+0x1be/+0x1c0 (i16), +0x1c2 windowed. Ctor 0x4223a0:
+// 640x480x16, fullscreen.
+struct GfxDisplayMode {
+    int32_t width, height, depth;  // entry +0/+4/+8
+};
+// UNRESOLVED: display-mode list builder (DAT_005eb450/DAT_005eb454) not traced;
+// notes/12 §9 names it "vf3" without a confirmed address. The list is empty,
+// so num=0 / curr=0 / name="".
+// UNRESOLVED: the last two dwords of the 0x14-byte entry are not read by these
+// natives and were not identified.
+// shortcut: no enumerator in src; the list stays empty until one exists.
+std::vector<GfxDisplayMode> g_display_modes;
+int16_t g_video_width = 640;    // +0x1bc
+int16_t g_video_height = 480;   // +0x1be
+int16_t g_video_depth = 16;     // +0x1c0
+// shortcut: src never runs Game__initVideo (0x421280), so the current mode
+// stays at the C3DLow ctor values and g_video_windowed stays false.
+bool g_video_windowed = false;  // +0x1c2
+
+// 0x4e5770 GfxEngine.numDisplayModes() -> 0x4264e0
+bool gfx_num_display_modes(Vm &, const Args &, Value *out, std::string *)
+{
+    *out = Value::make_int((int32_t)g_display_modes.size());
+    return true;
+}
+
+// 0x4e54f0 GfxEngine.currDisplayMode() -> 0x424110
+bool gfx_curr_display_mode(Vm &, const Args &, Value *out, std::string *)
+{
+    int32_t i = 0;
+    for (; i < (int32_t)g_display_modes.size(); i++) {
+        const GfxDisplayMode &m = g_display_modes[(size_t)i];
+        if (m.width == (int32_t)g_video_width &&
+            m.height == (int32_t)g_video_height &&
+            m.depth == (int32_t)g_video_depth)
+            break;
+    }
+    if (i >= (int32_t)g_display_modes.size()) i = 0;  // no match -> 0
+    *out = Value::make_int(i);
+    return true;
+}
+
+// 0x4e5510 GfxEngine.displayModeName(int) -> 0x424210/0x55b980
+bool gfx_display_mode_name(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t i;
+    char buf[256];
+    if (!want("GfxEngine.displayModeName", a, 1, err) ||
+        !get_i("GfxEngine.displayModeName", a[0], &i, err))
+        return false;
+    if (i >= 0 && i < (int32_t)g_display_modes.size()) {
+        const GfxDisplayMode &m = g_display_modes[(size_t)i];
+        snprintf(buf, sizeof buf, "%d %d %d", m.width, m.height, m.depth);
+    } else {
+        buf[0] = 0;
+    }
+    *out = Value::make_str(buf);
+    return true;
+}
+
+// 0x4e5480 GfxEngine.changeVideoMode(int,int,int) -> 0x422ec0
+bool gfx_change_video_mode(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t w, h, depth;
+    if (!want("GfxEngine.changeVideoMode", a, 3, err) ||
+        !get_i("GfxEngine.changeVideoMode", a[0], &w, err) ||
+        !get_i("GfxEngine.changeVideoMode", a[1], &h, err) ||
+        !get_i("GfxEngine.changeVideoMode", a[2], &depth, err))
+        return false;
+    // 0x422ec0 early-outs: already current, then windowed is a no-op.
+    if ((int32_t)g_video_width == w && (int32_t)g_video_height == h &&
+        (int32_t)g_video_depth == depth) {
+        *out = Value::make_null();
+        return true;
+    }
+    if (g_video_windowed) {
+        *out = Value::make_null();
+        return true;
+    }
+    // shortcut: format selection (+0x17c/+0x19c/+0x1b5) and the viewport/window
+    // writes (+0x1c4..+0x1e0, DAT_005e93c0..cc) are not modelled: src has no D3D
+    // device/reset. The exe returns void, so the modelled effects are the two
+    // guards plus the current width/height. +0x1c0 (depth) is not written by
+    // the exe either.
+    g_video_width = (int16_t)w;
+    g_video_height = (int16_t)h;
+    *out = Value::make_null();
+    return true;
+}
+
 // 0x4ecfc0: receiver's "renderinst" field (RenderRef) -> its native handle.
 Runtime::Handle *text_renderinst(Vm &vm, Object *self)
 {
@@ -5558,10 +5650,10 @@ const std::vector<Entry> &table()
     {"java.sound.Sound", "enableDebugDump", "(Ljava.util.resource.ResourceRef;)I", snd_enable_debug_dump, false},
     {"java.render.GfxEngine", "forceRendering", "()V", nullptr, true},
     {"java.render.GfxEngine", "printScreen", "(Ljava.lang.String;)V", nullptr, true},
-    {"java.render.GfxEngine", "numDisplayModes", "()I", nullptr, true},
-    {"java.render.GfxEngine", "currDisplayMode", "()I", nullptr, true},
-    {"java.render.GfxEngine", "displayModeName", "(I)Ljava.lang.String;", nullptr, true},
-    {"java.render.GfxEngine", "changeVideoMode", "(III)V", nullptr, true},
+    {"java.render.GfxEngine", "numDisplayModes", "()I", gfx_num_display_modes, false},
+    {"java.render.GfxEngine", "currDisplayMode", "()I", gfx_curr_display_mode, false},
+    {"java.render.GfxEngine", "displayModeName", "(I)Ljava.lang.String;", gfx_display_mode_name, false},
+    {"java.render.GfxEngine", "changeVideoMode", "(III)V", gfx_change_video_mode, false},
     {"java.render.GfxEngine", "setGlobalEnvmap", "(Ljava.util.resource.ResourceRef;)V", nullptr, true},
     {"java.render.GfxEngine", "flush", "()V", nullptr, true},
     {"java.render.GfxEngine", "renderOK", "()I", nullptr, true},

@@ -1,7 +1,7 @@
 ---
 id: 068
-status: todo
-branch:
+status: implemented
+branch: card/068
 depends: []
 ---
 # render: GfxEngine display-mode natives (num/curr/name/changeVideoMode)
