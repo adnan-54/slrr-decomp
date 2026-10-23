@@ -4650,6 +4650,50 @@ bool sfxref_stop(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// ---- java.game.Painter -----------------------------------------------------
+
+// 0x4e07c0 Painter.xPaint(GameRef part)V: queue the constant decal flush on
+// the part. The exe has no null check and would fault in 0x47d550 on an
+// unbound ref node; src's queue_event ignores a null target.
+bool painter_x_paint(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Painter.xPaint", err) || !want("Painter.xPaint", a, 2, err))
+        return false;
+    *out = Value::make_null();
+    game_rt()->queue_event(value_resource(a[1]), nullptr, 0x10,
+                           Value::make_str("bigdecal 0,0 0,0,0 0,0,0 0 0 1 0"));
+    return true;
+}
+
+// 0x4e0800 Painter.paintPart(GameRef cursor, int color)V
+// SERVICE MISSING: 0x4eb000 (render-scene pick) does not exist in src. The
+// exe returns here when the pick misses, then requires the hit surface's
+// GII_CATEGORY (0x47c640 id 7) to be 9 (GIR_CAT_PART) or 5 (GIR_CAT_VEHICLE),
+// and queues "paint 0 0 %d 0 -1" (0x5a527c) with `color` on that surface
+// (0x47d550, code 0x10). Args are copied unchecked by getArgs (0x4b1af0).
+bool painter_paint_part(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Painter.paintPart", a, 3, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e0560 Painter.doPaint(GameRef cursor, int color, int brush, int temp,
+//                          float rot, float size, int flip)V
+// SERVICE MISSING: same 0x4eb000 gate. After a hit the exe queues
+// "bigdecal %d,%d %.3f,%.3f,%.3f %.3f,%.3f,%.3f %.2f %.2f %d %d"
+// (0x5a5570) with color, brush id, the two sampled 3D points, size, rot,
+// temp and flip. brush id = `brush` if the id resolves (0x51f9b0 ->
+// 0x5183a0) else 0; the temporary node has no other effect.
+// doPaint is `native static` (shipped Painter.java:349), so src's
+// run_native passes no receiver: 7 arguments (vm.cpp:1608).
+bool painter_do_paint(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Painter.doPaint", a, 7, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
 // ---- java.io.Controller ----------------------------------------------------
 
 // INVENTED: the exe allocates the block with the typed "controller" object; we
@@ -7270,9 +7314,9 @@ const std::vector<Entry> &table()
     {"java.util.resource.PhysicsRef", "getOri", "()Ljava.lang.Ypr;", nullptr, true},
     {"java.util.resource.SfxRef", "nplay", "(Ljava.lang.Vector3;FFFII)I", sfxref_nplay, false},
     {"java.util.resource.SfxRef", "stop", "(I)V", sfxref_stop, false},
-    {"java.game.Painter", "paintPart", "(Ljava.util.resource.GameRef;I)V", nullptr, true},
-    {"java.game.Painter", "doPaint", "(Ljava.util.resource.GameRef;IIIFFI)V", nullptr, true},
-    {"java.game.Painter", "xPaint", "(Ljava.util.resource.GameRef;)V", nullptr, true},
+    {"java.game.Painter", "paintPart", "(Ljava.util.resource.GameRef;I)V", painter_paint_part, false},
+    {"java.game.Painter", "doPaint", "(Ljava.util.resource.GameRef;IIIFFI)V", painter_do_paint, false},
+    {"java.game.Painter", "xPaint", "(Ljava.util.resource.GameRef;)V", painter_x_paint, false},
     {"java.game.Navigator", "updateNavigator", "(Ljava.util.resource.GameRef;I)V", nullptr, true},
     {"java.game.Vehicle", "getSpeedSquare", "()F", veh_get_speed_square, false},
     {"java.util.Replay", "writeFile", "(Ljava.lang.String;Ljava.lang.String;)V", debug_write_file, false},

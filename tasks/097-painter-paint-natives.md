@@ -1,7 +1,7 @@
 ---
 id: 097
-status: todo
-branch:
+status: implemented
+branch: card/097
 depends: []
 ---
 # script: Painter.xPaint port; paintPart/doPaint blocked on a scene-pick service
