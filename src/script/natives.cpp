@@ -6659,6 +6659,76 @@ bool ps_del_action(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4e0de0 ParticleSystem.setDirectSource(String,Vector3,F,F,Vector3,F,F,F,String)V:
+// getArgs(self,&name,&v1,&f1,&f2,&v2,&f3,&f4,&f5,&boneName); h =
+// instanceToHandle(self); if (!h) return; R = h+0xc; if (!R) return; make resident
+// (R+0x7c != 1 -> R->vf5(1.0f)); if (getTyped(R,0xa0000001,0,0) < 0) return;
+// T = R->vf3(1.0f); if (!T) return; D = T+0x18; if (!D) return; x/y/z of v1 and v2
+// via getF 0x4ec980; bone = boneName ? 0x4e77f0(h,boneName) : 0; act =
+// list_find 0x4b1060(D,name) walks D+0x24; miss: alloc(0x7c), 0x46fa70
+// create_direct_source, link at D+0x44/D+0x4c; hit: act->[0x28] == 0xb ->
+// 0x4d5c20/0x4d5c50 set the two ends, act->[0x6c] = f5.
+// SERVICE MISSING: D = typed+0x18 does not exist without the particle service
+// (0x4e8b50, card 091); every exe write is behind D != 0.
+// shortcut: type 0xb = direct source, offsets +0x28/+0x6c, list D+0x24..+0x4c;
+// upgrade when the particle service exists.
+bool ps_set_direct_source(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("ParticleSystem.setDirectSource", a, 10, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e1160 ParticleSystem.setSource(String,Vector3,F,F,Vector3,F,F,F,String)V:
+// same guard chain and slot/field layout as setDirectSource; miss: alloc(0x80),
+// 0x46ffb0 create_source, link at D+0x44/D+0x4c; hit: act->[0x28] == 10 ->
+// 0x4d5c20/0x4d5c50 set the two ends, act->[0x6c] = f5.
+// SERVICE MISSING: D = typed+0x18 does not exist without the particle service
+// (0x4e8b50, card 091); every exe write is behind D != 0.
+// shortcut: type 10 = source, offsets +0x28/+0x6c, list D+0x24..+0x4c; upgrade
+// when the particle service exists.
+bool ps_set_source(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("ParticleSystem.setSource", a, 10, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e0bf0 ParticleSystem.setCounter(String,Vector3,F)V: getArgs(self,&name,&pos,
+// &f); h = instanceToHandle(self); if (!h) return; R = h+0xc; if (!R) return;
+// make resident; if (getTyped(R,0xa0000001,0,0) < 0) return; T = R->vf3(1.0f);
+// if (!T) return; D = T+0x18; if (!D) return; x = getF(pos,"x") (y,z unused);
+// vec = 0x470410(&x,0.0f,f); act = list_find 0x4b1060(D,name); hit: act->[0x28] ==
+// 0xd -> 0x4d5bf0(act,vec); miss: alloc(0x7c), 0x46f7e0 create, link at
+// D+0x44/D+0x4c.
+// SERVICE MISSING: D = typed+0x18 does not exist without the particle service
+// (0x4e8b50, card 091); every exe write is behind D != 0.
+// shortcut: type 0xd = counter, list D+0x24..+0x4c; upgrade when the particle
+// service exists.
+bool ps_set_counter(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("ParticleSystem.setCounter", a, 4, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e0a10 ParticleSystem.getCounter(String)I: getArgs(self,&name); h =
+// instanceToHandle(self); if (!h) return 0; R = h+0xc; if (!R) return 0; make
+// resident; if (getTyped(R,0xa0000001,0,0) < 0) return 0; T = R->vf3(1.0f); if
+// (!T) return 0; D = T+0x18; if (!D) return 0; act = list_find 0x4b1060(D,name);
+// if (!act || act->[0x28] != 0xd) return 0; v = act->[0x70]; act->[0x70] = 0;
+// return v.
+// SERVICE MISSING: D = typed+0x18 does not exist without the particle service
+// (0x4e8b50, card 091); the exe returns 0 on every guard failure.
+// shortcut: type 0xd = counter, counter at +0x70 is read-and-cleared; upgrade
+// when the particle service exists.
+bool ps_get_counter(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("ParticleSystem.getCounter", a, 2, err)) return false;
+    *out = Value::make_int(0);
+    return true;
+}
+
 }  // namespace
 
 namespace natives {
@@ -6959,11 +7029,11 @@ const std::vector<Entry> &table()
     {"java.util.resource.ParticleSystem", "init", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.RenderRef;Ljava.lang.String;)V", ps_init, false},
     {"java.util.resource.ParticleSystem", "stop", "()V", ps_stop, false},
     {"java.util.resource.ParticleSystem", "setFreq", "(F)V", ps_set_freq, false},
-    {"java.util.resource.ParticleSystem", "setDirectSource", "(Ljava.lang.String;Ljava.lang.Vector3;FFLjava.lang.Vector3;FFFLjava.lang.String;)V", nullptr, true},
-    {"java.util.resource.ParticleSystem", "setSource", "(Ljava.lang.String;Ljava.lang.Vector3;FFLjava.lang.Vector3;FFFLjava.lang.String;)V", nullptr, true},
+    {"java.util.resource.ParticleSystem", "setDirectSource", "(Ljava.lang.String;Ljava.lang.Vector3;FFLjava.lang.Vector3;FFFLjava.lang.String;)V", ps_set_direct_source, false},
+    {"java.util.resource.ParticleSystem", "setSource", "(Ljava.lang.String;Ljava.lang.Vector3;FFLjava.lang.Vector3;FFFLjava.lang.String;)V", ps_set_source, false},
     {"java.util.resource.ParticleSystem", "delAction", "(Ljava.lang.String;)V", ps_del_action, false},
-    {"java.util.resource.ParticleSystem", "setCounter", "(Ljava.lang.String;Ljava.lang.Vector3;F)V", nullptr, true},
-    {"java.util.resource.ParticleSystem", "getCounter", "(Ljava.lang.String;)I", nullptr, true},
+    {"java.util.resource.ParticleSystem", "setCounter", "(Ljava.lang.String;Ljava.lang.Vector3;F)V", ps_set_counter, false},
+    {"java.util.resource.ParticleSystem", "getCounter", "(Ljava.lang.String;)I", ps_get_counter, false},
     {"java.util.resource.ParticleSystem", "modePermanent", "(I)V", ps_mode_permanent, false},
     {"java.lang.GameType", "remNotification", "(Ljava.util.resource.GameRef;I)V", gt_rem_notification, false},
     {"java.lang.GameType", "addNotification", "(Ljava.util.resource.GameRef;IILjava.lang.String;)V", gt_add_notification, false},

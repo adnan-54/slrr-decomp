@@ -1,7 +1,7 @@
 ---
 id: 092
-status: todo
-branch:
+status: implemented
+branch: card/092
 depends: []
 ---
 # script: ParticleSystem setDirectSource/setSource/setCounter/getCounter (service-less)
