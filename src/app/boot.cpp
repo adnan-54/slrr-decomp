@@ -6,6 +6,8 @@
 #include <set>
 
 #include "input/controller.h"
+#include "game/runtime.h"
+#include "script/natives.h"
 
 namespace {
 
@@ -116,7 +118,10 @@ void FrameLoop::frame(int now_ms)
 {
     if (now_ms - last_control_ms_ > 15) {
         input::update((float)(now_ms - last_control_ms_) * 0.001f);  // 0x566160
-        // shortcut: sim step 0x47e050 and script timers 0x47b700 not ported; add them here.
+        // shortcut: sim step 0x47e050 not ported.
+        if (Runtime *rt = Runtime::active())
+            if (rt->vm())
+                rt->run_timers((float)natives::sim_time(*rt->vm()));  // 0x47b700
         last_control_ms_ = now_ms;
     }
 }

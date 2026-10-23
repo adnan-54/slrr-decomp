@@ -2083,6 +2083,47 @@ bool gr_queue_event(Vm &, const Args &a, Value *out, std::string *err)
 
 // ---- java.lang.GameType events -------------------------------------------
 
+// 0x4da3c0: GameType.addTimer(float deadline, int timerid). One-shot at
+// g_simTime (0x60251c) + deadline.
+bool gt_add_timer(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameType.addTimer", err)) return false;
+    Object *o;
+    float deadline;
+    int32_t timerid;
+    if (!receiver_object("GameType.addTimer", a, &o, err) ||
+        !want("GameType.addTimer", a, 3, err) ||
+        !get_f("GameType.addTimer", a[1], &deadline, err) ||
+        !get_i("GameType.addTimer", a[2], &timerid, err))
+        return false;
+    *out = Value::make_null();
+    Runtime::Handle *h = value_handle(a[0]);  // 0x4ecc70
+    if (!h) {
+        std::fprintf(stderr, "vm_gameref_addtimer: scripted resource not found\n");
+        return true;
+    }
+    // asm 0x4da3f1..0x4da412: ECX = h, one-shot flag 0x80000080.
+    game_rt()->add_timer(h, (float)sched(vm).sim_seconds + deadline, 0x80000080u,
+                         timerid);
+    return true;
+}
+
+// 0x4da930: GameType.removeAllTimers()V.
+bool gt_remove_all_timers(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameType.removeAllTimers", err)) return false;
+    Object *o;
+    if (!receiver_object("GameType.removeAllTimers", a, &o, err)) return false;
+    *out = Value::make_null();
+    Runtime::Handle *h = value_handle(a[0]);  // 0x4ecc70
+    if (!h) {
+        std::fprintf(stderr, "vm_gameref_delalltimers: scripted resource not found\n");
+        return true;
+    }
+    game_rt()->remove_timers(h);
+    return true;
+}
+
 // 0x4dc780: typed->event_mask |= m (typed+0xa0).
 // A null receiver resource is ignored (0x4ebd90/0x4e8820 return 0 for it).
 bool gt_set_event_mask(Vm &, const Args &a, Value *out, std::string *err)
@@ -5265,6 +5306,9 @@ bool vp_resize(Vm &, const Args &a, Value *out, std::string *err)
 
 namespace natives {
 
+// 0x60251c: the same clock System.simTime (0x4e5810) returns.
+double sim_time(Vm &vm) { return sched(vm).sim_seconds; }
+
 const std::vector<Entry> &table()
 {
     static const std::vector<Entry> rows = {
@@ -5567,8 +5611,8 @@ const std::vector<Entry> &table()
     {"java.lang.GameType", "remNotification", "(Ljava.util.resource.GameRef;I)V", gt_rem_notification, false},
     {"java.lang.GameType", "addNotification", "(Ljava.util.resource.GameRef;IILjava.lang.String;)V", gt_add_notification, false},
     {"java.lang.GameType", "addNotification", "(Ljava.util.resource.GameRef;IILjava.lang.String;Ljava.lang.String;)V", gt_add_notification_method, false},
-    {"java.lang.GameType", "addTimer", "(FI)V", nullptr, true},
-    {"java.lang.GameType", "removeAllTimers", "()V", nullptr, true},
+    {"java.lang.GameType", "addTimer", "(FI)V", gt_add_timer, false},
+    {"java.lang.GameType", "removeAllTimers", "()V", gt_remove_all_timers, false},
     {"java.lang.GameType", "setEventMask", "(I)V", gt_set_event_mask, false},
     {"java.lang.GameType", "clearEventMask", "(I)V", gt_clear_event_mask, false},
     {"java.lang.GameType", "registerCallback", "(I)V", nullptr, true},

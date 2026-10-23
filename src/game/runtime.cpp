@@ -61,6 +61,10 @@ Runtime::Runtime(ResourceManager &resources, Vm *vm, ClassPath *classes)
 Runtime::~Runtime()
 {
     if (active_ == this) active_ = nullptr;
+    // INVENTED: the exe's Game dtor was not traced; unbind the timer handles so
+    // the resources' ref lists do not outlive them.
+    for (auto &t : timers_) unlink(&t->handle);
+    timers_.clear();
     for (auto &kv : handles_) delete kv.second;
     handles_.clear();
 }
@@ -371,6 +375,54 @@ void Runtime::queue_event(Resource *target, Resource *sender, uint32_t code,
             queue_event(n.watcher, sender ? sender : target, c & 0x0fffffffu, p,
                         n.has_method ? n.method.c_str() : nullptr);
         if (n.mask & 0x80000000u) drop(n);
+    }
+}
+
+// 0x4e7a60 Handle::addTimer(due, flags, param, method), ECX = handle.
+// 0x47b090 binds the new node's handle to the given handle's resource.
+bool Runtime::add_timer(Handle *h, float due, uint32_t flags, int32_t param)
+{
+    if (!h || h->id == 0) return false;
+    auto up = std::make_unique<Timer>();
+    Timer *t = up.get();
+    bind(&t->handle, h->target);
+    t->due = due;
+    t->flags = flags;
+    t->param = param;
+    timers_.push_back(std::move(up));
+    return true;
+}
+
+// 0x4e93c0: unbind the timers watching h's id. Nodes stay in the list; the
+// timer pass deletes them.
+void Runtime::remove_timers(Handle *h)
+{
+    if (!h || h->id == 0) return;
+    for (auto &t : timers_)
+        if (t->handle.id == h->id) unlink(&t->handle);
+}
+
+// 0x47b700 Game::runTimers: fire due timers as events. next is read before
+// dispatch, so a timer appended while the last node fires waits a pass.
+void Runtime::run_timers(float now)
+{
+    auto it = timers_.begin();
+    while (it != timers_.end()) {
+        auto nx = std::next(it);
+        bool last = nx == timers_.end();
+        Timer *t = it->get();
+        if (t->handle.id == 0) {
+            timers_.erase(it);
+        } else if (t->due <= now) {
+            queue_event(t->handle.target, nullptr, t->flags & 0x0fffffffu,
+                        Value::make_int(t->param));
+            if ((int32_t)t->flags < 0)  // sign bit = one-shot
+                timers_.erase(it);
+            else
+                t->due = t->period + t->due;
+        }
+        if (last) break;
+        it = nx;
     }
 }
 

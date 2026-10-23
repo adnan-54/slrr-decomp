@@ -11,6 +11,7 @@
 #pragma once
 #include <stdint.h>
 
+#include <list>
 #include <map>
 #include <memory>
 #include <string>
@@ -140,6 +141,20 @@ class Runtime {
     // Value::Int, Value::Obj or Value::Null; method null = default handler name.
     void queue_event(Resource *target, Resource *sender, uint32_t code,
                      const Value &param, const char *method = nullptr);
+    // TimedEvent (0x4e7530): Game timer list +0x180, appended by 0x4e7a60.
+    struct Timer {
+        Handle handle;          // +0x24 own ref, bound to the receiver's resource
+        float due = 0.0f;       // +0x34
+        float period = 0.0f;    // +0x38 (ctor 0)
+        uint32_t flags = 0;     // +0x3c (addTimer: 0x80000080, sign bit = one-shot)
+        int32_t param = 0;      // +0x40 timerid
+    };
+    // 0x4e7a60: false when h has no id.
+    bool add_timer(Handle *h, float due, uint32_t flags, int32_t param);
+    // 0x4e93c0: unbind every timer whose handle id equals h->id.
+    void remove_timers(Handle *h);
+    // 0x47b700: fire due timers at sim time now.
+    void run_timers(float now);
     // Wrapper object selected like FUN_004e7320 (GameRef/RenderRef/ResourceRef).
     Object *wrap(Resource *r, std::string *err);
     // Script class chain lookup used by GameRef.isScripted.
@@ -157,6 +172,7 @@ class Runtime {
     std::map<std::pair<const Package *, uint32_t>, std::unique_ptr<Resource>> records_;
     std::vector<std::unique_ptr<Resource>> instances_;
     std::map<Object *, Handle *> handles_;
+    std::list<std::unique_ptr<Timer>> timers_;
     uint32_t next_instance_id_ = 0x80000000u;
     static Runtime *active_;
 };

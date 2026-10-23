@@ -1,7 +1,7 @@
 ---
 id: 073
-status: todo
-branch:
+status: implemented
+branch: card/073
 depends: []
 ---
 # game/script: GameType.addTimer / removeAllTimers + timer pass in the frame loop

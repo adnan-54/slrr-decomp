@@ -17,5 +17,7 @@ struct Entry {
 
 const std::vector<Entry> &table();
 void install(Vm &vm);
+// 0x60251c Scheduler::sim_seconds, the clock behind System.simTime.
+double sim_time(Vm &vm);
 
 }  // namespace natives
