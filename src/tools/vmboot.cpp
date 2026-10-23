@@ -292,10 +292,45 @@ int selfcheck()
                 std::to_string(missing.size()) + ")");
     c.check(entry && all_reported,
             "every missing class referenced by game.Init is reported external");
-    c.check(entry && !entry->super_name.empty() && !entry->super &&
-                contains(fresh.external, entry->super_name),
-            "missing superclass reported external: " +
-                (entry ? entry->super_name : std::string("?")));
+
+    // 0x55add0/0x55c0c0/0x55bec0: resolve every class game.Init names through
+    // the package tree. Names that still fail are listed, not counted as a
+    // failure by themselves; a class file the tree finds but cannot parse is.
+    jvm::PackageTree tree(kGameDir);
+    tree.add_default_roots();
+    int resolved = 0, parse_failures = 0;
+    std::vector<std::string> unresolved, seen;
+    if (entry) {
+        for (size_t i = 0; i < entry->unit->consts.size(); i++) {
+            if (entry->unit->consts[i].type != CONST_CLASS) continue;
+            std::string name = entry->unit->class_name((int)i);
+            if (name.empty() || name[0] == '[') continue;  // array descriptor
+            if (contains(seen, name)) continue;
+            seen.push_back(name);
+            if (boot.vm()->get_class(name)) {
+                resolved++;
+                continue;
+            }
+            unresolved.push_back(name);
+            std::string dir = tree.find_dir(name);
+            if (dir.empty()) continue;
+            size_t dot = name.rfind('.');
+            std::string base = dot == std::string::npos ? name : name.substr(dot + 1);
+            if (!tree.disk_path(dir + "\\" + base + ".class").empty()) parse_failures++;
+        }
+    }
+    int other = resolved - (contains(seen, "java.lang.GameType") ? 1 : 0);
+    std::printf("  get_class over game.Init CONST_CLASS: %zu names, %d resolved, %zu "
+                "unresolved, %d parse failures\n",
+                seen.size(), resolved, unresolved.size(), parse_failures);
+    for (const std::string &n : unresolved) std::printf("    unresolved: %s\n", n.c_str());
+    c.check(boot.vm()->get_class("java.lang.GameType") != nullptr,
+            "superclass java.lang.GameType loads through the package tree");
+    c.check(other >= 1,
+            "at least one other game.Init class name loads on demand (" +
+                std::to_string(other) + ")");
+    c.check(parse_failures == 0,
+            "no class file the package tree finds fails to parse");
 
     package_tree_check(c);
     vector3_check(boot, c);

@@ -1,9 +1,13 @@
 // JVM package tree, ported from the exe (addresses in the header).
 #include "script/packages.h"
 
+#include <stdio.h>
+
 #include <vector>
 
 #include "platform/fs.h"
+#include "resource/manager.h"
+#include "script/vm.h"
 
 namespace jvm {
 
@@ -254,6 +258,57 @@ size_t PackageTree::count_nodes(const Node *node)
 size_t PackageTree::node_count() const
 {
     return count_nodes(root_.get());
+}
+
+// 0x55c0c0 loadByName + 0x55bec0 load(dir, Name).
+bool load_class(PackageTree &tree, ClassPath &classes, Vm &vm, const std::string &fqn)
+{
+    std::string dir = tree.find_dir(fqn);
+    if (dir.empty()) {
+        std::fprintf(stderr, "Class not found: %s\n", fqn.c_str());
+        return false;
+    }
+    size_t dot = fqn.rfind('.');  // 0x569370 = strrchr
+    std::string base = dot == std::string::npos ? fqn : fqn.substr(dot + 1);
+    std::string rel = dir + "\\" + base + ".class";
+
+    // 0x5598f0 compileSource has no src equivalent. The exe only falls back to
+    // the .java when the .class is missing; log and fail like a missing file.
+    std::string disk = tree.disk_path(rel);
+    if (disk.empty()) {
+        std::string java_rel = dir + "\\src\\" + base + ".java";
+        if (!tree.disk_path(java_rel).empty())
+            std::fprintf(stderr, "JVM::compileSource: SERVICE MISSING (no compiler): %s\n",
+                         java_rel.c_str());
+        std::fprintf(stderr, "JavaMachine::loadClass: failed to load %s\n", rel.c_str());
+        return false;
+    }
+
+    // Parse all units in the file; only the new ones go into the VM.
+    size_t before = classes.units().size();
+    std::string err;
+    if (!classes.add_file(disk, &err)) {
+        std::fprintf(stderr, "JavaMachine::loadClass: failed to load %s: %s\n", rel.c_str(),
+                     err.c_str());
+        return false;
+    }
+    for (size_t i = before; i < classes.units().size(); i++)
+        vm.add_class(classes.units()[i]);
+
+    // Register the class's package with its directory (0x55f780).
+    std::string cls_name = fqn;
+    if (classes.units().size() > before) {
+        const ClassUnit *first = classes.units()[before];
+        std::string n = first->class_name(first->self_class);
+        if (!n.empty()) cls_name = n;
+    }
+    size_t pdot = cls_name.rfind('.');
+    std::string pkg = pdot == std::string::npos ? std::string() : cls_name.substr(0, pdot);
+    if (tree.add(dir, pkg) < 1)
+        std::fprintf(stderr,
+                     "Package conflict: multiple packages placed at the same location (%s, %s)\n",
+                     cls_name.c_str(), dir.c_str());
+    return vm.find_class(fqn) != nullptr;
 }
 
 } // namespace jvm

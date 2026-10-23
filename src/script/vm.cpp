@@ -596,7 +596,7 @@ bool Thread::finalize_new(Frame &f)
     if (tv.kind != Value::Type) return fail("new without type");
     std::string name = class_name_from_desc(tv.s);
     if (name.empty()) return fail("new with bad descriptor " + tv.s);
-    ClassState *cs = vm_->find_class(name);
+    ClassState *cs = vm_->get_class(name);
     if (!cs) return fail("new of unknown class " + name);
     Object *obj = vm_->new_object(cs, &e);
     if (!obj) return fail(e);
@@ -825,12 +825,12 @@ bool Thread::invoke(Frame &f, uint32_t op, uint32_t operand)
             self = recv.obj;
         } else if (recv.kind == Value::Str) {
             // Strings are Values, not Objects; natives still take them as `this`.
-            start = vm_->find_class("java.lang.String");
+            start = vm_->get_class("java.lang.String");
             if (!start) return fail("unknown class java.lang.String");
         } else if (recv.kind == Value::Type) {
             std::string cn = mclass.empty() ? recv.s : mclass;
-            start = vm_->find_class(cn);
-            if (!start) start = vm_->find_class(recv.s);
+            start = vm_->get_class(cn);
+            if (!start) start = vm_->get_class(recv.s);
             if (!start) return fail("unknown class " + cn);
         } else if (recv.kind == Value::Null) {
             return fail("null receiver");
@@ -839,7 +839,7 @@ bool Thread::invoke(Frame &f, uint32_t op, uint32_t operand)
         }
     } else {
         // Implicit receiver, or a static invoke resolved through the member class.
-        start = !mclass.empty() ? vm_->find_class(mclass) : nullptr;
+        start = !mclass.empty() ? vm_->get_class(mclass) : nullptr;
         if (!start) start = f.state;
         if (!start) return fail("implicit receiver without a class");
         self = f.self;
@@ -880,10 +880,10 @@ bool Thread::field_member(Frame &f, uint32_t operand, bool explicit_recv)
         return fail("unknown array member " + fname);
     }
 
-    ClassState *cs = vm_->find_class(mclass);
+    ClassState *cs = vm_->get_class(mclass);
     std::string e;
     if (explicit_recv && recv.kind == Value::Type) {
-        ClassState *lookup = cs ? cs : vm_->find_class(recv.s);
+        ClassState *lookup = cs ? cs : vm_->get_class(recv.s);
         if (!lookup) return fail("unknown class " + mclass);
         ClassState *owner = nullptr;
         size_t slot = 0;
@@ -965,7 +965,7 @@ bool Thread::field_name(Frame &f, uint32_t operand)
         return fail("unknown array member " + name);
     }
     if (recv.kind == Value::Type) {
-        ClassState *cs = vm_->find_class(recv.s);
+        ClassState *cs = vm_->get_class(recv.s);
         ClassState *owner = nullptr;
         size_t slot = 0;
         if (!cs || !find_static(cs, &name, nullptr, &owner, &slot))
@@ -1317,6 +1317,27 @@ ClassState *Vm::find_class(const std::string &name) const
     return it == by_name_.end() ? nullptr : it->second;
 }
 
+// 0x55add0: '[' is an array descriptor (arrays are Values, not classes here);
+// a leading 'L' unwraps the descriptor ("Lfoo;" -> "foo"). A miss calls the
+// installed loader once and looks the name up again.
+ClassState *Vm::get_class(const std::string &name)
+{
+    std::string n = name;
+    if (!n.empty() && n[0] == 'L')
+        n = n.substr(1, n.size() >= 2 ? n.size() - 2 : 0);
+    ClassState *c = find_class(n);
+    if (!c && loader_ && !loading_.count(n)) {
+        loading_.insert(n);
+        loader_(*this, n);
+        loading_.erase(n);
+        c = find_class(n);
+    }
+    if (!c) return nullptr;
+    std::string err;
+    if (!ensure_linked(&err)) return nullptr;
+    return c;
+}
+
 void Vm::register_native(const std::string &name, const std::string &sig, NativeFn fn)
 {
     natives_[name + sig] = std::move(fn);
@@ -1337,6 +1358,15 @@ ClassState *Vm::state_for(const ClassUnit *unit) const
 
 bool Vm::ensure_linked(std::string *err)
 {
+    if (linked_) return true;
+    // 0x549770: a class init resolves the superclass through getClass, so load
+    // missing supers first. Collect the names before loading: add_class grows
+    // states_, which would invalidate the iteration.
+    std::vector<std::string> missing;
+    for (auto &s : states_)
+        if (!s->super_name.empty() && by_name_.find(s->super_name) == by_name_.end())
+            missing.push_back(s->super_name);
+    for (const std::string &n : missing) get_class(n);
     if (linked_) return true;
     for (auto &s : states_) {
         s->super = nullptr;
@@ -1531,7 +1561,7 @@ bool Vm::get_instance_field(Object *obj, const std::string &name, Value *out,
 bool Vm::get_static_field(const std::string &cls, const std::string &name, Value *out,
                           std::string *err)
 {
-    ClassState *cs = find_class(cls);
+    ClassState *cs = get_class(cls);
     ClassState *owner = nullptr;
     size_t slot = 0;
     if (!cs || !find_static(cs, &name, nullptr, &owner, &slot)) return false;

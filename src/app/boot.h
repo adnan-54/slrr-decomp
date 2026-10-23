@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "resource/manager.h"
+#include "script/packages.h"
 #include "script/vm.h"
 
 struct BootResult {
@@ -44,6 +45,7 @@ class Boot {
     std::unique_ptr<ResourceManager> resources_;
     std::unique_ptr<ClassPath> classes_;
     std::unique_ptr<Vm> vm_;
+    std::unique_ptr<jvm::PackageTree> tree_;
     BootResult result_;
     bool attempted_ = false;
 };

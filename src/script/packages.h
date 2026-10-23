@@ -10,6 +10,9 @@
 #include <memory>
 #include <string>
 
+class ClassPath;
+class Vm;
+
 namespace jvm {
 
 class PackageTree {
@@ -44,5 +47,8 @@ class PackageTree {
     std::unique_ptr<Node> root_;
     std::string game_dir_;
 };
+
+// 0x55c0c0 + 0x55bec0 over a ClassPath; adds every unit of the file to the VM.
+bool load_class(PackageTree &tree, ClassPath &classes, Vm &vm, const std::string &fqn);
 
 } // namespace jvm

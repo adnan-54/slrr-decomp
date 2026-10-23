@@ -1,7 +1,7 @@
 ---
 id: 105
-status: todo
-branch:
+status: implemented
+branch: card/105
 depends: [104]
 ---
 # script VM: getClass loads missing classes through the package tree (0x55add0/0x55c0c0/0x55bec0)
@@ -92,3 +92,13 @@ interpreter resolves a class by name, and a loader built on `PackageTree` + `Cla
 - `make -C src clean check` green; card frontmatter status implemented + branch
 - if an existing check changes because classes now load, say which line and why under a
   `## Check impact` heading in this card
+
+## Check impact
+- `src/tools/vmboot.cpp`: the "missing superclass reported external: java.lang.GameType"
+  check is replaced by "superclass java.lang.GameType loads through the package tree" plus
+  the two loader checks, as the card asks.
+- `Boot::run` now calls `get_class("java.lang.String")` and
+  `get_class("java.util.resource.GameRef")` before it computes `external`, so those two
+  names (and their supers) are no longer reported external and no longer counted in
+  `ClassPath::missing_links`. The remaining external assertions pass unchanged because they
+  compare against the live class map after the boot.

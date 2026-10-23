@@ -22,6 +22,7 @@ const char *kEntryPath = "sl\\Scripts\\game\\Init.class";
 void Boot::reset()
 {
     vm_.reset();
+    tree_.reset();
     classes_.reset();
     resources_.reset();
     result_ = BootResult();
@@ -61,6 +62,18 @@ const BootResult &Boot::run(const std::string &rpk)
 
     vm_ = std::make_unique<Vm>();
     for (const ClassUnit *unit : classes_->units()) vm_->add_class(unit);
+
+    // Package tree over the game directory (the .rpk's own directory). 0x55ccc0
+    // installs the roots and resolves the two startup classes.
+    size_t sep = rpk.find_last_of("\\/");
+    std::string game_dir = sep == std::string::npos ? std::string(".") : rpk.substr(0, sep);
+    tree_ = std::make_unique<jvm::PackageTree>(game_dir);
+    tree_->add_default_roots();
+    vm_->set_class_loader([this](Vm &vm, const std::string &fqn) {
+        return jvm::load_class(*tree_, *classes_, vm, fqn);
+    });
+    vm_->get_class("java.lang.String");
+    vm_->get_class("java.util.resource.GameRef");
 
     ClassEntry *entry = classes_->find(kEntryClass);
     result_.entry_found = entry != nullptr && vm_->find_class(kEntryClass) != nullptr;

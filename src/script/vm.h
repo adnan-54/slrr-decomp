@@ -10,7 +10,9 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "script/classfile.h"
@@ -160,9 +162,14 @@ class Vm {
     // fn(vm, args in declared order, result, error); returns false on failure.
     using NativeFn = std::function<bool(Vm &, const std::vector<Value> &, Value *,
                                         std::string *)>;
+    // Installed by the host to load a class by FQN on a find_class miss.
+    using ClassLoader = std::function<bool(Vm &, const std::string &fqn)>;
 
     void add_class(const ClassUnit *unit);
     ClassState *find_class(const std::string &name) const;
+    void set_class_loader(ClassLoader f) { loader_ = std::move(f); }
+    // 0x55add0: descriptor unwrap, then the loaded table, then the loader once.
+    ClassState *get_class(const std::string &name);
     void register_native(const std::string &name, const std::string &sig, NativeFn fn);
     // Class-qualified registration: (class, method, descriptor), like the exe's
     // native table. run_native prefers these keys and falls back to name+sig.
@@ -222,5 +229,7 @@ class Vm {
     std::vector<std::unique_ptr<Object>> objects_;
     std::vector<std::unique_ptr<Array>> arrays_;
     std::map<std::string, NativeFn> natives_;
+    ClassLoader loader_;
+    std::set<std::string> loading_;  // re-entry guard for one get_class miss
     bool linked_ = false;
 };
