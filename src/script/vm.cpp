@@ -381,8 +381,10 @@ static int class_distance(const ClassState *s, const std::string &want)
 static int arg_cost(char param, const std::string &pdesc, const Value &v, const Vm *vm)
 {
     switch (param) {
-    case 'I': return v.kind == Value::Int ? 0 : -1;
-    case 'F': return v.kind == Value::Float ? 0 : (v.kind == Value::Int ? 1 : -1);
+    // 0x55bd80: I<->F convert at a cost (I param/F arg 100, F param/I arg 0x65;
+    // which side is the call site was not pinned down, the pair is symmetric enough).
+    case 'I': return v.kind == Value::Int ? 0 : (v.kind == Value::Float ? 100 : -1);
+    case 'F': return v.kind == Value::Float ? 0 : (v.kind == Value::Int ? 0x65 : -1);
     case 'L': {
         std::string want = class_name_from_desc(pdesc);
         if (v.kind == Value::Obj && v.obj && v.obj->cls) {
@@ -489,6 +491,9 @@ static void fill_frame(Frame *f, ClassState *decl, const MethodInfo *m, Object *
         Value v = args[pi];
         if (pi < params.size() && params[pi] == 'F' && v.kind == Value::Int)
             v = Value::make_float((float)v.i);
+        // INVENTED: truncation like a C cast; the exe's F->I conversion is not traced.
+        if (pi < params.size() && params[pi] == 'I' && v.kind == Value::Float)
+            v = Value::make_int((int32_t)v.f);
         f->locals[base + k] = v;
     }
 }
@@ -1781,6 +1786,8 @@ bool Vm::run_native(const std::string &cls, const std::string &name,
         Value v = args[i];
         if (i < params.size() && params[i] == 'F' && v.kind == Value::Int)
             v = Value::make_float((float)v.i);
+        if (i < params.size() && params[i] == 'I' && v.kind == Value::Float)
+            v = Value::make_int((int32_t)v.f);  // INVENTED: as in fill_frame
         full.push_back(v);
     }
     auto it = natives_.find(cls + "." + name + sig);

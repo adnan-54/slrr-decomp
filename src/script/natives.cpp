@@ -313,8 +313,8 @@ bool thread_set_priority(Vm &vm, const Args &a, Value *out, std::string *err)
 bool thread_sleep(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     float ms;
-    // Receiver is prepended by the VM, so the declared float is a[1].
-    if (!want("Thread.sleep", a, 2, err) || !get_f("Thread.sleep", a[1], &ms, err))
+    // static native (Thread.class flags 0x49): no receiver, the float is a[0].
+    if (!want("Thread.sleep", a, 1, err) || !get_f("Thread.sleep", a[0], &ms, err))
         return false;
     *out = Value::make_null();
     Scheduler &s = sched(vm);
