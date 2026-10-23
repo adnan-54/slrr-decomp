@@ -461,7 +461,8 @@ Runtime::Resource *Runtime::instantiate(Resource *type, Resource *parent,
         if (parent->instance) r->world_root = parent->world_root ? parent->world_root : parent;
     }
     if (scripted) r->script = script_instance(r);
-    // 0x523c80: a script class runs its <init> in a THRD-CREATE thread (prio 10,
+    // 0x523c80: a script class runs its <init> (signature "(I)" in this class
+    // format, no return type) in a THRD-CREATE thread (prio 10,
     // flags 0) with the new instance id as the single int argument, untimed.
     // INVENTED: the exe binds the script object's native handle first (0x4ed320);
     // src resolves it lazily via handle(obj), so there is nothing to bind here.
@@ -470,7 +471,7 @@ Runtime::Resource *Runtime::instantiate(Resource *type, Resource *parent,
         ClassState *decl = nullptr;
         std::string e;
         const MethodInfo *m =
-            vm_->find_method(r->script->cls, "<init>", "(I)V", 1, args, &decl, &e);
+            vm_->find_method(r->script->cls, "<init>", "(I)", 1, args, &decl, &e);
         const ClassUnit *unit = class_state_unit(decl);
         if (m && unit) {
             natives::spawn_untimed(*vm_,
@@ -478,7 +479,7 @@ Runtime::Resource *Runtime::instantiate(Resource *type, Resource *parent,
                                    "THRD-CREATE");
         } else {
             // 0x561700 Thread::callMethod: missing method -> log, no run.
-            std::fprintf(stderr, "Thread::callMethod: \"<init>(I)V\" not found\n");
+            std::fprintf(stderr, "Thread::callMethod: \"<init>(I)\" not found\n");
         }
     }
     (void)err;
