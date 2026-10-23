@@ -26,6 +26,7 @@
 #include "audio/audio.h"
 #include "audio/music.h"
 #include "audio/sfx.h"
+#include "audio/sound.h"
 #include "engine/math.h"
 #include "game/car.h"
 #include "game/runtime.h"
@@ -4445,9 +4446,27 @@ bool sfx_add_item(Vm &, const Args &a, Value *out, std::string *err)
 
 // ---- java.util.resource.SfxRef ---------------------------------------------
 
+// Resource_Sound__vf10 0x525cf0 sync path for a type-6 (res_sound) record.
+void sfx_load(Runtime::Resource *r)
+{
+    audio::SfxService &s = audio::sfx_service();
+    audio::SoundParams params;
+    const bool have = r->record && r->package && r->record->data_size > 0 &&
+        audio::parse_sound_params((const char *)r->package->rpk.data(*r->record),
+                                  r->record->data_size, &params);
+    std::vector<uint8_t> file;
+    bool read = false;
+    if (have) {
+        std::string path = game_rt()->resources().resolve_path(params.sourcefile);
+        std::string err;
+        read = !path.empty() && fs::read_file(path, &file, &err);
+    }
+    s.load(r, have ? &params : nullptr, read ? &file : nullptr);
+}
+
 // 0x4e4610 SfxRef.nplay(Vector3,float radius,float pitch,float volume,int flags,
 // int instance)I
-bool sfxref_nplay(Vm &, const Args &a, Value *out, std::string *err)
+bool sfxref_nplay(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     float radius, pitch, volume;
     int32_t flags, instance;
@@ -4458,23 +4477,38 @@ bool sfxref_nplay(Vm &, const Args &a, Value *out, std::string *err)
         !get_i("SfxRef.nplay", a[5], &flags, err) ||
         !get_i("SfxRef.nplay", a[6], &instance, err))
         return false;
-    (void)radius;
-    (void)pitch;
-    (void)volume;
-    (void)flags;
-    (void)instance;
     Runtime::Handle *h = value_handle(a[0]);  // 0x4ecc70
     if (!h) {
         std::fprintf(stderr, "vm_sfxref_play: scripted resource not found\n");
         *out = Value::make_int(-1);
         return true;
     }
-    // shortcut: src has no process-wide VoicePool/AudioAssets instance and no
-    // sound-resource parser, so Game__postEvent 0x4eb5c0's typed-asset lookup
-    // (*(A+0x60) id, *(A+0x6c) base volume) cannot run; every one of its failure
-    // branches returns -1, so that is the exe value on this path. Upgrade when
-    // the SFX service exists (card 064 UNRESOLVED).
-    *out = Value::make_int(-1);
+    float p[3];
+    const float *pos = nullptr;
+    if (a[1].kind == Value::Obj && a[1].obj) {   // read after the handle check (exe order)
+        p[0] = dd_get_f(vm, a[1].obj, "x");
+        p[1] = dd_get_f(vm, a[1].obj, "y");
+        p[2] = dd_get_f(vm, a[1].obj, "z");
+        pos = p;
+    }
+    audio::SfxService &s = audio::sfx_service();
+    Runtime::Resource *r = h->target;
+    // 0x4eb5c0 cull / no RI. INVENTED: the typed object of other resource kinds is
+    // not a CompatibleSound; treat as no asset.
+    if ((pos && !audio::in_range(pos, radius, s.pool.listener)) || !r || r->type != 6) {
+        *out = Value::make_int(-1);
+        return true;
+    }
+    if (!s.loaded(r)) {
+        sfx_load(r);
+        // INVENTED timing: 0x518a80 queues a streaming load and this post returns -1;
+        // src has no streaming queue, so the load completes now and the next call plays.
+        *out = Value::make_int(-1);
+        return true;
+    }
+    *out = Value::make_int(audio::post_event(s.pool, s.assets, s.key(r), (int32_t)h->id,
+        pitch, audio::channel_volumes().effects * volume, (uint32_t)flags, pos, instance,
+        radius, nullptr, nullptr));
     return true;
 }
 
@@ -4485,12 +4519,19 @@ bool sfxref_stop(Vm &, const Args &a, Value *out, std::string *err)
     if (!want("SfxRef.stop", a, 2, err) ||
         !get_i("SfxRef.stop", a[1], &instance, err))
         return false;
-    (void)instance;
     Runtime::Handle *h = value_handle(a[0]);  // 0x4ecc70
-    if (!h) std::fprintf(stderr, "vm_sfxref_stop: scripted resource not found\n");
-    // shortcut: no voice pool/backend instance; 0x4eba90 returns before its
-    // Sound__stopInstance(0x569020) call whenever the typed sound asset is
-    // absent, so the reachable stop path is a no-op. Upgrade with the service.
+    if (!h) {
+        std::fprintf(stderr, "vm_sfxref_stop: scripted resource not found\n");
+        *out = Value::make_null();
+        return true;
+    }
+    Runtime::Resource *r = h->target;
+    if (r && r->type == 6) {
+        audio::SfxService &s = audio::sfx_service();
+        if (!s.loaded(r)) sfx_load(r);   // 0x518a80 (0,0): synchronous load
+        const audio::AudioAssets::Asset *as = s.assets.get(s.key(r));
+        if (as && as->bus >= 0) s.pool.stop(instance, (int32_t)h->id, *s.backend);  // 0x569020
+    }
     *out = Value::make_null();
     return true;
 }

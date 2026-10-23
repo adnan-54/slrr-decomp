@@ -144,4 +144,45 @@ bool decode_pcm(const WavView &w, std::vector<int16_t> *stereo)
     return true;
 }
 
+bool SfxService::loaded(const void *res) const { return entries_.find(res) != entries_.end(); }
+
+void SfxService::load(const void *res, const SoundParams *params,
+                      const std::vector<uint8_t> *file)
+{
+    if (loaded(res)) return;   // 0x525cf0: only the first call reads
+    Entry &e = entries_[res];
+    e.key = next_key_++;
+    if (!params || !file || file->empty()) return;   // 0x455e80: size < 1 -> no CompatibleSound
+
+    WavView w;
+    std::vector<int16_t> pcm;
+    int bus = -2;
+    if (parse_wav(file->data(), file->size(), &w) == 0 && decode_pcm(w, &pcm))
+        bus = mixer.create_bus(pcm.data(), pcm.size() / 2, (int)w.rate, params->instances,
+                               (~params->flags & 1) != 0, params->mindist, params->maxdist);
+    assets.set(e.key, bus, params->volume);   // exists even with a negative bus
+}
+
+void SfxService::unload(const void *res)
+{
+    std::map<const void *, Entry>::iterator it = entries_.find(res);
+    if (it == entries_.end()) return;
+    const AudioAssets::Asset *as = assets.get(it->second.key);
+    if (as && as->bus >= 0) mixer.release_bus(as->bus);   // 0x526070
+    assets.assets.erase(it->second.key);
+    entries_.erase(it);
+}
+
+int32_t SfxService::key(const void *res) const
+{
+    std::map<const void *, Entry>::const_iterator it = entries_.find(res);
+    return it == entries_.end() ? 0 : it->second.key;
+}
+
+SfxService &sfx_service()
+{
+    static SfxService service;
+    return service;
+}
+
 }  // namespace audio
