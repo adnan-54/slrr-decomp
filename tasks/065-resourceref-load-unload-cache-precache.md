@@ -1,6 +1,6 @@
 ---
 id: 065
-status: draft
+status: todo
 branch:
 depends: []
 ---
@@ -266,3 +266,6 @@ return v;
   `RI+0x84 |= 0x80000` write is never reached. Exe return for the absent-service
   case is 0 (0x47c110 tail), which keeps it on the no-write path. All four natives
   are `void`; the exe has no error return, so the port always returns `null`.
+
+## Gate (Claude)
+Approved as the no-service port (all four natives are void; missing-handle logs kept).

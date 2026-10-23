@@ -1,6 +1,6 @@
 ---
 id: 064
-status: implemented
+status: merged
 branch: card/064-sfxref-nplay-stop
 depends: []
 ---
