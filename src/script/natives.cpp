@@ -1540,6 +1540,50 @@ bool rr_type(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4e23b0: RI+0x7c type 3 (ins_render) -> render typed data +0x110, else 0.
+bool rr_get_type_id(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("RenderRef.getTypeID", err)) return false;
+    Object *o;
+    if (!receiver_object("RenderRef.getTypeID", a, &o, err)) return false;
+    int32_t id = 0;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (r && r->type == 3) {
+        // shortcut: render typed data (FUN_00421610(0xa0000001) +0x110) is not
+        // modeled; the exe also returns 0 when that fetch fails (0x4e23b0).
+    }
+    if (!value_handle(a[0])) {
+        // INVENTED: the exe appends the id, file and line; a NativeFn has no frame.
+        std::fprintf(stderr, "vm_renderref_gettype: scripted resource not found\n");
+    }
+    *out = Value::make_int(id);
+    return true;
+}
+
+// 0x4e2830 -> 0x4ebd20: render typed data +0x17c (colour override).
+bool rr_set_color(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("RenderRef.setColor", err)) return false;
+    Object *o;
+    if (!receiver_object("RenderRef.setColor", a, &o, err)) return false;
+    int32_t color;
+    if (!want("RenderRef.setColor", a, 2, err) ||
+        !get_i("RenderRef.setColor", a[1], &color, err))
+        return false;
+    if (!value_handle(a[0])) {
+        // INVENTED: the exe appends the id, file and line; a NativeFn has no frame.
+        std::fprintf(stderr, "vm_renderref_setcolor: scripted resource not found\n");
+    } else if (Runtime::Resource *r = value_resource(a[0])) {
+        // 0x4ebd20: typed data +0x17c, the same slot Text__create 0x4e8f40 writes
+        // (card 067's INVENTED mapping Resource::text_color).
+        // shortcut: make-resident (vtbl+0x14) and the 0x51f4f0(0x80000001)
+        // fetch are collapsed; src has no typed fetch that can fail.
+        r->text_color = (uint32_t)color;
+    }
+    *out = Value::make_null();
+    return true;
+}
+
 // 0x4e3cd0: ref node +8.
 bool rr_id(Vm &, const Args &a, Value *out, std::string *err)
 {
@@ -6002,12 +6046,12 @@ const std::vector<Entry> &table()
     {"java.util.resource.RenderRef", "setMatrix", "(ILjava.util.resource.ResourceRef;Ljava.lang.Vector3;Ljava.lang.Ypr;)V", nullptr, true},
     {"java.util.resource.RenderRef", "setMatrix", "(Ljava.lang.Vector3;Ljava.lang.Ypr;)V", nullptr, true},
     {"java.util.resource.RenderRef", "changeResource", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;)V", nullptr, true},
-    {"java.util.resource.RenderRef", "setColor", "(I)V", nullptr, true},
+    {"java.util.resource.RenderRef", "setColor", "(I)V", rr_set_color, false},
     {"java.util.resource.RenderRef", "setLight", "(III)V", nullptr, true},
     {"java.util.resource.RenderRef", "setFlare", "(Ljava.util.resource.ResourceRef;IFFII)V", nullptr, true},
     {"java.util.resource.RenderRef", "setType", "(Ljava.util.resource.ResourceRef;)V", nullptr, true},
-    {"java.util.resource.RenderRef", "getTypeID", "()I", nullptr, true},
-    {"java.util.resource.RenderRef", "getDetail", "()F", nullptr, true},
+    {"java.util.resource.RenderRef", "getTypeID", "()I", rr_get_type_id, false},
+    {"java.util.resource.RenderRef", "getDetail", "()F", gr_get_detail, false},
     {"java.util.resource.RenderRef", "lineCreate", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;)I", nullptr, true},
     {"java.util.resource.RenderRef", "lineAdd", "(Ljava.lang.Vector3;Ljava.lang.Vector3;IF)V", nullptr, true},
     {"java.util.resource.RenderRef", "plotRoute", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;IFLjava.lang.Vector3;)I", nullptr, true},

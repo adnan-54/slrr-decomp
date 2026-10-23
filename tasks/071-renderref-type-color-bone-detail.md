@@ -1,7 +1,7 @@
 ---
 id: 071
-status: todo
-branch:
+status: implemented
+branch: card/071
 depends: []
 ---
 # render: RenderRef getTypeID / setColor / getBoneId / getDetail natives
