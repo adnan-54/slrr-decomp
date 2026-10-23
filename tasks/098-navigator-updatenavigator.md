@@ -1,7 +1,7 @@
 ---
 id: 098
-status: todo
-branch:
+status: implemented
+branch: card/098
 depends: []
 ---
 # script: java.game.Navigator.updateNavigator — GPS camera clamp/pose

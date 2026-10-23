@@ -5586,6 +5586,30 @@ static void get3(Vm &vm, const Value &v, const char *a, const char *b,
     out[2] = o ? dd_get_f(vm, o, c) : 0.0f;
 }
 
+// 0x567570 Matrix4__fromRotPosX10 (ECX = m): transposed 3x3 of rot,
+// translation pos*10, w = 1.
+void mat_from_rot_pos_x10(float m[16], const Mat34 &rot, const float pos[3])
+{
+    m[0] = rot.m[0]; m[1] = rot.m[4]; m[2]  = rot.m[8];  m[3]  = 0.0f;
+    m[4] = rot.m[1]; m[5] = rot.m[5]; m[6]  = rot.m[9];  m[7]  = 0.0f;
+    m[8] = rot.m[2]; m[9] = rot.m[6]; m[10] = rot.m[10]; m[11] = 0.0f;
+    m[12] = pos[0] * 10.0f; m[13] = pos[1] * 10.0f;
+    m[14] = pos[2] * 10.0f; m[15] = 1.0f;
+}
+
+// 0x4ec3b0 RenderInst__setBoneMatrix: store the local matrix and mark the
+// typed data dirty (0x4ec0f0 -> +0x16c |= 0x1800).
+// shortcut: 0x4e84c0 bone_ref and the typed+0x1c0 frame counter are not
+// modelled (same as ri_set_bone_matrix_ypr).
+void ri_set_bone_matrix(Runtime::Handle *h, uint32_t id, const float m[16])
+{
+    if (!h || h->id == 0 || !h->target) return;
+    if (auto *b = find_bone(h->target, id)) {
+        for (int i = 0; i < 16; i++) b->local[i] = m[i];
+        h->target->text_flags |= 0x1800;
+    }
+}
+
 // 0x4ec540 RenderInst__setBoneMatrixYpr: bone `id`'s local matrix from ypr
 // (y,p,r, same order as the exe's stack vector 0x569b40) and pos (x10).
 // INVENTED: the typed data T is the bound Runtime::Resource.
@@ -5598,12 +5622,7 @@ void ri_set_bone_matrix_ypr(Runtime::Handle *h, uint32_t id,
     if (!b) return;
     Mat34 rot = {};                    // 0x5666d0 (euler_to_mat)
     euler_to_mat(&rot, ypr);
-    float *m = b->local;               // 0x567570: transpose 3x3, pos*10, w=1
-    m[0] = rot.m[0];  m[1] = rot.m[4];  m[2]  = rot.m[8];  m[3]  = 0.0f;
-    m[4] = rot.m[1];  m[5] = rot.m[5];  m[6]  = rot.m[9];  m[7]  = 0.0f;
-    m[8] = rot.m[2];  m[9] = rot.m[6];  m[10] = rot.m[10]; m[11] = 0.0f;
-    m[12] = pos[0] * 10.0f; m[13] = pos[1] * 10.0f; m[14] = pos[2] * 10.0f;
-    m[15] = 1.0f;
+    mat_from_rot_pos_x10(b->local, rot, pos);
     t->text_flags |= 0x1800;           // 0x4ec0f0, typed data +0x16c
     // shortcut: 0x4ec0f0's dirty-list move (T+0x260/T+0x270), n+0x4c
     // identity bit, n+0x100, the T+0x1c0 frame counter and the 0x4e84c0
@@ -6454,6 +6473,106 @@ bool gr_set_fog(Vm &, const Args &a, Value *out, std::string *err)
         r->fog_end = end * 10.0f;       // rec+8
     }
     *out = Value::make_null();
+    return true;
+}
+
+// ---- java.game.Navigator -------------------------------------------------
+
+// 0x4df470 Navigator.updateNavigator(GameRef car, int mode)V
+// mode 0 clamps the car position to the map rect and writes the offsets back;
+// then the camera bone00 matrix is set (mode 0 translation, mode 1 yaw pose).
+bool nav_update_navigator(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Navigator.updateNavigator", err)) return false;
+    Object *self;
+    int32_t mode;
+    if (!receiver_object("Navigator.updateNavigator", a, &self, err) ||
+        !want("Navigator.updateNavigator", a, 3, err) ||
+        !get_i("Navigator.updateNavigator", a[2], &mode, err))
+        return false;
+    *out = Value::make_null();
+
+    // 0x4ecae0 getObjectField(self, "cam", "java.render.Camera")
+    std::string e;
+    Value fv;
+    Object *cam = vm.get_instance_field(self, "cam", &fv, &e) &&
+                          fv.kind == Value::Obj ? fv.obj : nullptr;
+    if (!cam || !game_rt()->class_is_a(object_class_name(cam), "java.render.Camera"))
+        return true;                              // exe returns void
+    Runtime::Handle *cam_h = game_rt()->handle(cam);       // 0x4ecc70
+    Runtime::Handle *car = value_handle(a[1]);
+    Runtime::Handle *vp = nullptr;
+    if (vm.get_instance_field(self, "vp", &fv, &e) && fv.kind == Value::Obj)
+        vp = value_handle(fv);                     // 0x4ecfc0
+    if (!cam_h || cam_h->id == 0 || !car || car->id == 0 || !vp)
+        return true;
+
+    Runtime::Resource *cr = car->target;
+    if (!cr) return true;   // INVENTED: unbound handle, exe reads zeros
+    float pos[3] = {cr->pos[0], cr->pos[1], cr->pos[2]};    // 0x4ea7a0
+    uint32_t bone = ri_get_bone_id(cam_h, "bone00");        // 0x4e77f0
+    float bm[16] = {};      // INVENTED: exe reads uninitialized stack when
+                            // the bone is missing; zeroed here
+    ri_get_bone_matrix(cam_h, bone, bm);                    // 0x4ea7f0
+
+    float off_x = dd_get_f(vm, self, "offsetX");            // 0x4ec980
+    float off_z = dd_get_f(vm, self, "offsetZ");
+    pos[0] += off_x;
+    pos[2] += off_z;
+
+    if (mode == 0) {                                        // clamp
+        float top = dd_get_f(vm, self, "top") * 100.0f;
+        float left = dd_get_f(vm, self, "left") * 100.0f;
+        float size = dd_get_f(vm, self, "size") * 100.0f * 8.0f;
+        float h = bm[13] * 5.0f;
+        float k = h * 1.3333334f;
+        float lo_z = top + h, hi_z = (size + top) - h;
+        float lo_x = left + k, hi_x = (size + left) - k;
+        if (lo_z > pos[2]) {
+            dd_set_f(vm, self, "offsetZ", (lo_z - pos[2]) + off_z);
+            pos[2] = lo_z;
+        } else if (hi_z < pos[2]) {
+            dd_set_f(vm, self, "offsetZ", (hi_z - pos[2]) + off_z);
+            pos[2] = hi_z;
+        }
+        if (lo_x > pos[0]) {
+            dd_set_f(vm, self, "offsetX", (lo_x - pos[0]) + off_x);
+            pos[0] = lo_x;
+        } else if (hi_x < pos[0]) {
+            dd_set_f(vm, self, "offsetX", (hi_x - pos[0]) + off_x);
+            pos[0] = hi_x;
+        }
+    }
+
+    const float *m = bm;
+    float m1[16];
+    if (mode == 0) {
+        bm[12] = pos[0] * 0.01f * 10.0f;
+        bm[14] = pos[2] * 0.01f * 10.0f;
+    } else if (mode == 1) {
+        // 0x4ea660 -> 0x569970 yields {yaw,pitch,roll}; the exe replaces
+        // pitch/roll with -1.5/0 before building the pose.
+        // INVENTED mapping: the car yaw is the resource's ypr y
+        // (same mapping as GameRef.getOri, natives.cpp:1881).
+        float ang[3] = {cr->ori[0], -1.5f, 0.0f};
+        Mat34 r = {};
+        euler_to_mat(&r, ang);                              // 0x5666d0
+        float p[3] = {r.m[2] * 4.5f + pos[0] * 0.01f,
+                      r.m[6] * 4.5f,
+                      r.m[10] * 4.5f + pos[2] * 0.01f};
+        mat_from_rot_pos_x10(m1, r, p);                     // 0x567570
+        m = m1;
+    }
+    ri_set_bone_matrix(cam_h, bone, m);                     // 0x4ec3b0
+
+    // SERVICE MISSING: the "dynamarker"/"marker" loops after 0x4ec3b0 need
+    // 0x422320 (find the viewport node in the GfxEngine lists +0x198/+0x14c
+    // by node+0x34 == vp->id), 0x421260/0x465100 (viewport scale),
+    // 0x4d88a0 (world->screen projected point via 0x421670/0x421e20, with
+    // x clamped to [-0.9,0.9] and y to [-0.85,0.85]), 0x459290 and the
+    // render typed data +0xb0..+0xc8. src has none of these; the exe's
+    // effect there is moving marker symbol bones. The native returns void,
+    // so skipping the loops keeps the camera pose above.
     return true;
 }
 
@@ -7455,7 +7574,7 @@ const std::vector<Entry> &table()
     {"java.game.Painter", "paintPart", "(Ljava.util.resource.GameRef;I)V", painter_paint_part, false},
     {"java.game.Painter", "doPaint", "(Ljava.util.resource.GameRef;IIIFFI)V", painter_do_paint, false},
     {"java.game.Painter", "xPaint", "(Ljava.util.resource.GameRef;)V", painter_x_paint, false},
-    {"java.game.Navigator", "updateNavigator", "(Ljava.util.resource.GameRef;I)V", nullptr, true},
+    {"java.game.Navigator", "updateNavigator", "(Ljava.util.resource.GameRef;I)V", nav_update_navigator, false},
     {"java.game.Vehicle", "getSpeedSquare", "()F", veh_get_speed_square, false},
     {"java.util.Replay", "writeFile", "(Ljava.lang.String;Ljava.lang.String;)V", debug_write_file, false},
     {"java.util.Replay", "readFile", "(ILjava.lang.String;Ljava.lang.String;)F", replay_read_file, false},
