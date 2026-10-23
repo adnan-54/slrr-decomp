@@ -173,9 +173,116 @@ bool read_lane(Reader &r, traffic::Lane &lane)
     return read_path(r, lane.path);
 }
 
+// 0x413360/0x412ed0 share this segment walk.
+size_t path_seg(const traffic::Path &p, float *d)
+{
+    if (*d < 0) {
+        float L = p.length;
+        if (L != 0) *d = *d - (float)(int)(*d / L) * L;
+        *d = L + *d;
+    }
+    size_t i = 0;
+    while (i + 1 < p.segs.size()) {
+        if (*d < p.segs[i].len) break;
+        *d = *d - p.segs[i].len;
+        i++;
+    }
+    return i;
+}
+
 }  // namespace
 
 namespace traffic {
+
+// 0x4134e0 ctSegment__pos.
+void segment_pos(const Segment &s, float d, float out[3])
+{
+    if (!s.curved) {
+        for (int i = 0; i < 3; i++)
+            out[i] = s.m0[i] * d + s.p0[i];
+        return;
+    }
+    float t = d / s.len, t2 = t * t, t3 = t2 * t;
+    float h00 = (t3 + t3) - t2 * 3 + 1;
+    float h01 = t2 * 3 - (t3 + t3);
+    float h10 = (t3 - (t2 + t2)) + t;
+    float h11 = t3 - t2;
+    for (int i = 0; i < 3; i++)
+        out[i] = s.m1[i] * h11 + s.m0[i] * h10 + s.p1[i] * h01 + s.p0[i] * h00;
+}
+
+// 0x412f60 ctSegment__dir.
+void segment_dir(const Segment &s, float d, float out[3])
+{
+    if (!s.curved) {
+        for (int i = 0; i < 3; i++)
+            out[i] = s.m0[i];
+        return;
+    }
+    float t = d / s.len, t2 = t * t;
+    float a = (t2 - t) * 6, b = (t - t2) * 6;
+    float c = (t2 * 3 - t * 4) + 1, e = t2 * 3 - (t + t);
+    float v[3];
+    for (int i = 0; i < 3; i++)
+        v[i] = s.m1[i] * e + s.m0[i] * c + s.p1[i] * b + s.p0[i] * a;
+    float l = sqrtf(v[1] * v[1] + v[0] * v[0] + v[2] * v[2]);
+    if (l != 0.0f) {
+        float inv = 1.0f / l;
+        for (int i = 0; i < 3; i++)
+            v[i] *= inv;
+    }
+    for (int i = 0; i < 3; i++)
+        out[i] = v[i];
+}
+
+// 0x4131a0 ctSegment__side.
+void segment_side(const Segment &s, float d, float out[3])
+{
+    if (!s.curved) {
+        for (int i = 0; i < 3; i++)
+            out[i] = s.m1[i];
+        return;
+    }
+    float t = d / s.len, t2 = t * t;
+    float a = (t2 - t) * 6, b = (t - t2) * 6;
+    float c = (t2 * 3 - t * 4) + 1, e = t2 * 3 - (t + t);
+    float dx = s.m1[0] * e + c * s.m0[0] + s.p1[0] * b + s.p0[0] * a;
+    float nz = -(s.m1[2] * e + s.m0[2] * c + s.p1[2] * b + s.p0[2] * a);
+    out[0] = nz;
+    out[1] = 0.0f;
+    out[2] = dx;
+    float l = sqrtf(dx * dx + nz * nz);
+    if (l != 0.0f) {
+        float inv = 1.0f / l;
+        out[0] = inv * nz;
+        out[1] = inv * 0.0f;
+        out[2] = inv * dx;
+    }
+}
+
+// 0x413360 ctPath__posAt.
+void path_pos_at(const Path &p, float d, float out[3])
+{
+    // INVENTED: the exe reads segs[0] out of bounds when n == 0.
+    if (p.segs.empty()) {
+        out[0] = out[1] = out[2] = 0.0f;
+        return;
+    }
+    size_t i = path_seg(p, &d);
+    segment_pos(p.segs[i], d, out);
+}
+
+// 0x412ed0 ctPath__dirAt.
+void path_dir_at(const Path &p, float d, float out[3])
+{
+    // INVENTED: the exe reads segs[0] out of bounds when n == 0.
+    if (p.segs.empty()) {
+        out[0] = out[1] = out[2] = 0.0f;
+        return;
+    }
+    size_t i = path_seg(p, &d);
+    segment_dir(p.segs[i], d, out);
+}
 
 size_t Graph::node_count() const
 {

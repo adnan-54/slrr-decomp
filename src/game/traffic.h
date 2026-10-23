@@ -51,4 +51,10 @@ struct Graph {
     size_t node_count() const;  // eq + light + road + lane
 };
 
+void segment_pos(const Segment &s, float d, float out[3]);   // 0x4134e0
+void segment_dir(const Segment &s, float d, float out[3]);   // 0x412f60
+void segment_side(const Segment &s, float d, float out[3]);  // 0x4131a0
+void path_pos_at(const Path &p, float d, float out[3]);      // 0x413360
+void path_dir_at(const Path &p, float d, float out[3]);      // 0x412ed0
+
 }  // namespace traffic
