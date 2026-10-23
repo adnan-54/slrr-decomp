@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <deque>
 #include <map>
 #include <memory>
 #include <string>
@@ -105,6 +106,8 @@ class ResourceManager {
   public:
     // Opens a pair. The .rdb is required: it carries aliases and type names.
     bool open(const char *rpk_path, const char *rdb_path, std::string *err);
+    // Runtime mount: the exe's package loader reads only the .rpk (notes/01).
+    bool open_rpk(const char *rpk_path, std::string *err);
 
     size_t package_count() const { return packages_.size(); }
     const Package &package(size_t i) const { return packages_[i]; }
@@ -130,5 +133,6 @@ class ResourceManager {
     void load_all(ClassPath *classes, LoadReport *report) const;
 
   private:
-    std::vector<Package> packages_;
+    // deque: Package pointers are handed out and must survive a runtime mount.
+    std::deque<Package> packages_;
 };

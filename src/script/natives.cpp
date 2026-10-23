@@ -2528,6 +2528,92 @@ uint32_t package_key(const std::string &name)
     return package_index(pkg);
 }
 
+// 0x4e0470 java.lang.System.openLib(String)I
+// exe: idx = 0x518940(name) [find-or-append in the global name registry];
+// enc = idx << 16; pkg = 0x517b80(enc) [Package::load 0x51e310]; success when
+// pkg state [pkg+0x50] >= 2 at 0x51e2e0. A missing path or a failed load
+// returns -1. The failed registry entry is not removed by the exe.
+bool system_open_lib(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("System.openLib", err)) return false;
+    if (!want("System.openLib", a, 1, err)) return false;
+    // INVENTED: the exe has no null check (0x4e0494 hands the raw pointer to
+    // 0x518940).
+    if (a[0].kind == Value::Null) {
+        *out = Value::make_int(-1);
+        return true;
+    }
+    const std::string *name;
+    if (!get_s("System.openLib", a[0], &name, err)) return false;
+    std::string path = *name;
+    for (char &c : path)  // exe 0x565200 rewrites separators for Win32
+        if (c == '\\') c = '/';
+    Runtime *rt = game_rt();
+    ResourceManager &rm = rt->resources();
+    const Package *pkg = rm.find_open_package(path);
+    if (!pkg) {
+        std::string load_err;
+        if (!rm.open_rpk(path.c_str(), &load_err)) {
+            // shortcut: the exe keeps the failed registry entry, so a later
+            // openLib reuses its slot; src leaves no entry.
+            *out = Value::make_int(-1);
+            return true;
+        }
+        pkg = &rm.package(rm.package_count() - 1);
+    }
+    // INVENTED: the exe returns the global name-registry index (0x518940); src
+    // returns the ResourceManager package index.
+    *out = Value::make_int((int32_t)package_index(pkg));
+    return true;
+}
+
+// 0x555510: recursive scan over dir\*, returns the number of .java files.
+// SERVICE MISSING: 0x5598f0 (the Java source compiler) has no src equivalent;
+// only that call is skipped, each .java file is still counted.
+int32_t compile_scan(const std::string &dir)
+{
+    std::fprintf(stderr, "CompileAll: begin file scan...\n");
+    if (dir.size() + 2 > 0xff) {
+        std::fprintf(stderr, "Path is too long! Can't compile %s\n", dir.c_str());
+        return 0;
+    }
+    std::string base = dir;
+    if (!base.empty() && base.back() != '/' && base.back() != '\\') base += '/';
+    std::vector<fs::FindEntry> entries;
+    int32_t n = 0;
+    if (fs::find(base + "*", &entries)) {
+        for (const fs::FindEntry &e : entries) {
+            if (e.name == "." || e.name == "..") continue;
+            if (e.is_dir) {
+                n += compile_scan(base + e.name);
+            } else {
+                // Exe test is the FIRST dot (strchr), not a suffix test.
+                size_t dot = e.name.find('.');
+                if (dot != std::string::npos &&
+                    e.name.compare(dot, std::string::npos, ".java") == 0)
+                    n++;  // 0x5598f0(dir, ...) skipped: no Java compiler
+            }
+        }
+    }
+    std::fprintf(stderr, "CompileAll: success!\n");
+    return n;
+}
+
+// 0x4e54c0 java.lang.System.compileAll(String)I
+bool system_compile_all(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("System.compileAll", a, 1, err)) return false;
+    // INVENTED: the exe passes the raw pointer to strlen/FindFirstFileA without
+    // a check; a null/non-String argument is the usual native error here.
+    const std::string *arg;
+    if (!get_s("System.compileAll", a[0], &arg, err)) return false;
+    std::string path = *arg;
+    for (char &c : path)
+        if (c == '\\') c = '/';
+    *out = Value::make_int(compile_scan(path));
+    return true;
+}
+
 int file_put(FileState *s, const void *p, size_t n)
 {
     if (!s || !s->f) return 0;
@@ -5599,6 +5685,17 @@ bool gfx_flush(Vm &, const Args &, Value *out, std::string *)
     return true;
 }
 
+// 0x4e5560 GfxEngine.forceRendering()V
+// exe: 7x {0x517f60 streaming tick, 0x518f80 manager list tick,
+// DAT_005e8ca0 = 0, Game__renderFrame 0x421920, DAT_005dadbc++}.
+// shortcut: src has no render-frame/resource-streaming host; the 7x loop has
+// nothing to observe (same no-service path as flush 0x4dc840).
+bool gfx_force_rendering(Vm &, const Args &, Value *out, std::string *)
+{
+    *out = Value::make_null();
+    return true;
+}
+
 // 0x4dc900 GfxEngine.renderOK()I: movzx eax, byte [0x5fe0f8]; ret.
 // DAT_005fe0f8 is the result of the last Game__renderFrame, stored by
 // Game__renderAndMeasure at 0x47b5cd; 0 before the first frame.
@@ -7054,8 +7151,8 @@ const std::vector<Entry> &table()
     {"java.lang.System", "currentTime", "()F", system_current_time, false},
     {"java.lang.System", "simTime", "()F", system_sim_time, false},
     {"java.lang.System", "timeWarp", "(F)F", system_time_warp, false},
-    {"java.lang.System", "openLib", "(Ljava.lang.String;)I", nullptr, true},
-    {"java.lang.System", "compileAll", "(Ljava.lang.String;)I", nullptr, true},
+    {"java.lang.System", "openLib", "(Ljava.lang.String;)I", system_open_lib, false},
+    {"java.lang.System", "compileAll", "(Ljava.lang.String;)I", system_compile_all, false},
     {"java.lang.System", "info", "(I)Ljava.lang.String;", system_info, false},
     {"java.lang.System", "buildNumber", "()I", system_build_number, false},
     {"java.lang.System", "setLdPriority", "(I)V", system_set_ld_priority, false},
@@ -7161,7 +7258,7 @@ const std::vector<Entry> &table()
     {"java.sound.Sound", "has3DHardware", "()I", snd_has_3d_hardware, false},
     {"java.sound.Sound", "hasMixHardware", "()I", snd_has_mix_hardware, false},
     {"java.sound.Sound", "enableDebugDump", "(Ljava.util.resource.ResourceRef;)I", snd_enable_debug_dump, false},
-    {"java.render.GfxEngine", "forceRendering", "()V", nullptr, true},
+    {"java.render.GfxEngine", "forceRendering", "()V", gfx_force_rendering, false},
     {"java.render.GfxEngine", "printScreen", "(Ljava.lang.String;)V", nullptr, true},
     {"java.render.GfxEngine", "numDisplayModes", "()I", gfx_num_display_modes, false},
     {"java.render.GfxEngine", "currDisplayMode", "()I", gfx_curr_display_mode, false},

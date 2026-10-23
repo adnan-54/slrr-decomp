@@ -230,6 +230,19 @@ bool ResourceManager::open(const char *rpk_path, const char *rdb_path, std::stri
     return true;
 }
 
+// 0x51e310 Package::load: the runtime mount parses the .rpk only; the exe never
+// opens an .rdb here (notes/01).
+bool ResourceManager::open_rpk(const char *rpk_path, std::string *err)
+{
+    if (!rpk_path) return fail(err, "open_rpk needs an .rpk path");
+    Package pkg;
+    if (!pkg.rpk.load(rpk_path, err)) return false;
+    pkg.rpk_path = rpk_path;
+    pkg.mount = canonical_package(rpk_path);
+    packages_.push_back(std::move(pkg));
+    return true;
+}
+
 const Package *ResourceManager::find_open_package(const std::string &subpackage) const
 {
     std::string ref = canonical_package(subpackage);
