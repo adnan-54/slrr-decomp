@@ -85,6 +85,25 @@ class Runtime {
         int32_t viewport_depth = 0;    // +0xc
         float viewport_rect[4] = {};   // +0x10 x, +0x14 y, +0x18 w, +0x1c h
         bool viewport_active = false;  // INVENTED: game drawn-list (+0x14c) membership
+        // res_camera typed data (0x524dc0, notes/12 §9): +0xc aspect (viewport w/h),
+        // +0x10 fov, +0x14 near*10, +0x18 far*10, +0x2c i2, +0x30 i1, +0x34 f4, +0x38 f5.
+        // fog data (0x4d9140): +0x1c start*10, +0x20 end*10, +0x24 enable 1.0f, +0x28 colour.
+        // INVENTED: the exe keeps the camera words in the type-0xc resource's typed data
+        // and the fog words in a separate resource reached via instance data +0x114;
+        // src stores both on the resource bound to the script handle.
+        float camera_aspect = 1.0f;      // +0xc
+        float camera_fov = 0.0f;         // +0x10
+        float camera_near = 0.0f;        // +0x14
+        float camera_far = 0.0f;         // +0x18
+        int32_t camera_i2 = 0;           // +0x2c
+        int32_t camera_i1 = 0;           // +0x30
+        float camera_f4 = 0.0f;          // +0x34
+        float camera_f5 = 0.0f;          // +0x38
+        int32_t camera_viewport_id = 0;  // arg2 -> 0x420080/FUN_00464f60; INVENTED storage
+        float fog_start = 0.0f;          // +0x1c
+        float fog_end = 0.0f;            // +0x20
+        bool fog_enabled = false;        // +0x24 (exe stores 1.0f); INVENTED bool
+        int32_t fog_color = 0;           // +0x28
         bool instance = false;
         Object *script = nullptr;          // script instance (typed +0x50)
         int refs = 0;                      // handles attached (RI+0x78 list)

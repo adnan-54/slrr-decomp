@@ -1,7 +1,7 @@
 ---
 id: 072
-status: todo
-branch:
+status: implemented
+branch: card/072
 depends: [074, 075]
 ---
 # render: java.render.Camera create / destroy / setFog + GroundRef.setFog

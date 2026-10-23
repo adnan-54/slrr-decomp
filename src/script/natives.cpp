@@ -5699,6 +5699,130 @@ bool vp_resize(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// ---- java.render.Camera (0x4d8de0 / 0x4d8fc0 / 0x4d9140) ----------------
+
+// 0x4d8de0 Camera.create(ResourceRef,Viewport,IFFFFFII)V: builds a type-3
+// "s_renderref_camera" instance and rebinds the receiver handle to it.
+// INVENTED: creation via Runtime::create_resource stands in for 0x524dc0/0x524840;
+// the camera typed-data words live on the bound Resource (see runtime.h).
+// INVENTED: camera_aspect is the exe's no-data value 1.0f (0x4d8de0 passes
+// 1.0f/[0x593598] when the viewport pixel size is unavailable; same as
+// vp_get_aspect, card 061). The aspect itself is vp+0xec/vp+0xf0 from FUN_00422320.
+// shortcut: the ResourceRef parent/package placement, the local type link and the
+// viewport attach (0x420900 / 0x420080) are not modelled; a[1]/a[2] are unread.
+// UNRESOLVED: 0x524dc0/0x524840 internals (DAT_005fde70+8/+0xc, bounds, +0x11c).
+bool cam_create(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Camera.create", err)) return false;
+    Object *o;
+    if (!receiver_object("Camera.create", a, &o, err)) return false;
+    int32_t id, i1, i2;
+    float fov, near, far, f4, f5;
+    if (!want("Camera.create", a, 11, err) ||
+        !get_i("Camera.create", a[3], &id, err) ||
+        !get_f("Camera.create", a[4], &fov, err) ||
+        !get_f("Camera.create", a[5], &near, err) ||
+        !get_f("Camera.create", a[6], &far, err) ||
+        !get_f("Camera.create", a[7], &f4, err) ||
+        !get_f("Camera.create", a[8], &f5, err) ||
+        !get_i("Camera.create", a[9], &i1, err) ||
+        !get_i("Camera.create", a[10], &i2, err))
+        return false;
+    Runtime::Handle *h = game_rt()->handle(o);  // 0x4ecc70
+    // INVENTED: the exe has no guard and would fault at the 0x40cac0 bind.
+    if (!h) {
+        *out = Value::make_null();
+        return true;
+    }
+    Runtime::Resource *r = game_rt()->create_resource(3, "s_renderref_camera");
+    r->camera_aspect = 1.0f;        // 0x524dc0 data+0xc = 1.0f/param_2; INVENTED no-data
+    r->camera_fov = fov;            // +0x10
+    r->camera_near = near * 10.0f;  // +0x14
+    r->camera_far = far * 10.0f;    // +0x18
+    r->camera_f4 = f4;              // +0x34
+    r->camera_f5 = f5;              // +0x38
+    r->camera_i1 = i1;              // +0x30
+    r->camera_i2 = i2;              // +0x2c
+    r->camera_viewport_id = id;     // a[3] -> 0x420080 FUN_00464f60; INVENTED storage
+    game_rt()->bind(h, r);          // 0x40cac0
+    const float p[3] = {0.0f, 0.0f, 3.0f};
+    ri_set_bone_pos(h, ri_get_bone_id(h, "bone00"), p);  // 0x4e77f0/0x4ec470
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4d8fc0 Camera.destroy()V: 0x4e9450 queues the receiver handle for the
+// deferred delete (flushed by 0x47d070 -> D3 zeroes the handle).
+// INVENTED: missing handle returns without logging (exe logs "vm_cam_destroy:
+// scripted resource %x not found").
+// shortcut: the embedded fog ref node (inst+0x108/+0x110/+0x114) is not modelled;
+// src stores fog on the resource.
+bool cam_destroy(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Camera.destroy", err)) return false;
+    Object *o;
+    if (!receiver_object("Camera.destroy", a, &o, err) ||
+        !want("Camera.destroy", a, 1, err))
+        return false;
+    Runtime::Handle *h = game_rt()->handle(o);  // 0x4ecc70
+    if (h && h->id && h->target) game_rt()->queue_delete(h);  // 0x4e9450
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4d9140 Camera.setFog(IFF)V: enable 1.0f, colour, start*10, end*10.
+// INVENTED: values stored on the bound Resource (exe: a separate fog resource
+// reached through instance data +0x114) and no log for the missing handle (exe
+// logs "vm_cam_setfog: scripted resource %x not found").
+bool cam_set_fog(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Camera.setFog", err)) return false;
+    Object *o;
+    if (!receiver_object("Camera.setFog", a, &o, err)) return false;
+    int32_t colour;
+    float start, end;
+    if (!want("Camera.setFog", a, 4, err) ||
+        !get_i("Camera.setFog", a[1], &colour, err) ||
+        !get_f("Camera.setFog", a[2], &start, err) ||
+        !get_f("Camera.setFog", a[3], &end, err))
+        return false;
+    if (Runtime::Resource *r = value_resource(a[0])) {
+        r->fog_enabled = true;          // fd+0x24 = 1.0f
+        r->fog_color = colour;          // fd+0x28
+        r->fog_start = start * 10.0f;   // fd+0x1c
+        r->fog_end = end * 10.0f;       // fd+0x20
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4de640 GroundRef.setFog(IFF)V: same four words as Camera.setFog.
+// INVENTED: values stored on the receiver's Resource; no log for a missing
+// handle (same as the exe).
+// shortcut: the 0x10-byte record and the 0x47c640/0x47e450 info post (id 0x4a)
+// are not modelled; src has no info dispatcher.
+bool gr_set_fog(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GroundRef.setFog", err)) return false;
+    Object *o;
+    if (!receiver_object("GroundRef.setFog", a, &o, err)) return false;
+    int32_t colour;
+    float start, end;
+    if (!want("GroundRef.setFog", a, 4, err) ||
+        !get_i("GroundRef.setFog", a[1], &colour, err) ||
+        !get_f("GroundRef.setFog", a[2], &start, err) ||
+        !get_f("GroundRef.setFog", a[3], &end, err))
+        return false;
+    if (Runtime::Resource *r = value_resource(a[0])) {
+        r->fog_enabled = true;          // rec+0 = 1
+        r->fog_color = colour;          // rec+0xc
+        r->fog_start = start * 10.0f;   // rec+4
+        r->fog_end = end * 10.0f;       // rec+8
+    }
+    *out = Value::make_null();
+    return true;
+}
+
 // ---- java.util.resource.Animation (notes/12 §9) -------------------------
 // All nine natives drive a render-side animation player: FUN_0051b8d0 creates
 // the 0xc0-byte player under a RenderRef resource instance and the operations
@@ -6081,9 +6205,9 @@ const std::vector<Entry> &table()
     {"java.render.GfxEngine", "openVideo", "(Ljava.lang.String;III)I", gfx_open_video_ex, false},
     {"java.render.GfxEngine", "closeVideo", "()V", gfx_close_video, false},
     {"java.render.GfxEngine", "isPlayingVideo", "()I", gfx_is_playing_video, false},
-    {"java.render.Camera", "create", "(Ljava.util.resource.ResourceRef;Ljava.render.Viewport;IFFFFFII)V", nullptr, true},
-    {"java.render.Camera", "destroy", "()V", nullptr, true},
-    {"java.render.Camera", "setFog", "(IFF)V", nullptr, true},
+    {"java.render.Camera", "create", "(Ljava.util.resource.ResourceRef;Ljava.render.Viewport;IFFFFFII)V", cam_create, false},
+    {"java.render.Camera", "destroy", "()V", cam_destroy, false},
+    {"java.render.Camera", "setFog", "(IFF)V", cam_set_fog, false},
     {"java.render.Viewport", "create", "(IFFFF)V", vp_create, false},
     {"java.render.Viewport", "destroy", "()V", vp_destroy, false},
     {"java.render.Viewport", "activate", "(I)V", vp_activate, false},
@@ -6181,7 +6305,7 @@ const std::vector<Entry> &table()
     {"java.util.resource.GroundRef", "setWater", "(FFF)V", nullptr, true},
     {"java.util.resource.GroundRef", "setWater", "(Ljava.lang.Vector3;Ljava.lang.Vector3;FF)V", nullptr, true},
     {"java.util.resource.GroundRef", "addWaterLimit", "(Ljava.lang.Vector3;Ljava.lang.Vector3;)V", nullptr, true},
-    {"java.util.resource.GroundRef", "setFog", "(IFF)V", nullptr, true},
+    {"java.util.resource.GroundRef", "setFog", "(IFF)V", gr_set_fog, false},
     {"java.util.resource.GroundRef", "addTrafficCar", "(Ljava.util.resource.GameRef;Ljava.lang.Vector3;)I", nullptr, true},
     {"java.util.resource.GroundRef", "remTrafficCar", "(I)V", nullptr, true},
     {"java.util.resource.GroundRef", "notifyTrafficCar", "(II)I", nullptr, true},
