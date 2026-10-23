@@ -50,3 +50,23 @@ Address range of the VM code: roughly **0x548c40–0x565000** (~360 functions). 
   .class time to the source time (0x5658d0). Syntax error -> fatal message box (0x569570).
 - Other compiler entry: System.compileAll 0x555510 (GameLogic, DEBUG_MODE only).
 - src: no compiler (SERVICE MISSING). Shipped data: 4 Axis part scripts exist only as scripts/src/*.java.
+
+## Class lookup by name: the package tree (verified 2026-10-23, card 104)
+- JVM init 0x55ccc0: root node "java"; registers `system\scripts\{lang,net,io,util,render,sound}` ->
+  `java.<same>`, `sl\scripts\game` -> `java.game`, `parts\scripts` -> `java.game.parts`,
+  `parts\accessories\scripts` -> `java.game.parts.accessories` (0x55f780), then loads
+  `java.lang.String` and `java.util.resource.GameRef`.
+- Adding a directory (0x55f550) also adds every subdirectory as a child package node (0x560180), so
+  `java.util.resource` = `system\scripts\util\resource` without its own registration.
+- A directory's class names (0x55fd90, lazy): `src\*.java` names first, then `*.class` names not yet
+  listed; name = text before the first '.'.
+- getClass(name) 0x55add0: loaded class table (hash, 0x55af50) -> else 0x55c0c0: findDir 0x55fc10 walks the
+  tree by dotted segments, returns the first directory of the leaf package whose listing has the
+  class name -> 0x55bec0 (compileSource if stale, read `dir\Name.class`). Not found -> "JVM::getClass:
+  class \"...\" not found in file ... at line ...".
+- Loading a class also registers its package with its directory (0x55bec0 -> 0x55f780; failure ->
+  "Package conflict: multiple packages placed at the same location (").
+- Shipped data (card 104 check): 335 class files below the 9 roots; 260 resolve back to their own
+  directory by FQN; 75 under `sl\scripts\game\CareerEvents` / `Gamemodes` declare `package java.game`
+  (parent package), so they are reachable only after a record loads them by path (which then adds that
+  directory to `java.game`); 72 extra class units live in files named after another class.

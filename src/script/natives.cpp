@@ -275,7 +275,7 @@ bool thread_stop(Vm &vm, const Args &a, Value *out, std::string *err)
     return true;
 }
 
-bool thread_is_alive(Vm &vm, const Args &a, Value *out, std::string *err)
+bool thread_is_alive(Vm &, const Args &a, Value *out, std::string *err)
 {
     Object *o;
     if (!want("Thread.isAlive", a, 1, err) || !get_o("Thread.isAlive", a[0], &o, err))
