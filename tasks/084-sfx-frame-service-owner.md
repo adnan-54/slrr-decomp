@@ -46,9 +46,11 @@ src has no camera, which is the exe's `DAT_005f1e44 <= 0` branch: listener posit
    sfx.mixer.set_listener(listener);                                  // 0x546cd0
    sfx.pool.service(*sfx.backend);                                    // 0x5690a0
    ```
-   (The exe runs this after `Game__flushDeferred`; src calls `flush_deferred` inside the
-   gate today (shortcut, sim step not ported), so "end of frame" keeps the same relative
-   order.)
+   Gate note (Claude, decompile 0x47d760): outside the gate the exe runs
+   `0x47ba10(min(dt, DAT_005da468))` (not ported), then **`Game__flushDeferred` every
+   iteration**, then the listener/service above. So also add, right before the listener
+   block: `if (Runtime *rt = Runtime::active()) rt->flush_deferred();  // 0x47d760 per-frame flush`
+   (keep the existing in-gate call: it stands for the flush at the end of `Game__simStep`).
 2. `src/audio/sfx.cpp`: in `SfxTable::add_item` and `EngineSfx::emit_node` replace
    `resource + 0x80` with `resource` and cite `0x40cac0: node+8 = *(RI+0x80) (the id)`.
    In `src/audio/sfx.h` change the two comments that say `owner word = resource + 0x80` /
