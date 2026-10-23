@@ -1,7 +1,7 @@
 ---
 id: 114
-status: todo
-branch:
+status: implemented
+branch: card/114
 depends: [113]
 ---
 # runtime: load a type record's `script <dir>\Name.class` on demand (0x51fcc0 -> 0x55aca0 -> 0x55bec0)

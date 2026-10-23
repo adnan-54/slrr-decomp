@@ -11,6 +11,7 @@
 #pragma once
 #include <stdint.h>
 
+#include <functional>
 #include <list>
 #include <map>
 #include <memory>
@@ -242,6 +243,10 @@ class Runtime {
     bool class_is_a(const std::string &cls, const std::string &base);
     // 0x47c640 Game__getInfo(h, 0x39) -> 0x4bb570: the ground's traffic graph or null.
     traffic::Graph *ground_traffic(Handle *h);
+    // 0x55aca0 -> 0x55bec0: load "<dir>\<base>.class" on demand for a record's
+    // `script <dir>\<Name>.class` ref; returns the FQN, "" on failure.
+    std::function<std::string(const std::string &dir, const std::string &base)>
+        path_class_loader;
 
   private:
     std::string script_class_of(const Package &pkg, const RpkRecord &rec) const;

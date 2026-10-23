@@ -267,6 +267,15 @@ std::string Runtime::script_class_of(const Package &pkg, const RpkRecord &rec) c
                 if (!ref.path.empty() && kv.second.path == ref.path) return kv.first;
         }
         if (!ref.file) return ref.text;  // class named directly by the record
+        // 0x51fcc0 -> 0x55aca0(dir, Name): the record text is <dir>\Name.class;
+        // 0x55aca0 loads it when no loaded class has that path.
+        size_t sep = ref.text.find_last_of("\\/");
+        if (!path_class_loader || sep == std::string::npos) continue;
+        std::string base = ref.text.substr(sep + 1);
+        if (base.size() > 6 && base.compare(base.size() - 6, 6, ".class") == 0)
+            base.resize(base.size() - 6);
+        std::string fqn = path_class_loader(ref.text.substr(0, sep), base);
+        if (!fqn.empty()) return fqn;
     }
     return std::string();
 }

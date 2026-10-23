@@ -270,6 +270,16 @@ bool load_class(PackageTree &tree, ClassPath &classes, Vm &vm, const std::string
     }
     size_t dot = fqn.rfind('.');  // 0x569370 = strrchr
     std::string base = dot == std::string::npos ? fqn : fqn.substr(dot + 1);
+    if (!load_class_at(tree, classes, vm, dir, base, nullptr)) return false;
+    return vm.find_class(fqn) != nullptr;
+}
+
+// 0x55bec0 load(dir, Name): read <dir>\Name.class, add the new units to the
+// VM and register the first one's package with dir.
+bool load_class_at(PackageTree &tree, ClassPath &classes, Vm &vm, const std::string &dir,
+                   const std::string &base, std::string *fqn_out)
+{
+    if (fqn_out) fqn_out->clear();
     std::string rel = dir + "\\" + base + ".class";
 
     // 0x5598f0 compileSource has no src equivalent. The exe only falls back to
@@ -295,20 +305,19 @@ bool load_class(PackageTree &tree, ClassPath &classes, Vm &vm, const std::string
     for (size_t i = before; i < classes.units().size(); i++)
         vm.add_class(classes.units()[i]);
 
-    // Register the class's package with its directory (0x55f780).
-    std::string cls_name = fqn;
-    if (classes.units().size() > before) {
-        const ClassUnit *first = classes.units()[before];
-        std::string n = first->class_name(first->self_class);
-        if (!n.empty()) cls_name = n;
-    }
+    // Register the class's package with its directory (0x55f780). A file whose
+    // units were all already in the ClassPath has nothing new to register.
+    if (classes.units().size() == before) return true;
+    std::string cls_name = classes.units()[before]->class_name(
+        classes.units()[before]->self_class);
+    if (fqn_out) *fqn_out = cls_name;
     size_t pdot = cls_name.rfind('.');
     std::string pkg = pdot == std::string::npos ? std::string() : cls_name.substr(0, pdot);
     if (tree.add(dir, pkg) < 1)
         std::fprintf(stderr,
                      "Package conflict: multiple packages placed at the same location (%s, %s)\n",
                      cls_name.c_str(), dir.c_str());
-    return vm.find_class(fqn) != nullptr;
+    return true;
 }
 
 } // namespace jvm

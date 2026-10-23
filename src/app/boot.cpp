@@ -79,6 +79,13 @@ const BootResult &Boot::run(const std::string &rpk)
     vm_->set_class_loader([this](Vm &vm, const std::string &fqn) {
         return jvm::load_class(*tree_, *classes_, vm, fqn);
     });
+    // 0x51fcc0 -> 0x55aca0 -> 0x55bec0: a record's `script <dir>\Name.class`
+    // loads that file and registers its package with dir.
+    runtime_->path_class_loader = [this](const std::string &dir, const std::string &base) {
+        std::string fqn;
+        jvm::load_class_at(*tree_, *classes_, *vm_, dir, base, &fqn);
+        return fqn;
+    };
     vm_->get_class("java.lang.String");
     vm_->get_class("java.util.resource.GameRef");
 

@@ -50,5 +50,9 @@ class PackageTree {
 
 // 0x55c0c0 + 0x55bec0 over a ClassPath; adds every unit of the file to the VM.
 bool load_class(PackageTree &tree, ClassPath &classes, Vm &vm, const std::string &fqn);
+// 0x55bec0 on an explicit dir: load "<dir>\<base>.class". fqn_out gets the
+// first new unit's class name ("" when every unit was already loaded).
+bool load_class_at(PackageTree &tree, ClassPath &classes, Vm &vm, const std::string &dir,
+                   const std::string &base, std::string *fqn_out);
 
 } // namespace jvm
