@@ -1,6 +1,6 @@
 ---
 id: 067
-status: draft
+status: todo
 branch:
 depends: []
 ---
@@ -45,14 +45,14 @@ Helpers (already documented; no need to re-trace):
 
 ### 0x4e5b30 Text.create(ResourceRef parent, ResourceRef charset, float x, float y)
     FUN_004b1af0(ctx, &self, &parent, &charset, &x, &y);
-    FUN_004ecfc0(self, "renderinst");              // return kept in ECX (see UNRESOLVED)
+    h = FUN_004ecfc0(self, "renderinst");          // 0x5a2bc8; asm 0x4e5b9b MOV ECX,EAX -> thiscall this
     v3 = { x, y, 0.0f };
     FUN_004e8f40(parent, &DAT_005a02aa, &v3, charset, DAT_005dadac, 2, 0x3f800000);
     // thiscall: ECX = renderinst handle
 
 ### 0x4e8f40 FUN_004e8f40 (Text__create), ECX = renderinst handle
     identity = FUN_005663c0();                     // 4x4 identity (diag 1)
-    if (*(int *)(charset_handle + 8) != 0) {       // charset handle has a bound id
+    if (*(int *)(charset_handle + 8) != 0) {       // handle +8 = resource id (notes/12 §9) = our Handle::id
         res = FUN_00524840(parent_handle, charset_handle, "r_text", 0);
         FUN_0040cac0(res);                         // ECX = renderinst -> bind
         bone = FUN_004e77f0("bone00");             // ECX = renderinst
@@ -61,7 +61,7 @@ Helpers (already documented; no need to re-trace):
         if (RI) { RI->+0xb0 = 2; RI->+0xb4 .. +0xc8 = 0; }   // bounds kind none / zero
         if (RI) {
             if (RI->+0x7c != 1) RI->vf[+0x14](1.0f);          // make resident
-            if (FUN_0051f4f0(0x80000001, 0, 10.0f) < 0) T = 0;
+            if (FUN_0051f4f0(0x80000001, 0, 0.0f) < 0) T = 0;   // create passes 0.0f (asm 0x4e9004)
             else T = RI->vf[+0xc](1.0f);
             if (T) {
                 T->+0x16c |= 0x8000;           // text flag
@@ -111,12 +111,9 @@ Helpers (already documented; no need to re-trace):
    float text_pos[3] = {};            // bone00 matrix translation, raw (INVENTED)
    ```
    Do not rename/duplicate existing fields.
-2. `src/script/natives.cpp`, before `}  // namespace` (line 4383):
+2. `src/script/natives.cpp`: `g_default_text_color` already exists (card 062, ~line 4970,
+   next to `tx_set_default_color`); reuse it, do not add another. Add after it:
    ```cpp
-   // DAT_005dadac: process-wide default text colour (Text.setDefaultColor
-   // 0x4e5cd0, card 062). If card 062 is already merged, reuse its global.
-   uint32_t g_default_text_color = 0xffffffffu;
-
    // 0x4ecfc0: receiver's "renderinst" field (RenderRef) -> its native handle.
    Runtime::Handle *text_renderinst(Vm &vm, Object *self)
    {
@@ -128,8 +125,8 @@ Helpers (already documented; no need to re-trace):
    ```
 3. `tx_create` (0x4e5b30): `need_rt("Text.create")`, `receiver_object`, `want(...,5)`,
    `get_f(a[3])`/`get_f(a[4])`.
-   - `Runtime::Resource *font = value_resource(a[2]);`
-     `if (!font) { *out = Value::make_null(); return true; }`  // exe: charset id == 0 -> nothing
+   - `Runtime::Handle *font = value_handle(a[2]);`
+     `if (!font || font->id == 0) { *out = Value::make_null(); return true; }`  // 0x4e8f54: charset handle +8 (id) == 0 -> nothing (null handle: INVENTED safety, exe faults)
    - `Runtime::Handle *h = text_renderinst(vm, o);`
      `if (!h) { *out = Value::make_null(); return true; }`  // INVENTED safety (exe would fault)
    - `Runtime::Resource *r = game_rt()->instantiate(nullptr, value_resource(a[1]), "r_text", std::string(), false, err);`
@@ -148,13 +145,12 @@ Helpers (already documented; no need to re-trace):
    `if (vm.get_instance_field(o, "text", &v, &e) && v.kind == Value::Str) r->text_data = v.s;`
    `else r->text_data.clear(); }`
    `*out = Value::make_null();`
-5. Registry rows 4657/4662: `create` -> `tx_create`, `update` -> `tx_update`, both `false`.
+5. Registry rows (`"java.render.Text", "create"` / `"update"`, ~lines 5462/5467): `create` -> `tx_create`, `update` -> `tx_update`, both `false`.
    Leave every other `java.render.Text` row a stub (card 062 scope).
 
 ## Files
 - edit: `src/game/runtime.h` (`Runtime::Resource` text fields)
-- edit: `src/script/natives.cpp` (`g_default_text_color`, `text_renderinst`, `tx_create`,
-  `tx_update`, registry rows 4657/4662)
+- edit: `src/script/natives.cpp` (`text_renderinst`, `tx_create`, `tx_update`, registry rows)
 - read only: `src/render/ui.h` (`kDefaultTextColor`), `src/game/runtime.h` (`instantiate`)
 
 ## Done when
@@ -170,17 +166,14 @@ Helpers (already documented; no need to re-trace):
 - with no charset resource: `create` is a no-op returning null; with no `renderinst`
   handle or no target: both natives are no-ops returning null (no fault)
 - `update` with a missing, null or non-String `text` field stores an empty string
-- registry rows 4657/4662 point at the new functions with `engine = false`
+- the two registry rows point at the new functions with `engine = false`
 - `make -C src clean check` green; no new unit tests or hand-made expected values
 - card frontmatter: status implemented, branch name
 
 ## UNRESOLVED
-- create's `renderinst` plumbing: the decompile discards the handle, raw lines
-  `FUN_004ecfc0(local_8,"renderinst");` and FUN_004e8f40 uses `in_ECX`. Assumed to be
-  that handle (it is the only handle fetched and the callee binds/data-writes through
-  it). 0x4e2140 RenderRef.create shows the same pattern (unwrap receiver, call 0x524840,
-  `FUN_0040cac0`), but the ECX assignment was not read from assembly (assembly tool
-  unavailable in this trace).
+- (resolved in gate, Claude: assembly 0x4e5b9b `MOV ECX, EAX` passes the 0x4ecfc0 result
+  as `this`; 0x4e8f47 keeps it in ESI for bind/bone/typed writes. update 0x4e5eff reads
+  `[handle+0xc]` with no null check on the handle.)
 - 0x524840 internals `FUN_005188e0`/`FUN_00518880` (creation), `FUN_0051e090` (type
   link), `FUN_00422070` (game registration), `+0x11c` render kind, `+0x98 = 1.0f`,
   `DAT_00773ad0` are untraced; the port allocates with `Runtime::instantiate` and
