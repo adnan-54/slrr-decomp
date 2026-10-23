@@ -111,3 +111,18 @@ zero frame_ms/poll_ms/stamp/list/count, scale `DAT_007a5b5c = 1.0`.
   `rpm_trans_fwd/rev`, `sfx_starter_rpm`, `car+0x1e00 = 0`, `tank_nitro`, `consumption_nitro`
   (nitro clamped to tank), wheel slot rebinding, `drag_center` (Vector3 x/y/z) + `C_drag`,
   and always `Vehicle__applyTuningOverrides 0x498020`.
+
+## 4. Game deferred lists and script timers (Game object at 0x5fde90)
+
+All lists are intrusive doubly linked lists with head/tail sentinel nodes (`vtbl, next, prev`) embedded in Game; the first node is `headSentinel.next`, the walk stops when `node.next == 0` (tail sentinel). Nodes derive from `ResourceRefDLNode` (ctor 0x47b090, 0x34 bytes): an embedded Handle at `+0x24 {+0x24 link, +0x28, +0x2c id, +0x30 Resource*}` bound to the queued resource through 0x40cac0.
+
+| list | head sentinel / tail ptr | count | add | drained by |
+|---|---|---|---|---|
+| unload | +0xe8 / +0x114 | +0x220 | `Game__queueUnload` 0x47e340 (ResourceRef.unload on type-1 resources, 0x4ec800) | 0x47d070 |
+| delete | +0x134 / +0x160 | +0x224 | `Game__queueDelete` 0x47b970 (0x4e9450: ResourceRef.destroy, Viewport.destroy); if the RI is resident (`+0x7c == 1`) it first fetches typed data 0x80000000 | 0x47d070 |
+| generic objects | +0x1cc / – | – | not traced | 0x47d070 (unlink + `vf0(1)`) |
+| timers (`TimedEvent`, 0x48 bytes) | +0x180 / +0x1ac | +0x228 | `Handle__addTimer` 0x4e7a60 from `GameType.addTimer` 0x4da3c0 | `Game__runTimers` 0x47b700 |
+
+**0x47d070 `Game__flushDeferred`** (runs after every physics sub-step in `Game__simStep` 0x47e050, and once when no sub-step ran): repeat until a full pass did nothing: (1) each unload node: if its handle id ≠ 0 and `R = handle.res`: if `R+0x7c == 1` dispatch `0x47c760(handle, 0, code 2, 0, 0)`, then `R->vf[+0x1c](1)` (unload); unlink the handle from R's ref list (`R+0x78`); count−−; delete node. (2) each delete node: same, plus `R->vf0(1)` (destroy R) after the unload call. (3) generic list: unlink, `vf0(1)`. After the loop, `Game+0x234 ≠ 0` → 0x559f60 (not traced). So destroy/unload are deferred to the end of the sub-step and always announced by event code 2 to resident resources.
+
+**Timers**: `TimedEvent` (ctor 0x4e7530) `+0x34 due, +0x38 period (0), +0x3c flags, +0x40 param, +0x44 method (strdup)`. `addTimer(deadline, id)` = `addTimer(simTime + deadline, flags 0x80000080, param id, method 0)`; sim time is the float at 0x60251c (`*PTR_DAT_005dadf0`, `System.simTime` 0x4e5810). `removeAllTimers` 0x4da930 → 0x4e93c0 zeroes/unbinds the handle of every timer with the receiver's id (nodes stay). `Game__runTimers` 0x47b700 (main loop each control step, notes/00): next taken before dispatch; id 0 → delete; `due <= simTime` → `0x47c760(&handle, 0, flags & 0x0fffffff, param, method)` (0x80 = `GameRef.EVENT_TIME`), sign bit → delete (one-shot), else `due += period`. Card 073.
