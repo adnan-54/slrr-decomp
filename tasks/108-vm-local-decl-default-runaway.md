@@ -1,7 +1,7 @@
 ---
 id: 108
-status: todo
-branch:
+status: merged
+branch: card/108
 depends: [107]
 ---
 # VM: typed default for uninitialised locals, without the GameInit runaway

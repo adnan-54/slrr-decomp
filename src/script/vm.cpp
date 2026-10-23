@@ -2,39 +2,11 @@
 #include "script/vm.h"
 
 #include <math.h>
-#include <stdarg.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include <algorithm>
 #include <utility>
-
-static FILE *trace_file()
-{
-    static FILE *out = nullptr;
-    static bool init = false;
-    if (!init) {
-        init = true;
-        const char *p = getenv("VM_TRACE");
-        if (p && *p) out = fopen(p, "a");
-        else out = fopen("/tmp/vmtrace-debug4.log", "a"); // DEBUG: remove
-    }
-    return out;
-}
-static bool trace_on() { return trace_file() != nullptr; }
-static int trace_n = 0;
-static void trace(const char *fmt, ...)
-{
-    FILE *out = trace_file();
-    if (!out || trace_n > 20000) return;
-    trace_n++;
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(out, fmt, ap);
-    va_end(ap);
-    fflush(out);
-}
 
 #include "script/natives.h"
 
@@ -393,10 +365,10 @@ static int class_distance(const ClassState *s, const std::string &want)
 // Per-argument match distance for overload choice (0x54a150 -> 0x5607d0: 0 =
 // exact, larger = needs conversion, -1 = no match).
 // shortcut: the exe matches the call site's STATIC argument types (0x560930);
-// src has runtime values only. An object's distance is its inheritance
-// distance to the parameter class, so a nearer overload wins; an unloaded
-// class/interface costs 1 (lax, so such calls still resolve). 0x5607d0's exact
-// cost table is not traced.
+// src has runtime values only. Object -> class: 0x55bd80 -> 0x54abf0 ->
+// 0x54aab0 (super-chain walk), so a nearer overload wins (avoids the GameInit
+// runaway from picking a far overload). INVENTED: unloaded class/interface = 1;
+// the exe's int<->float costs (100/0x65) are not ported.
 static int arg_cost(char param, const std::string &pdesc, const Value &v, const Vm *vm)
 {
     switch (param) {
@@ -407,7 +379,7 @@ static int arg_cost(char param, const std::string &pdesc, const Value &v, const 
         if (v.kind == Value::Obj && v.obj && v.obj->cls) {
             int d = class_distance(v.obj->cls, want);
             if (d >= 0) return d;
-            return is_instance_of(v, pdesc, vm) ? 1 : 1;
+            return 1;
         }
         if (v.kind == Value::Str) return want == "java.lang.String" ? 0 : 1;
         return (v.kind == Value::Array || v.kind == Value::Type)
@@ -611,12 +583,6 @@ bool Thread::finish_frame(const Value &result)
     std::string e;
     if (!vm_->materialize(result, &out, &e)) return fail(e);
     std::unique_ptr<Frame> done = std::move(frames_.back());
-    if (trace_on() && done->unit) {
-        const char *mn = done->method ? done->unit->str(done->method->name) : nullptr;
-        trace("exit %s.%s depth %d\n",
-              done->unit->class_name(done->unit->self_class).c_str(), mn ? mn : "<field init>",
-              (int)frames_.size());
-    }
     frames_.pop_back();
     if (frames_.empty()) {
         result_ = out;
@@ -665,9 +631,6 @@ bool Thread::start_call(ClassState *decl, const MethodInfo *m, Object *self,
     auto nf = std::make_unique<Frame>();
     fill_frame(nf.get(), decl, m, self, *args);
     nf->suppress_result = suppress;
-    if (trace_on())
-        trace("enter %s.%s argc %d depth %d\n",
-              decl->name.c_str(), name.c_str(), (int)args->size(), (int)frames_.size());
     frames_.push_back(std::move(nf));
     return true;
 }
@@ -922,12 +885,6 @@ bool Thread::invoke(Frame &f, uint32_t op, uint32_t operand)
     if (!pop_args(f, &argc, &args)) return false;
     f.win_active = false;
 
-    if (trace_on() && f.unit) {
-        const char *cn = f.method ? f.unit->str(f.method->name) : nullptr;
-        trace("invoke %s.%s line %u -> %s argc %d\n",
-              f.unit->class_name(f.unit->self_class).c_str(), cn ? cn : "<field init>",
-              line_, name.c_str(), argc);
-    }
 
     ClassState *start = nullptr;
     Object *self = nullptr;
@@ -966,11 +923,6 @@ bool Thread::invoke(Frame &f, uint32_t op, uint32_t operand)
     ClassState *decl = nullptr;
     const MethodInfo *m = vm_->find_method(start, name, desc, argc, args, &decl, &e);
     if (!m) return fail(e);
-    if (trace_on()) {
-        const char *sg = decl ? decl->unit->str(m->sig) : nullptr;
-        trace("resolved %s.%s%s (caller decl %s)\n", start->name.c_str(), name.c_str(),
-              sg ? sg : "?", decl ? decl->name.c_str() : "?");
-    }
     if (m->is_static) {
         self = nullptr;
     } else if (!self) {
@@ -1152,7 +1104,6 @@ bool Thread::step()
         if (slot > 65535) return fail("local slot out of range");
         f.pending_decl = (int)slot;
         if (f.locals.size() <= slot) f.locals.resize(slot + 1);
-        if (trace_on()) trace("decl slot %u line %u\n", (unsigned)slot, ins.line);
         return true;
     }
     case 0x1003: // epilogue marker
@@ -1280,7 +1231,6 @@ bool Thread::step()
         r.kind = Ref::Local;
         r.frame = &f;
         r.slot = (size_t)f.pending_decl;
-        if (trace_on()) trace("store decl slot %d line %u\n", f.pending_decl, ins.line);
         if (!vm_->store(r, v, &e)) return fail(e);
         f.pending_decl = -1;
         return true;
@@ -1350,7 +1300,6 @@ bool Thread::step()
         if (f.pending_decl >= 0) {
             // Type of a local declaration: the exe's locals are typed Variables,
             // so `float y;` without initializer reads as 0.0, not null.
-            if (trace_on()) trace("type decl slot %d desc %s line %u\n", f.pending_decl, desc.c_str(), ins.line);
             if ((size_t)f.pending_decl < f.locals.size())
                 f.locals[(size_t)f.pending_decl] = default_for_desc(desc);
             return true;
