@@ -1,6 +1,6 @@
 ---
 id: 059
-status: draft
+status: todo
 branch: ""
 depends: []
 ---
@@ -30,10 +30,13 @@ if (c == 0)
     log("vm_steam_init_api: Failed to initialize Steam API in file \"<file>\" at line <line>");
 return c != 0;                       // 1 on success, 0 on the failure path
 ```
-### 0x4e4d40 Steam.neutralize()V
-No Ghidra procedure at this address (see UNRESOLVED). Located in the 16-byte
-slot 0x4e4d40..0x4e4d4f between initAPI (body reaches at least 0x4e4d30) and
-resetAchievements (0x4e4d50). No body was recovered, so no pseudocode to port.
+### 0x4e4d40 Steam.neutralize()V  (Claude gate: raw bytes `c6 05 df 75 7a 00 01 c3`)
+```
+*(uint8_t*)0x7a75df = 1;      // global "neutralized" flag; return void
+```
+Readers (not traced, car/part code): 0x49446b, 0x494646, 0x49a4f8. Port: a
+file-scope `bool steam_neutralized = false;` in natives.cpp set to true, with a
+comment naming 0x7a75df and those readers. Nothing in src reads it yet.
 ### 0x4e4c10 Steam.getPackage(I)Ljava.lang.String;
 ```
 id = arg0;
@@ -87,7 +90,7 @@ replacement is `INVENTED:` as a whole.
 | native | exe call | result when the call fails (the only case in this engine) |
 |---|---|---|
 | `initAPI()I` | 0x564af0 | return **0** and write the init-failure log line |
-| `neutralize()V` | UNRESOLVED | no-op, void (no return value) |
+| `neutralize()V` | none (pure flag write) | set `steam_neutralized = true`, void |
 | `getPackage(I)Str` | pure 0x564ac0 | still returns the mapping below; no Steam call needed |
 | `setAchievement(String)V` | 0x564b50 | void; write the set-achievement failure log line |
 | `resetAchievements()V` | 0x564b30 | void; write the reset-achievements failure log line |
@@ -120,14 +123,6 @@ Do **not** write to `error.log` and do not call `std::exit`.
 - Keep the exact class/method/sig strings of the existing rows.
 
 ## UNRESOLVED
-- **0x4e4d40 neutralize body.** Rea/Ghidra has no procedure there:
-  `File offset 0x4e4d40 has no loaded source mapping for the admitted target
-  file; Ghidra image base: 0x400000`. Addresses 0x4e4d30 resolve to the
-  containing `FUN_004e4c80` (initAPI), while 0x4e4d39, 0x4e4d44 and 0x4e4d4a
-  resolve to nothing; `FUN_004e4d50` starts resetAchievements. So the 16 bytes
-  at 0x4e4d40..0x4e4d4f are unanalyzed and no raw pseudocode line exists. Port
-  is a no-op. If retracing shows it calls a `SteamAPI_Shutdown` wrapper or
-  clears `DAT_007a75e4`, update this card; the latter would need a remap flag.
 - **Log prefix literals** `DAT_005a5ca4`, `DAT_005a5fa0`, `DAT_005a609c` (first
   0x569320 append before the message) were not read from the image; not needed
   for the stderr replacement.
