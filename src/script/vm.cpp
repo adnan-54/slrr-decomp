@@ -205,7 +205,16 @@ static bool values_equal(const Value &a, const Value &b)
 // 3 |, 4 ^, 5 &, 13 >>, 14 <<, 15 -, 16 +, 17 %, 18 /, 19 *.
 static bool apply_binary(int op, Value a, Value b, Value *out, std::string *err)
 {
-    if (op == 0x10 && (a.kind == Value::Str || b.kind == Value::Str)) {
+    // INVENTED: src values carry no static type. A null only reaches `+` from a
+    // String- or object-typed variable; the exe concatenates the String case
+    // (null = empty, notes/05) and rejects the object case, so null + scalar is
+    // taken as String concatenation (shipped String.timeToString with TCF_NOHOURS
+    // does `time = time + min` with `time` still null).
+    bool null_str = (a.kind == Value::Null &&
+                     (b.kind == Value::Int || b.kind == Value::Float)) ||
+                    (b.kind == Value::Null &&
+                     (a.kind == Value::Int || a.kind == Value::Float));
+    if (op == 0x10 && (a.kind == Value::Str || b.kind == Value::Str || null_str)) {
         std::string sa, sb;
         if (!stringify(a, &sa, err) || !stringify(b, &sb, err)) return false;
         *out = Value::make_str(sa + sb);
@@ -617,7 +626,9 @@ bool Thread::start_call(ClassState *decl, const MethodInfo *m, Object *self,
         if (!suppress && !frames_.empty()) frames_.back()->stack.push_back(r);
         return true;
     }
-    if (!m->is_static && !self) return fail("instance method " + name + " without receiver");
+    bool str_this = !m->is_static && !self && receiver && receiver->kind == Value::Str;
+    if (!m->is_static && !self && !str_this)
+        return fail("instance method " + name + " without receiver");
     if (m->body < 0 || (size_t)m->body >= decl->unit->bodies.size())
         return fail("method " + name + " has no body");
     const Body &body = decl->unit->bodies[(size_t)m->body];
@@ -630,6 +641,7 @@ bool Thread::start_call(ClassState *decl, const MethodInfo *m, Object *self,
     }
     auto nf = std::make_unique<Frame>();
     fill_frame(nf.get(), decl, m, self, *args);
+    if (str_this) nf->locals[0] = nf->str_this = *receiver;
     nf->suppress_result = suppress;
     frames_.push_back(std::move(nf));
     return true;
@@ -917,6 +929,10 @@ bool Thread::invoke(Frame &f, uint32_t op, uint32_t operand)
         if (!start) start = f.state;
         if (!start) return fail("implicit receiver without a class");
         self = f.self;
+        if (!self && f.str_this.kind == Value::Str) {
+            recv = f.str_this;
+            have_recv = true;
+        }
     }
 
     std::string e;
@@ -928,7 +944,7 @@ bool Thread::invoke(Frame &f, uint32_t op, uint32_t operand)
     } else if (!self) {
         // A String receiver is a Value, not an Object: its natives get it as
         // `this` through the receiver argument of start_call.
-        bool str_recv = have_recv && recv.kind == Value::Str && (m->flags & 0x40);
+        bool str_recv = have_recv && recv.kind == Value::Str;
         if (!str_recv && (!have_recv || recv.kind != Value::Obj || !recv.obj))
             return fail("instance method " + name + " without receiver");
         if (!str_recv) self = recv.obj;

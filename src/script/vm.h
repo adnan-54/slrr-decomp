@@ -92,6 +92,7 @@ struct Frame {
     std::vector<Value> locals;
     std::vector<Value> stack;
     Object *self = nullptr;             // `this`, null in static methods
+    Value str_this;                     // `this` of a script String method (Strings are Values)
     bool suppress_result = false;       // constructor calls: do not push a result
     bool field_init = false;            // terminates on 0x10
 
