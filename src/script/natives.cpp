@@ -6591,6 +6591,74 @@ bool anim_pause(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// ---- java.util.resource.ParticleSystem (no-service) ---------------------
+// Every exe write needs the native particle object P (typed data T+0x18), and
+// src has no typed-data layer, so the getTyped(0xa0000001) guard always fails
+// and no state is touched. want() is the src equivalent of getArgs' arity
+// check; the exe does no type checks there.
+
+// 0x4e0ad0 ParticleSystem.init(ResourceRef,RenderRef,String)V: getArgs(self,&res,
+// &render,&name); h = instanceToHandle(self); if (h && res && render) 0x4e8b50(...).
+// 0x4e8b50 with ECX = h: make R = render+0xc resident, getTyped(R,0xa0000001,0,1.0f),
+// T = R->vf3(1.0f), then 0x524840/0x40cac0/0x459290/0x468b00/0x51bae0 build P.
+// SERVICE MISSING: 0x4e8b50 creates the particle system through
+// 0x524840 / 0x40cac0 / 0x459290 / 0x468b00 / 0x51bae0 and stores it at typed
+// +0x18 (typed+0x16c |= 0x8000); none of these services exist in src.
+bool ps_init(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("ParticleSystem.init", a, 4, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e1440 ParticleSystem.stop()V: getArgs(self); h = instanceToHandle(self);
+// if (h) 0x4ec720(h): R = h+0xc; make resident (R+0x7c != 1 -> R->vf5(1.0f));
+// if (getTyped(R,0xa0000001,0,0) < 0) return; T = R->vf3(1.0f); P = T+0x18;
+// if (!P) return; P+0x9c |= 0x40000000.
+// SERVICE MISSING: writes P+0x9c |= 0x40000000; P = typed+0x18 does not
+// exist without the 0x4e8b50 service.
+bool ps_stop(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("ParticleSystem.stop", a, 1, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e10c0 ParticleSystem.setFreq(F)V: getArgs(self,&freq); h = instanceToHandle(self);
+// if (!h) return; R = h+0xc; if (!R) return; make resident; if (getTyped(R,
+// 0xa0000001,0,0) < 0) return; T = R->vf3(1.0f); P = T+0x18; if (!P) return;
+// P+0xc = freq (raw float bits, movss).
+// SERVICE MISSING: writes P+0xc = freq (P+0x18 typed slot absent).
+bool ps_set_freq(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("ParticleSystem.setFreq", a, 2, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e0b30 ParticleSystem.modePermanent(I)V: same guard chain as setFreq, then
+// mode == 0 -> P+0x9c &= 0xdfffffff; mode == 1 -> P+0x9c |= 0x20000000;
+// other values unchanged (asm: sub ecx,0 / je; sub ecx,1 / jne ret).
+// SERVICE MISSING: P+0x9c bit 0x20000000 (0/1 only; other values unchanged).
+// P absent.
+bool ps_mode_permanent(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("ParticleSystem.modePermanent", a, 2, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e0970 ParticleSystem.delAction(String)V: same guard chain as setFreq, then
+// node = 0x4b1060(P, name) walks P+0x24; if (node) node->vf0(1).
+// SERVICE MISSING: 0x4b1060 walks P+0x24 and destroys a name match
+// (0x57c11e stricmp); P absent here.
+bool ps_del_action(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("ParticleSystem.delAction", a, 2, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
 }  // namespace
 
 namespace natives {
@@ -6888,15 +6956,15 @@ const std::vector<Entry> &table()
     {"java.util.resource.Animation", "play", "()V", anim_play, false},
     {"java.util.resource.Animation", "loopPlay", "()V", anim_loop_play, false},
     {"java.util.resource.Animation", "pause", "()V", anim_pause, false},
-    {"java.util.resource.ParticleSystem", "init", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.RenderRef;Ljava.lang.String;)V", nullptr, true},
-    {"java.util.resource.ParticleSystem", "stop", "()V", nullptr, true},
-    {"java.util.resource.ParticleSystem", "setFreq", "(F)V", nullptr, true},
+    {"java.util.resource.ParticleSystem", "init", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.RenderRef;Ljava.lang.String;)V", ps_init, false},
+    {"java.util.resource.ParticleSystem", "stop", "()V", ps_stop, false},
+    {"java.util.resource.ParticleSystem", "setFreq", "(F)V", ps_set_freq, false},
     {"java.util.resource.ParticleSystem", "setDirectSource", "(Ljava.lang.String;Ljava.lang.Vector3;FFLjava.lang.Vector3;FFFLjava.lang.String;)V", nullptr, true},
     {"java.util.resource.ParticleSystem", "setSource", "(Ljava.lang.String;Ljava.lang.Vector3;FFLjava.lang.Vector3;FFFLjava.lang.String;)V", nullptr, true},
-    {"java.util.resource.ParticleSystem", "delAction", "(Ljava.lang.String;)V", nullptr, true},
+    {"java.util.resource.ParticleSystem", "delAction", "(Ljava.lang.String;)V", ps_del_action, false},
     {"java.util.resource.ParticleSystem", "setCounter", "(Ljava.lang.String;Ljava.lang.Vector3;F)V", nullptr, true},
     {"java.util.resource.ParticleSystem", "getCounter", "(Ljava.lang.String;)I", nullptr, true},
-    {"java.util.resource.ParticleSystem", "modePermanent", "(I)V", nullptr, true},
+    {"java.util.resource.ParticleSystem", "modePermanent", "(I)V", ps_mode_permanent, false},
     {"java.lang.GameType", "remNotification", "(Ljava.util.resource.GameRef;I)V", gt_rem_notification, false},
     {"java.lang.GameType", "addNotification", "(Ljava.util.resource.GameRef;IILjava.lang.String;)V", gt_add_notification, false},
     {"java.lang.GameType", "addNotification", "(Ljava.util.resource.GameRef;IILjava.lang.String;Ljava.lang.String;)V", gt_add_notification_method, false},
