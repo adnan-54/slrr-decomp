@@ -1,6 +1,6 @@
 ---
 id: 066
-status: draft
+status: todo
 branch:
 depends: []
 ---
@@ -251,3 +251,6 @@ UNRESOLVED). Missing-handle log text is the string at 0x5a0df0.
   node-walk semantics are taken from card 062, not re-traced here.
 - **`DAT_007a2620`** is the shared ResourceRef class key (notes/13); its value was
   not read byte-wise in this session.
+
+## Gate (Claude)
+Approved: duplicate/destroy follow the ResourceRef.set convention (arg handle -> target, natives.cpp rr_set_ref 0x4e4350). Use `game_rt()->bind(h, (Runtime::Resource *)src)` with an explicit Resource* (bind is overloaded).
