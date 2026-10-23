@@ -1,6 +1,6 @@
 ---
 id: 058
-status: draft
+status: todo
 branch: ""
 depends: []
 ---
@@ -113,11 +113,8 @@ Corpus check: `bin/the game/multibot/replay/LagunaSeca_Baiern_DTM_bot.rep` is
 is compared against `kf - 1`, keep that exactly.
 
 ## UNRESOLVED
-- `readFile` tokenizer delimiter set. Raw lines:
-  `local_14 = 0xa092c20; local_10 = 0xd;` and `FUN_005693b0(local_438,&local_14,&local_c)`.
-  The 6 stack bytes are `20 C2 92 0A 0D 00`; space, LF and CR are the ones the
-  shipped `.rep` corpus needs. The two bytes `C2 92` are unexplained — use
-  `" \r\n"` for the tokenizer and put this line in a comment.
+- RESOLVED (Claude gate): tokenizer delimiters. `local_14 = 0x0a092c20; local_10 = 0xd` are
+  little-endian bytes `20 2c 09 0a 0d 00` = `" ,\t\n\r"`. Use exactly that set.
 - `MessageBoxA` caption `DAT_007a8620`: in the uninitialized `.data` tail, filled
   at runtime, not readable from the image. Only needed if a real message box is
   ever added (see below).
