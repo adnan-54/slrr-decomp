@@ -1936,6 +1936,103 @@ bool rr_scale_mesh(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// ---- java.util.resource.PhysicsRef ----------------------------------------
+
+// 0x524620 creation info: null alias -> "_physinst".
+static std::string alias_arg(const Value &v)
+{
+    return v.kind == Value::Str ? v.s : std::string("_physinst");
+}
+
+// 0x4e1470 PhysicsRef.create(ResourceRef parent, int typeRid, String alias)
+bool ph_create(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("PhysicsRef.create", err)) return false;
+    Object *o;
+    if (!receiver_object("PhysicsRef.create", a, &o, err)) return false;
+    int32_t type_rid;
+    if (!want("PhysicsRef.create", a, 4, err) ||
+        !get_i("PhysicsRef.create", a[2], &type_rid, err))
+        return false;
+    Runtime *rt = game_rt();
+    Runtime::Handle *h = rt->handle(o);           // 0x4ecc70
+    Runtime::Resource *parent = value_resource(a[1]);
+    *out = Value::make_null();
+    if (!h || !parent) return true;               // exe logs and returns
+    Runtime::Resource *type = rt->resolve((uint32_t)type_rid);  // 0x5183a0
+    // INVENTED: the exe faults on the null body (0x4f7b50 -> 0, 0x4e1563).
+    if (!type) return true;
+    const std::string alias = alias_arg(a[3]);
+    Runtime::Resource *inst = rt->instantiate(type, parent, alias, "", false, err);
+    if (!inst) return true;  // 0x518a40 no free slot: the exe faults (INVENTED)
+    inst->type = 2;          // 0x524620 creation info: INSTANCE_PHYSICS
+    inst->name = alias;
+    rt->bind(h, inst);       // 0x4e8a50 first 0x40cac0
+    // shortcut: rigid body, 0x218 physics object and typed+0xb4 link not modelled;
+    // upgrade when the physics world exists (0x4f7830/0x4f7b50/0x4f7d60/0x524620).
+    return true;
+}
+
+// 0x4e16a0 PhysicsRef.createBox(ResourceRef parent, F x, F y, F z, String alias)
+bool ph_create_box(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("PhysicsRef.createBox", err)) return false;
+    Object *o;
+    if (!receiver_object("PhysicsRef.createBox", a, &o, err)) return false;
+    float x, y, z;
+    if (!want("PhysicsRef.createBox", a, 6, err) ||
+        !get_f("PhysicsRef.createBox", a[2], &x, err) ||
+        !get_f("PhysicsRef.createBox", a[3], &y, err) ||
+        !get_f("PhysicsRef.createBox", a[4], &z, err))
+        return false;
+    (void)x;
+    (void)y;
+    (void)z;
+    // 0x4f7d60: box half extents = x*0.5f, y*0.5f, z*0.5f; not stored (no physics).
+    Runtime *rt = game_rt();
+    Runtime::Handle *h = rt->handle(o);           // 0x4ecc70
+    Runtime::Resource *parent = value_resource(a[1]);
+    *out = Value::make_null();
+    if (!h || !parent) return true;               // exe logs and returns
+    const std::string alias = alias_arg(a[5]);
+    Runtime::Resource *inst = rt->instantiate(nullptr, parent, alias, "", false, err);
+    if (!inst) return true;  // 0x518a40 no free slot: the exe faults (INVENTED)
+    inst->type = 2;          // 0x524620 creation info: INSTANCE_PHYSICS
+    inst->name = alias;
+    rt->bind(h, inst);       // 0x4e8a50 first 0x40cac0
+    // shortcut: rigid body, 0x218 physics object and typed+0xb4 link not modelled;
+    // upgrade when the physics world exists (0x4f7830/0x4f7b50/0x4f7d60/0x524620).
+    return true;
+}
+
+// 0x4e1880 PhysicsRef.createSphere(ResourceRef parent, F r, String alias)
+bool ph_create_sphere(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("PhysicsRef.createSphere", err)) return false;
+    Object *o;
+    if (!receiver_object("PhysicsRef.createSphere", a, &o, err)) return false;
+    float r;
+    if (!want("PhysicsRef.createSphere", a, 4, err) ||
+        !get_f("PhysicsRef.createSphere", a[2], &r, err))
+        return false;
+    (void)r;
+    // 0x4f7d60: sphere radius = r; not stored (no physics).
+    Runtime *rt = game_rt();
+    Runtime::Handle *h = rt->handle(o);           // 0x4ecc70
+    Runtime::Resource *parent = value_resource(a[1]);
+    *out = Value::make_null();
+    if (!h || !parent) return true;               // exe logs and returns
+    const std::string alias = alias_arg(a[3]);
+    Runtime::Resource *inst = rt->instantiate(nullptr, parent, alias, "", false, err);
+    if (!inst) return true;  // 0x518a40 no free slot: the exe faults (INVENTED)
+    inst->type = 2;          // 0x524620 creation info: INSTANCE_PHYSICS
+    inst->name = alias;
+    rt->bind(h, inst);       // 0x4e8a50 first 0x40cac0
+    // shortcut: rigid body, 0x218 physics object and typed+0xb4 link not modelled;
+    // upgrade when the physics world exists (0x4f7830/0x4f7b50/0x4f7d60/0x524620).
+    return true;
+}
+
 // ---- java.util.resource.GameRef -------------------------------------------
 
 // 0x4daa40: RI+0x84. No missing-handle error in the exe; returns 0.
@@ -7754,9 +7851,9 @@ const std::vector<Entry> &table()
     {"java.util.resource.RenderRef", "lineCreate", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;)I", rr_line_create, false},
     {"java.util.resource.RenderRef", "lineAdd", "(Ljava.lang.Vector3;Ljava.lang.Vector3;IF)V", rr_line_add, false},
     {"java.util.resource.RenderRef", "plotRoute", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;IFLjava.lang.Vector3;)I", rr_plot_route, false},
-    {"java.util.resource.PhysicsRef", "create", "(Ljava.util.resource.ResourceRef;ILjava.lang.String;)V", nullptr, true},
-    {"java.util.resource.PhysicsRef", "createBox", "(Ljava.util.resource.ResourceRef;FFFLjava.lang.String;)V", nullptr, true},
-    {"java.util.resource.PhysicsRef", "createSphere", "(Ljava.util.resource.ResourceRef;FLjava.lang.String;)V", nullptr, true},
+    {"java.util.resource.PhysicsRef", "create", "(Ljava.util.resource.ResourceRef;ILjava.lang.String;)V", ph_create, false},
+    {"java.util.resource.PhysicsRef", "createBox", "(Ljava.util.resource.ResourceRef;FFFLjava.lang.String;)V", ph_create_box, false},
+    {"java.util.resource.PhysicsRef", "createSphere", "(Ljava.util.resource.ResourceRef;FLjava.lang.String;)V", ph_create_sphere, false},
     {"java.util.resource.PhysicsRef", "setMatrix", "(Ljava.lang.Vector3;Ljava.lang.Ypr;)V", nullptr, true},
     {"java.util.resource.PhysicsRef", "getPos", "()Ljava.lang.Vector3;", nullptr, true},
     {"java.util.resource.PhysicsRef", "getOri", "()Ljava.lang.Ypr;", nullptr, true},
