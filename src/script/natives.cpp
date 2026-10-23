@@ -4803,6 +4803,32 @@ bool snd_enable_debug_dump(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// DAT_005dadac, the exe's process-wide default text colour (same value as
+// render::kDefaultTextColor in render/ui.h).
+// shortcut: render::TextRenderer::default_color_ is not driven by it; no script
+// text renderer is created yet.
+uint32_t g_default_text_color = 0xffffffffu;
+
+// 0x4e5cd0 java.render.Text.setDefaultColor: DAT_005dadac = color. The exe does
+// not read the receiver (FUN_004b1af0(ctx, 0, &color)).
+bool tx_set_default_color(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t color;
+    if (!want("Text.setDefaultColor", a, 2, err) ||
+        !get_i("Text.setDefaultColor", a[1], &color, err))
+        return false;
+    g_default_text_color = (uint32_t)color;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e58d0 java.render.Text.getDefaultColor: MOV EAX,[DAT_005dadac]; RET.
+bool tx_get_default_color(Vm &, const Args &, Value *out, std::string *)
+{
+    *out = Value::make_int((int32_t)g_default_text_color);
+    return true;
+}
+
 }  // namespace
 
 namespace natives {
@@ -5078,8 +5104,8 @@ const std::vector<Entry> &table()
     {"java.render.Viewport", "unproject", "(Ljava.lang.Vector3;I)Ljava.lang.Vector3;", nullptr, true},
     {"java.render.Viewport", "resize", "(FFFF)V", nullptr, true},
     {"java.render.Text", "setScale", "(FF)V", nullptr, true},
-    {"java.render.Text", "setDefaultColor", "(I)V", nullptr, true},
-    {"java.render.Text", "getDefaultColor", "()I", nullptr, true},
+    {"java.render.Text", "setDefaultColor", "(I)V", tx_set_default_color, false},
+    {"java.render.Text", "getDefaultColor", "()I", tx_get_default_color, false},
     {"java.render.Text", "create", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;FF)V", nullptr, true},
     {"java.render.Text", "changeColor", "(I)V", nullptr, true},
     {"java.render.Text", "changeAlign", "(I)V", nullptr, true},

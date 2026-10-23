@@ -1,7 +1,7 @@
 ---
 id: 062
-status: todo
-branch:
+status: implemented
+branch: card/062
 depends: []
 ---
 # render/script: java.render.Text colour/align/scale/pos accessors
