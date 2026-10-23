@@ -164,10 +164,14 @@ class Vm {
                                         std::string *)>;
     // Installed by the host to load a class by FQN on a find_class miss.
     using ClassLoader = std::function<bool(Vm &, const std::string &fqn)>;
+    // Installed by a Runtime: turns a script resource constant (name, local)
+    // into its global id (0x5189e0 / 0x55cad0).
+    using ResourceResolver = std::function<int32_t(const std::string &pkg, int32_t local)>;
 
     void add_class(const ClassUnit *unit);
     ClassState *find_class(const std::string &name) const;
     void set_class_loader(ClassLoader f) { loader_ = std::move(f); }
+    void set_resource_resolver(ResourceResolver f) { resource_resolver_ = std::move(f); }
     // 0x55add0: descriptor unwrap, then the loaded table, then the loader once.
     ClassState *get_class(const std::string &name);
     void register_native(const std::string &name, const std::string &sig, NativeFn fn);
@@ -230,6 +234,7 @@ class Vm {
     std::vector<std::unique_ptr<Array>> arrays_;
     std::map<std::string, NativeFn> natives_;
     ClassLoader loader_;
+    ResourceResolver resource_resolver_;
     std::set<std::string> loading_;  // re-entry guard for one get_class miss
     bool linked_ = false;
 };

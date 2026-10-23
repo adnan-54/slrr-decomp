@@ -2624,19 +2624,14 @@ uint32_t package_index(const Package *pkg)
 {
     Runtime *rt = game_rt();
     if (!rt || !pkg) return 0;
-    ResourceManager &rm = rt->resources();
-    for (size_t i = 0; i < rm.package_count(); i++)
-        if (&rm.package(i) == pkg) return (uint32_t)i;
-    return 0;
+    return rt->resources().registry_index_of(*pkg);
 }
 
 uint32_t package_key(const std::string &name)
 {
     Runtime *rt = game_rt();
     if (!rt) return 0;
-    ResourceManager &rm = rt->resources();
-    const Package *pkg = rm.find_open_package(name);
-    return package_index(pkg);
+    return rt->resources().registry_index(name);   // 0x518940
 }
 
 // 0x4e0470 java.lang.System.openLib(String)I
@@ -2661,20 +2656,13 @@ bool system_open_lib(Vm &, const Args &a, Value *out, std::string *err)
         if (c == '\\') c = '/';
     Runtime *rt = game_rt();
     ResourceManager &rm = rt->resources();
-    const Package *pkg = rm.find_open_package(path);
-    if (!pkg) {
-        std::string load_err;
-        if (!rm.open(path.c_str(), nullptr, &load_err)) {   // 0x51e310: .rpk only
-            // shortcut: the exe keeps the failed registry entry, so a later
-            // openLib reuses its slot; src leaves no entry.
-            *out = Value::make_int(-1);
-            return true;
-        }
-        pkg = &rm.package(rm.package_count() - 1);
+    uint32_t idx = rm.registry_index(path);          // 0x518940
+    if (!rm.registry_package(idx)) {                 // 0x517b80 -> 0x51e310
+        // The failed registry entry stays, so a later openLib reuses its slot.
+        *out = Value::make_int(-1);
+        return true;
     }
-    // INVENTED: the exe returns the global name-registry index (0x518940); src
-    // returns the ResourceManager package index.
-    *out = Value::make_int((int32_t)package_index(pkg));
+    *out = Value::make_int((int32_t)idx);
     return true;
 }
 

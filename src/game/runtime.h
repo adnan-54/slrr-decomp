@@ -159,8 +159,9 @@ class Runtime {
     Vm *vm() const { return vm_; }
     ClassPath *classes() const { return classes_; }
 
-    // Resolve id in base's namespace; base null tries every open package.
-    // Null when no open package owns the id (external chain links included).
+    // Resolve id: with base it is first made global (0x51e860); the high word
+    // is then the registry slot of the owning package (0x517b80). Null when the
+    // package cannot be mounted or has no such local record.
     Resource *resolve(uint32_t id, const Package *base = nullptr);
     // Super-id chain of a record-backed resource (first link is itself).
     bool chain(Resource *r, std::vector<ChainLink> *out, std::string *err) const;
@@ -237,8 +238,6 @@ class Runtime {
     traffic::Graph *ground_traffic(Handle *h);
 
   private:
-    const Package *target_package(const Package &base, uint32_t id,
-                                  uint32_t *local) const;
     std::string script_class_of(const Package &pkg, const RpkRecord &rec) const;
     void unlink(Handle *h);
     void destroy(Resource *r);   // vf0(1) common part, D1..D5

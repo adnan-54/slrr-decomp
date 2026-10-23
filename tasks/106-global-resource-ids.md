@@ -1,7 +1,7 @@
 ---
 id: 106
-status: todo
-branch:
+status: implemented
+branch: card/106
 depends: [105]
 ---
 # resource: global runtime ids (registry index << 16 | local), lazy package mount, int resource constants
@@ -74,3 +74,12 @@ int global id. Port that.
   heuristic, list it under `## Check impact` with the exact line and what the exe would do instead;
   do not change expected values to make it pass.
 - card frontmatter: status implemented, branch name
+
+## Check impact
+None: no existing check resolves ids through `Runtime::resolve`. `resman --selfcheck`
+uses `ResourceManager::lookup(0xD2)`, which keeps its relative-id scan unchanged, and
+still passes (63 checks).
+
+## UNRESOLVED
+- `Resource::id` still stores the record's local id; what the exe's `getId` reports for
+  a resource reached through a global id was not traced (kept as today per the card).

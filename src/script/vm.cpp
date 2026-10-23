@@ -1169,7 +1169,13 @@ bool Thread::step()
         const ConstEntry *e = f.unit->entry((int)ins.operand);
         if (!e || e->type != CONST_RESOURCE) return fail("bad resource constant");
         const char *n = f.unit->str(e->a);
-        push(f, Value::make_resource(n ? n : "", e->b));
+        // shortcut: the exe rewrites this token to an int at class load
+        // (0x54b310); resolving at execution gives the same value unless
+        // registry order matters.
+        if (vm_->resource_resolver_)
+            push(f, Value::make_int(vm_->resource_resolver_(n ? n : "", e->b)));
+        else
+            push(f, Value::make_resource(n ? n : "", e->b));
         return true;
     }
     case 0x4006: { // type descriptor, meaning depends on the pending marker

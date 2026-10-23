@@ -23,6 +23,7 @@ struct Package {
     std::string rpk_path;
     std::string rdb_path;
     std::string mount;
+    uint32_t registry_index = 0;   // slot in the exe's global name registry (0x518940)
     RpkArchive rpk;
     Rdb rdb;
 };
@@ -112,6 +113,15 @@ class ResourceManager {
     size_t package_count() const { return packages_.size(); }
     const Package &package(size_t i) const { return packages_[i]; }
 
+    // 0x518940: find-or-append a package name in the global registry.
+    uint32_t registry_index(const std::string &name);
+    // 0x517b80 -> 0x51e310: the package at a registry slot, mounted on first
+    // reference; a missing file stays unloaded and is retried.
+    const Package *registry_package(uint32_t idx);
+    // 0x51e860: an id in P's namespace -> registry index << 16 | local.
+    uint32_t global_id(const Package &p, uint32_t id);
+    uint32_t registry_index_of(const Package &p) const { return p.registry_index; }
+
     // All open packages in which id resolves. The high 16 bits select the
     // referring package's sub-package table; 0 selects the package itself.
     std::vector<ResourceHit> lookup(uint32_t id) const;
@@ -135,4 +145,8 @@ class ResourceManager {
   private:
     // deque: Package pointers are handed out and must survive a runtime mount.
     std::deque<Package> packages_;
+    // Global name registry: canonical names and the package mounted at each
+    // slot (null until 0x517b80 loads it).
+    std::vector<std::string> reg_names_;
+    std::vector<const Package *> reg_pkgs_;
 };

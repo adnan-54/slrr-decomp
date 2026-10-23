@@ -212,7 +212,10 @@ Runtime::Runtime(ResourceManager &resources, Vm *vm, ClassPath *classes)
 
 Runtime::~Runtime()
 {
-    if (active_ == this) active_ = nullptr;
+    if (active_ == this) {
+        if (vm_) vm_->set_resource_resolver(nullptr);
+        active_ = nullptr;
+    }
     // INVENTED: the exe's Game dtor was not traced; unbind the timer handles so
     // the resources' ref lists do not outlive them.
     for (auto &t : timers_) unlink(&t->handle);
@@ -237,21 +240,22 @@ Runtime *Runtime::active()
 void Runtime::activate()
 {
     active_ = this;
+    // 0x5189e0 / 0x55cad0: a script resource constant becomes an int global id.
+    // The exe rewrites the opcode at class load (0x54b310); resolving at
+    // execution gives the same value unless registry order matters.
+    if (vm_) {
+        ResourceManager *rm = resources_;
+        vm_->set_resource_resolver([rm](const std::string &pkg, int32_t local) -> int32_t {
+            const Package *p = rm->registry_package(rm->registry_index(pkg));
+            return p ? (int32_t)rm->global_id(*p, (uint32_t)local) : 0;
+        });
+    }
 }
 
 void Runtime::deactivate()
 {
+    if (active_ && active_->vm_) active_->vm_->set_resource_resolver(nullptr);
     active_ = nullptr;
-}
-
-const Package *Runtime::target_package(const Package &base, uint32_t id,
-                                       uint32_t *local) const
-{
-    uint32_t hi = id >> 16;
-    *local = id & 0xffffu;
-    if (hi == 0) return &base;
-    if ((size_t)hi > base.rpk.subpackages.size()) return nullptr;
-    return resources_->find_open_package(base.rpk.subpackages[hi - 1].name);
 }
 
 std::string Runtime::script_class_of(const Package &pkg, const RpkRecord &rec) const
@@ -270,22 +274,13 @@ std::string Runtime::script_class_of(const Package &pkg, const RpkRecord &rec) c
 Runtime::Resource *Runtime::resolve(uint32_t id, const Package *base)
 {
     if (!id) return nullptr;
-    const Package *target = nullptr;
-    const RpkRecord *rec = nullptr;
-    uint32_t local = 0;
     if (base) {
-        target = target_package(*base, id, &local);
-        if (target) rec = target->rpk.find(local);
-    } else {
-        // Same order as ResourceManager::lookup: every open package as base,
-        // first owning package wins.
-        for (size_t i = 0; i < resources_->package_count() && !rec; i++) {
-            const Package *p = target_package(resources_->package(i), id, &local);
-            if (!p) continue;
-            rec = p->rpk.find(local);
-            if (rec) target = p;
-        }
+        id = resources_->global_id(*base, id);   // 0x51e860
+        if (!id) return nullptr;
     }
+    // 0x517b80: the high word is a registry slot, mounted on first reference.
+    const Package *target = resources_->registry_package(id >> 16);
+    const RpkRecord *rec = target ? target->rpk.find(id & 0xffffu) : nullptr;
     if (!target || !rec) return nullptr;
 
     auto key = std::make_pair(target, rec->id);

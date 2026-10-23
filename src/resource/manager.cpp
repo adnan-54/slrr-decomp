@@ -228,7 +228,68 @@ bool ResourceManager::open(const char *rpk_path, const char *rdb_path, std::stri
     pkg.rpk_path = rpk_path;
     pkg.mount = canonical_package(rpk_path);
     packages_.push_back(std::move(pkg));
+    Package &opened = packages_.back();
+    opened.registry_index = registry_index(opened.mount);
+    reg_pkgs_[opened.registry_index] = &opened;
+    // 0x51e310: Package::load registers every sub-package name too.
+    for (const RpkSubpackage &sub : opened.rpk.subpackages)
+        registry_index(sub.name);
     return true;
+}
+
+// 0x518940: find-or-append in the global name registry.
+uint32_t ResourceManager::registry_index(const std::string &name)
+{
+    std::string key = canonical_package(name);
+    for (size_t i = 0; i < reg_names_.size(); i++)
+        if (reg_names_[i] == key) return (uint32_t)i;
+    reg_names_.push_back(key);
+    reg_pkgs_.push_back(nullptr);
+    return (uint32_t)(reg_names_.size() - 1);
+}
+
+// 0x517b80 -> 0x51e310 Package::load: the package at a registry slot. A
+// missing file leaves the slot unloaded; the next reference retries it.
+const Package *ResourceManager::registry_package(uint32_t idx)
+{
+    if (idx >= reg_names_.size()) return nullptr;
+    if (reg_pkgs_[idx]) return reg_pkgs_[idx];
+    const std::string &name = reg_names_[idx];
+    if (name.empty()) return nullptr;
+    const Package *pkg = find_open_package(name);
+    if (!pkg) {
+        std::string path = name;
+        while (!path.empty() && (path.back() == '\\' || path.back() == '/'))
+            path.pop_back();
+        if (!iends_with(path, ".rpk")) path += ".rpk";
+        std::string full = resolve_path(path);
+        if (full.empty()) return nullptr;
+        std::string err;
+        if (!open(full.c_str(), nullptr, &err)) return nullptr;   // 0x51e310
+        pkg = &packages_.back();
+    }
+    reg_pkgs_[idx] = pkg;
+    return pkg;
+}
+
+// 0x51e860: lo 0 or a bad high word -> 0; else the target package's registry
+// index << 16 | lo. Sub-package names are registered on demand (the exe
+// registers them all in Package::load); no mount is needed for the arithmetic.
+uint32_t ResourceManager::global_id(const Package &p, uint32_t id)
+{
+    uint32_t lo = id & 0xffffu;
+    uint32_t hi = id >> 16;
+    if (lo == 0) return 0;
+    uint32_t index;
+    if (hi == 0) {
+        index = registry_index_of(p);
+    } else if (hi <= p.rpk.subpackages.size()) {
+        index = registry_index(p.rpk.subpackages[hi - 1].name);
+    } else {
+        return 0;
+    }
+    if (hi >= reg_names_.size()) return 0;
+    return (index << 16) | lo;
 }
 
 const Package *ResourceManager::find_open_package(const std::string &subpackage) const
