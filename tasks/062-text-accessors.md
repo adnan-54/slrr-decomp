@@ -1,6 +1,6 @@
 ---
 id: 062
-status: draft
+status: todo
 branch:
 depends: []
 ---
@@ -240,3 +240,11 @@ here; `Vector3.java` declares `float x,y,z;` and `new_point` writes x/y/z in tha
   `create/update/getWidthPixels` (no `setScale`/`setDefaultColor`/`getDefaultColor`);
   the target 2.3.1 exe registers all eleven (notes/06), so the source pair cannot be
   used to cross-check the three added methods.
+
+## Gate (Claude) — SCOPE OVERRIDE, read this first
+0x4e58d0 bytes `a1 ac ad 5d 00 c3` = `mov eax,[0x5dadac]; ret` (verified).
+Implement ONLY Changes 1, 3, 4 (`g_default_text_color`, `setDefaultColor`,
+`getDefaultColor`) and their two registry rows. Do NOT edit `src/game/runtime.h`
+and do NOT add `text_renderinst`, changeColor/changeAlign/setPos/getPos/setScale:
+they have no producer until `Text.create` 0x4e5b30 is traced, so they stay stubs.
+Files for this card: src/script/natives.cpp only.
