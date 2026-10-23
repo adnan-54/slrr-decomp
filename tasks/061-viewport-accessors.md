@@ -1,6 +1,6 @@
 ---
 id: 061
-status: draft
+status: blocked
 branch:
 depends: []
 ---
@@ -141,3 +141,9 @@ Offsets: notes/12 §3 records the res_viewport data as relative rect x,y,w,h at
   `uVar2 = FUN_00525120(0,local_1c,local_18,local_14,local_10,local_c); FUN_0040cac0(uVar2);`
   after the handle check; `FUN_00525120`/`FUN_0040cac0` are untraced. Until a create card
   lands, these six natives always take the fallback branches.
+
+## Gate (Claude)
+Blocked: without a producer (Viewport.create 0x4e6af0 -> 0x525120/0x40cac0) every
+getter takes the fallback path, so porting now only adds an unused field. Re-open after
+the Viewport.create/destroy card (063) is traced and merged; fold the rect into that
+card's viewport object instead of `Runtime::Resource`.
