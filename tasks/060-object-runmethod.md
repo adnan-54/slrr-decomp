@@ -1,6 +1,6 @@
 ---
 id: 060
-status: draft
+status: todo
 branch:
 depends: []
 ---
@@ -169,3 +169,9 @@ bool object_runmethod_int(Vm &, const Args &a, Value *out, std::string *err)
   `get_s` rejects it with a script error instead. Exe behaviour with a null name is unverified.
 - `instanceToHandle`'s second argument `DAT_007a2620` (script class) is ignored by our
   `value_handle`; only its return handle is modelled (notes/13).
+
+## Gate (Claude)
+0x4dff40 and 0x4dfda0 re-decompiled: tags 2/3, `vf5(0)`, `getTyped(0xa0000000,0,0)`,
+`vf3(1.0f)`, `T+0x50` check all match. The failure log formats the (null) handle with
+`DAT_005a6828` between prefix and " not found"; printing the prefix only is fine but
+mark the dropped file/line suffix `INVENTED:`.
