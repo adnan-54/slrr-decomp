@@ -1027,6 +1027,45 @@ bool object_hashcode(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x549ff0 ClassRecord__name. The instance's ClassState is the exe's class
+// record; its declaring unit holds the name constant.
+std::string object_class_name(Object *o)
+{
+    const ClassUnit *unit = class_state_unit(o ? o->cls : nullptr);
+    return unit ? unit->class_name(unit->self_class) : std::string();
+}
+
+// 0x4e03f0: "ClassName<hex handle>" in a 256-byte buffer; the handle is the
+// same instance payload Object.hashCode returns.
+bool object_tostring(Vm &, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("Object.toString", a, 1, err) ||
+        !get_o("Object.toString", a[0], &o, err))
+        return false;
+    char buf[256];
+    snprintf(buf, sizeof buf, "%s<%0x>", object_class_name(o).c_str(),
+             (uint32_t)(uintptr_t)o);
+    *out = Value::make_str(buf);
+    return true;
+}
+
+// 0x4dfba0: one "!JVM ERROR:: <class> with message: <msg>" line through the
+// same engine log sink as System.log (0x5695c0).
+bool object_error_vm(Vm &, const Args &a, Value *out, std::string *err)
+{
+    const char *who = "Object.errorVM";
+    Object *o;
+    const std::string *message;
+    if (!want(who, a, 2, err) || !get_o(who, a[0], &o, err) ||
+        !get_s(who, a[1], &message, err))
+        return false;
+    std::fprintf(stderr, "!JVM ERROR:: %s with message: %s\n",
+                 object_class_name(o).c_str(), message->c_str());
+    *out = Value::make_null();
+    return true;
+}
+
 
 // ---- java.util.resource.ResourceRef / GameRef / java.lang.GameType ---------
 
@@ -4624,10 +4663,13 @@ const std::vector<Entry> &table()
     {"java.lang.Thread", "suspend", "()V", thread_suspend, false},
     {"java.lang.Thread", "resume", "()V", thread_resume, false},
     {"java.lang.Thread", "setDaemon", "(I)V", thread_set_daemon, false},
+    // 0x4e0440/0x4dfc70/0x4dfc90 need the engine thread monitor and wait list
+    // (0x54d430..): a native cannot suspend its caller here, so these stay
+    // explicit stubs instead of non-blocking no-ops.
     {"java.lang.Object", "wait", "()V", nullptr, true},
     {"java.lang.Object", "notify", "()V", nullptr, true},
     {"java.lang.Object", "notifyAll", "()V", nullptr, true},
-    {"java.lang.Object", "toString", "()Ljava.lang.String;", nullptr, true},
+    {"java.lang.Object", "toString", "()Ljava.lang.String;", object_tostring, false},
     {"java.lang.Object", "disableGC", "()V", object_gc_toggle, false},
     {"java.lang.Object", "enableGC", "()V", object_gc_toggle, false},
     {"java.lang.Object", "hashCode", "()I", object_hashcode, false},
@@ -4859,7 +4901,7 @@ const std::vector<Entry> &table()
     {"java.util.Replay", "writeFile", "(Ljava.lang.String;Ljava.lang.String;)V", nullptr, true},
     {"java.util.Replay", "readFile", "(ILjava.lang.String;Ljava.lang.String;)F", nullptr, true},
     {"java.lang.Debug", "writeFile", "(Ljava.lang.String;Ljava.lang.String;)V", nullptr, true},
-    {"java.lang.Object", "errorVM", "(Ljava.lang.String;)V", nullptr, true},
+    {"java.lang.Object", "errorVM", "(Ljava.lang.String;)V", object_error_vm, false},
     {"java.lang.Debug", "errorEX", "(Ljava.lang.String;)V", nullptr, true},
     {"java.lang.Debug", "giveWarning", "(Ljava.lang.String;)V", nullptr, true},
     {"java.lang.Object", "runDLL", "(Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;[Ljava.lang.String;)Ljava.lang.String;", nullptr, true},

@@ -1,7 +1,7 @@
 ---
 id: 057
-status: todo
-branch:
+status: implemented
+branch: card/057
 depends: []
 ---
 # script VM: Object.toString / Object.errorVM (wait/notify documented, left stubs)
