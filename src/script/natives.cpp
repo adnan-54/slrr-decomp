@@ -1346,6 +1346,73 @@ Runtime::Resource *value_resource(const Value &v)
     return h ? h->target : nullptr;
 }
 
+// ---- java.lang.Object.runMethod --------------------------------------------
+
+// The exe returns the method's raw 32-bit result slot.
+static int32_t call_result_i(const Value &v)
+{
+    switch (v.kind) {
+    case Value::Int: return v.i;
+    case Value::Float: {
+        int32_t b;
+        memcpy(&b, &v.f, sizeof b);
+        return b;
+    }
+    case Value::Obj: return (int32_t)(intptr_t)v.obj;  // 0x47dd70: piVar4[2]
+    default: return 0;  // INVENTED: String/array slots have no rebuild equivalent
+    }
+}
+
+// 0x4dff40 / 0x4dfda0 / 0x4e00d0 / 0x4e0260: run a script method on the
+// receiver's resource instance. argi is the argument index, -1 for the void
+// overload.
+static bool object_run_method(const char *who, const Args &a, int argi, Value *out,
+                              std::string *err)
+{
+    if (!want(who, a, argi >= 0 ? (size_t)argi + 1 : 2u, err)) return false;
+    Object *o;
+    const std::string *name;
+    if (!get_o(who, a[0], &o, err) || !get_s(who, a[1], &name, err)) return false;
+    Runtime *rt = game_rt();
+    Runtime::Handle *h = rt ? rt->handle(o) : nullptr;  // 0x4ecc70
+    *out = Value::make_int(0);
+    if (!h) {
+        // INVENTED: the exe appends the handle, the frame's file and line; a
+        // NativeFn has no frame, so only the prefix is logged.
+        std::fprintf(stderr, "%s: scripted resource not found\n", who);
+        return true;
+    }
+    Object *self = rt->script_instance(h->target);  // typed +0x50
+    if (!self) return true;
+    std::vector<Value> args;
+    if (argi >= 0) args.push_back(a[argi]);
+    Value rv;
+    std::string e;
+    if (!rt->call_method(self, *name, args, &rv, &e)) return true;  // 0x47dd70
+    *out = Value::make_int(call_result_i(rv));
+    return true;
+}
+
+bool object_runmethod_int(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return object_run_method("vm_object_runmethod_int", a, 2, out, err);  // 0x4dff40
+}
+
+bool object_runmethod_float(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return object_run_method("vm_object_runmethod_float", a, 2, out, err);  // 0x4dfda0
+}
+
+bool object_runmethod_ref(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return object_run_method("vm_object_runmethod_ref", a, 2, out, err);  // 0x4e00d0
+}
+
+bool object_runmethod_void(Vm &, const Args &a, Value *out, std::string *err)
+{
+    return object_run_method("vm_object_runmethod_void", a, -1, out, err);  // 0x4e0260
+}
+
 bool receiver_object(const char *who, const Args &a, Object **out, std::string *err)
 {
     if (!want(who, a, 1, err)) return false;
@@ -5157,10 +5224,10 @@ const std::vector<Entry> &table()
     {"java.lang.Debug", "errorEX", "(Ljava.lang.String;)V", debug_error_ex, false},
     {"java.lang.Debug", "giveWarning", "(Ljava.lang.String;)V", debug_give_warning, false},
     {"java.lang.Object", "runDLL", "(Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;[Ljava.lang.String;)Ljava.lang.String;", nullptr, true},
-    {"java.lang.Object", "runMethod", "(Ljava.lang.String;I)I", nullptr, true},
-    {"java.lang.Object", "runMethod", "(Ljava.lang.String;F)I", nullptr, true},
-    {"java.lang.Object", "runMethod", "(Ljava.lang.String;Ljava.lang.Object;)I", nullptr, true},
-    {"java.lang.Object", "runMethod", "(Ljava.lang.String;)I", nullptr, true},
+    {"java.lang.Object", "runMethod", "(Ljava.lang.String;I)I", object_runmethod_int, false},
+    {"java.lang.Object", "runMethod", "(Ljava.lang.String;F)I", object_runmethod_float, false},
+    {"java.lang.Object", "runMethod", "(Ljava.lang.String;Ljava.lang.Object;)I", object_runmethod_ref, false},
+    {"java.lang.Object", "runMethod", "(Ljava.lang.String;)I", object_runmethod_void, false},
     {"java.net.NetworkEngine", "httpRequest", "(Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;)Ljava.lang.String;", nullptr, true},
     {"java.net.NetworkEngine", "httpRequestAsync", "(Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;Ljava.util.resource.GameRef;Ljava.lang.String;)I", nullptr, true},
     {"java.util.Steam", "initAPI", "()I", steam_init_api, false},

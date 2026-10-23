@@ -1,7 +1,7 @@
 ---
 id: 060
-status: todo
-branch:
+status: implemented
+branch: card/060-object-runmethod
 depends: []
 ---
 # script VM: java.lang.Object.runMethod overloads (int/float/Object/void)
