@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "audio/sound.h"
+#include "game/traffic.h"
 #include "platform/fs.h"
 #include "resource/manager.h"
 #include "script/vm.h"
@@ -416,6 +417,80 @@ static int selfcheck(const char *game_dir)
         std::string e;
         const MethodInfo *m = vm.find_method(vm_door, "<init>", "", 1, args, &decl, &e);
         c.check(m != nullptr, "VM links <init>(I)" + (m ? std::string() : ": " + e));
+    }
+
+    // Shipped traffic graph (Traffic__load 0x41a000): the grammar must cover the
+    // whole file, node ids must resolve and the lane x-index must hold.
+    std::string trc_path = std::string(game_dir) + "/maps/city/ai/city.trc";
+    std::vector<uint8_t> trc;
+    err.clear();
+    bool have_trc = fs::read_file(trc_path, &trc, &err);
+    c.check(have_trc, "read " + trc_path + (have_trc ? "" : ": " + err));
+    traffic::Graph graph;
+    if (have_trc) {
+        size_t consumed = 0;
+        err.clear();
+        bool trc_ok = graph.load(trc.data(), trc.size(), &consumed, &err);
+        c.check(trc_ok, "city.trc loads" + (trc_ok ? "" : ": " + err));
+        if (trc_ok) {
+            c.check(consumed == trc.size(),
+                    "city.trc grammar covers the whole file (got " +
+                        std::to_string(consumed) + " of " + std::to_string(trc.size()) +
+                        " bytes)");
+
+            size_t nodes = graph.node_count();
+            bool ids_ok = true;
+            uint32_t bad_id = 0;
+            auto id_ok = [&](uint32_t id) {
+                if (id > nodes && ids_ok) {
+                    ids_ok = false;
+                    bad_id = id;
+                }
+            };
+            for (const traffic::Cross &cross : graph.cross_eq)
+                for (const traffic::CrossLink &link : cross.links) id_ok(link.node);
+            for (const traffic::Cross &cross : graph.cross_light)
+                for (const traffic::CrossLink &link : cross.links) id_ok(link.node);
+            for (const traffic::Road &road : graph.roads)
+                for (uint32_t id : road.node) id_ok(id);
+            for (const traffic::Lane &lane : graph.lanes) {
+                id_ok(lane.road);
+                id_ok(lane.node14);
+                for (uint32_t id : lane.node88) id_ok(id);
+            }
+            c.check(ids_ok, "every traffic node id is <= " + std::to_string(nodes) +
+                                (ids_ok ? "" : " (first bad id " +
+                                                   std::to_string(bad_id) + ")"));
+
+            std::vector<int> seen(graph.lanes.size(), 0);
+            bool lane_index_ok = true;
+            for (const traffic::Lane &lane : graph.lanes) {
+                if (lane.index_lane >= seen.size() || seen[lane.index_lane]++)
+                    lane_index_ok = false;
+            }
+            c.check(lane_index_ok,
+                    "lane index_lane is a permutation of 0.." +
+                        std::to_string(graph.lanes.size() ? graph.lanes.size() - 1 : 0));
+
+            bool min_sorted = true, run_max_ok = true;
+            float run_max = 0;
+            for (size_t i = 0; i < graph.lanes.size(); i++) {
+                if (i && graph.lanes[i].index_min_x < graph.lanes[i - 1].index_min_x)
+                    min_sorted = false;
+                if (i == 0 || graph.lanes[i].index_max_x > run_max)
+                    run_max = graph.lanes[i].index_max_x;
+                if (graph.lanes[i].index_run_max_x != run_max) run_max_ok = false;
+            }
+            c.check(min_sorted, "lane index_min_x is non-decreasing");
+            c.check(run_max_ok, "lane index_run_max_x is the running max of index_max_x");
+
+            float road_length = 0;
+            for (const traffic::Road &road : graph.roads) road_length += road.path.length;
+            std::printf("traffic: %zu eq crosses, %zu light crosses, %zu roads, "
+                        "%zu lanes, %.1f m of road\n",
+                        graph.cross_eq.size(), graph.cross_light.size(),
+                        graph.roads.size(), graph.lanes.size(), road_length);
+        }
     }
 
     size_t records = 0;
