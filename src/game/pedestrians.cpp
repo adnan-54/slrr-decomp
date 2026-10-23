@@ -147,7 +147,7 @@ const Area *Manager::add_area(int32_t index, const char *text)
     // INVENTED: the exe has no parse failure path; a failed parse still keeps
     // the (partly filled) area.
     if (!data.empty()) parse_area(data.data(), data.size(), &area, &used);
-    areas.insert(areas.begin(), area);   // exe pushes at the head of +0x3398
+    areas.push_front(std::move(area));   // exe pushes at the head of +0x3398
     return &areas.front();
 }
 

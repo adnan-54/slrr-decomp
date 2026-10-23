@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -39,7 +40,7 @@ bool parse_area(const uint8_t *data, size_t size, Area *out, size_t *used);
 bool split_walk_params(const std::string &params, int32_t *index, std::string *text);
 
 struct Manager {                        // Pedestrians, area part only
-    std::vector<Area> areas;            // exe list +0x3398 is head-first: INVENTED vector
+    std::deque<Area> areas;             // exe list +0x3398, head first; deque keeps Area* valid
     // 0x41dd70/0x41dc10: existing index -> that area, else decode+parse+add.
     const Area *add_area(int32_t index, const char *text);
 };
