@@ -1,6 +1,6 @@
 ---
 id: 054
-status: blocked  # needs untraced helpers or a missing service (physics body / collision / type manager); see UNRESOLVED
+status: todo
 branch:
 depends: []
 ---
@@ -165,7 +165,7 @@ The exe natives return void; on the missing body service the port still returns 
 - card frontmatter: status implemented, branch card/054
 
 ## UNRESOLVED
-- The float at `0x00593590` (box factor) was not re-read byte-for-byte in this pass.
+- RESOLVED (Claude, read_bytes): `0x00593590` = 0x3f000000 = 0.5.
   Its value is taken from notes/06, line 418: "box with **half extents** = size*0.5";
   raw line: `MOVSS XMM1, dword ptr [0x00593590]` then `MULSS XMM0, XMM1` for x/y/z.
 - `0x4f7d60` body/shape internals (world `ECX = [0x5dadf0]`, body 0xb8 bytes, shape
@@ -182,3 +182,6 @@ The exe natives return void; on the missing body service the port still returns 
 - The exe error log lines are not reproduced (the rebuild's resource natives return
   null/void silently, as `gr_get_pos` does); the `%08X` argument is the handle node
   pointer, the `%s`/`%d` come from `vm+0x74` / `vm+0x70` (notes/06).
+
+## Why now (Claude)
+Shipped GameInit (vmboot --selfcheck) stops at `java.render.Osd.createButton line 1239: native not implemented (stub): PhysicsRef.createBox`. Port the no-service path described above; after it, report the new vmboot stop line (`tools/vmboot-capped.sh --selfcheck | tail -3`).
