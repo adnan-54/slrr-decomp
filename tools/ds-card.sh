@@ -11,6 +11,6 @@ Report: branch, commit, what you changed, anything marked INVENTED, doubts.
 Card: $card"
 claude -p "$prompt" --settings .claude/settings-deepseek.json \
   --permission-mode acceptEdits \
-  --allowedTools "Read,Edit,Write,Glob,Grep,Bash(cd *),Bash(git *),Bash(make *),Bash(ls *),Bash(cat *),Bash(grep *),Bash(sed -n *),Bash(head *),Bash(tail *),Bash(wc *),Bash(find *),Bash(diff *),Bash(rtk git *),Bash(rtk make *)" \
+  --allowedTools "Read,Edit,Write,Glob,Grep,Bash(cd *),Bash(git *),Bash(make *),Bash(ls *),Bash(cat *),Bash(grep *),Bash(sed -n *),Bash(head *),Bash(tail *),Bash(wc *),Bash(find *),Bash(diff *),Bash(rtk git *),Bash(rtk make *),Bash(tools/vmboot-capped.sh *),Bash(VMBOOT_TIMEOUT=* tools/vmboot-capped.sh *)" \
   --disallowedTools "mcp__rea,Bash(git push *)" \
   --max-turns 80 2>&1
