@@ -1,7 +1,7 @@
 ---
 id: 116
-status: todo
-branch:
+status: implemented
+branch: card/116
 depends: [115]
 ---
 # vmboot: run the booted game for simulated frames and report script threads

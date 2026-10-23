@@ -116,6 +116,17 @@ void vector3_check(Boot &boot, Checker &c)
                 (ok ? std::string() : ": " + err));
 }
 
+// Thread state words used by the THRD-CREATE line and the per-thread report.
+std::string thread_state(const natives::ThreadInfo &t)
+{
+    if (!t.error.empty()) return "failed: " + t.error;
+    if (t.done) return "done";
+    if (t.sleeping) return "stopped (sleeping)";
+    if (t.waiting) return "stopped (waiting)";
+    if (t.suspended) return "stopped (suspended)";
+    return "running (yielded)";
+}
+
 // 0x47d760 init step: Config.init -> type record "Init" (sl.rpk, type 8) ->
 // scripted GameInit instance; its Init(int) constructor runs in THRD-CREATE.
 // A failing constructor is an expected finding here (missing engine services):
@@ -157,21 +168,26 @@ void game_init_check(Boot &boot, Checker &c)
         }
     c.check(found, "Init(int) runs in a THRD-CREATE thread");
     if (!found) return;
-    std::string state;
-    if (!create.error.empty())
-        state = "failed: " + create.error;
-    else if (create.done)
-        state = "done";
-    else if (create.sleeping)
-        state = "stopped (sleeping)";
-    else if (create.waiting)
-        state = "stopped (waiting)";
-    else if (create.suspended)
-        state = "stopped (suspended)";
-    else
-        state = "running (yielded)";
-    std::printf("  THRD-CREATE: %s\n", state.c_str());
+    std::printf("  THRD-CREATE: %s\n", thread_state(create).c_str());
     c.check(create.done && create.error.empty(), "shipped Init(int) constructor runs to completion");
+
+    // Drive the game like the exe's main loop after boot, on a simulated clock:
+    // kFrames 16 ms steps (~10 s of game time), never the wall clock.
+    const int kFrames = 600;
+    FrameLoop loop(0);
+    for (int i = 1; i <= kFrames; i++) loop.frame(i * 16);
+
+    std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
+    int failed = 0;
+    for (const natives::ThreadInfo &t : threads)
+        if (!t.error.empty()) failed++;
+    const size_t kShown = 40;
+    for (size_t i = 0; i < threads.size() && i < kShown; i++)
+        std::printf("  thread %s: %s\n", threads[i].name.c_str(),
+                    thread_state(threads[i]).c_str());
+    if (threads.size() > kShown) std::printf("  ... %zu more\n", threads.size() - kShown);
+    std::printf("  frames: %d run, threads: %zu, failed: %d\n", kFrames, threads.size(),
+                failed);
 }
 
 // 0x55ccc0 roots: dir on the install -> package root. The package tree maps a
