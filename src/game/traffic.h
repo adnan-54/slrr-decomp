@@ -52,6 +52,10 @@ struct Graph {
     // 0x419050: cross_eq first, then cross_light; first strict minimum wins.
     const Cross *nearest_cross(float x, float y, float z, float dist, bool yflag) const;
     void clear_halts();   // 0x417c50: every lane's halt flag (+0xc4) = 0
+    // 0x4191d0: x-sorted lane index lookup, then path projection within |dy| < 5.
+    const Lane *nearest_lane_pos(float x, float y, float z, float *d, float *lat) const;
+    // 0x419410: snap pos onto the nearest lane's road path; dir = path direction.
+    bool align_to_road(float pos[3], float dir[3]) const;
 };
 
 void segment_pos(const Segment &s, float d, float out[3]);   // 0x4134e0
@@ -59,5 +63,7 @@ void segment_dir(const Segment &s, float d, float out[3]);   // 0x412f60
 void segment_side(const Segment &s, float d, float out[3]);  // 0x4131a0
 void path_pos_at(const Path &p, float d, float out[3]);      // 0x413360
 void path_dir_at(const Path &p, float d, float out[3]);      // 0x412ed0
+bool segment_project(const Segment &s, float x, float z, float *d, float *lat);  // 0x414480
+bool path_project(const Path &p, float x, float z, float *d, float *lat);        // 0x414830
 
 }  // namespace traffic

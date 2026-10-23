@@ -284,6 +284,96 @@ void path_dir_at(const Path &p, float d, float out[3])
     segment_dir(p.segs[i], d, out);
 }
 
+// 0x414480 ctSegment__project — xz projection; d in [0, len], lat = signed side.
+bool segment_project(const Segment &s, float x, float z, float *d, float *lat)
+{
+    float dir[2] = {s.m0[0], s.m0[2]};
+    float n = sqrtf(dir[0] * dir[0] + dir[1] * dir[1]);
+    if ((double)n > 1e-5) {
+        float inv = 1.0f / n;
+        dir[0] *= inv;
+        dir[1] *= inv;
+    }
+    if (!s.curved) {
+        float dx = x - s.p0[0], dz = z - s.p0[2];
+        float proj = dir[1] * dz + dir[0] * dx;
+        if (proj < 0.0f) return false;
+        if (s.flat_len < proj) return false;
+        *d = proj / s.flat_len * s.len;
+        *lat = s.m1[2] * dz + s.m1[0] * dx;
+        return true;
+    }
+    float nrm[2] = {-s.m1[0], -s.m1[2]};
+    n = sqrtf(nrm[0] * nrm[0] + nrm[1] * nrm[1]);
+    if ((double)n > 1e-5) {
+        float inv = 1.0f / n;
+        nrm[0] *= inv;
+        nrm[1] *= inv;
+    }
+    float a = (z - s.p0[2]) * dir[1] + (x - s.p0[0]) * dir[0];
+    float b = (z - s.p1[2]) * nrm[1] + (x - s.p1[0]) * nrm[0];
+    // !(x >= 0) also catches NaN, matching the exe's carry-flag test.
+    if (!(a >= 0.0f) || !(b >= 0.0f)) return false;
+    *d = s.len * a / (b + a);
+    float prev_err = 0.0f, k = 1.0f;
+    float pos[3], d3[3], side[3];
+    segment_pos(s, *d, pos);
+    segment_dir(s, *d, d3);
+    float err = (x - pos[0]) * d3[0] + (z - pos[2]) * d3[2];
+    while (!((double)fabsf(err) < 0.01)) {
+        if (0.0f > err * prev_err) {
+            k = k * 0.9f;
+            if ((double)k < 0.1) break;
+        }
+        float old = *d;
+        prev_err = err;
+        *d = err * k + old;
+        if (*d < 0) {
+            *d = 0;
+            if (old == 0) break;
+        }
+        if (*d > s.len) {
+            *d = s.len;
+            if (old == s.len) break;
+        }
+        segment_pos(s, *d, pos);
+        segment_dir(s, *d, d3);
+        err = (x - pos[0]) * d3[0] + (z - pos[2]) * d3[2];
+    }
+    segment_side(s, *d, side);
+    *lat = (x - pos[0]) * side[0] + (z - pos[2]) * side[2];   // pos from the last evaluation
+    return true;
+}
+
+// 0x414830 ctPath__project — nearest segment by |lat|; d is path length so far + sd.
+bool path_project(const Path &p, float x, float z, float *d, float *lat)
+{
+    int best = -1;
+    float acc = 0;
+    for (size_t i = 0; i < p.segs.size(); i++) {
+        const Segment &s = p.segs[i];
+        float sd = 0, sl = 0;
+        if (!segment_project(s, x, z, &sd, &sl)) {
+            float d0 = (s.p0[2] - z) * (s.p0[2] - z) + (s.p0[0] - x) * (s.p0[0] - x);
+            float d1 = (s.p1[2] - z) * (s.p1[2] - z) + (s.p1[0] - x) * (s.p1[0] - x);
+            if (d1 <= d0) {
+                sl = sqrtf(d1);
+                sd = s.len;
+            } else {
+                sl = sqrtf(d0);
+                sd = 0;
+            }
+        }
+        if (best == -1 || fabsf(sl) < fabsf(*lat)) {
+            *lat = sl;
+            *d = sd + acc;
+            best = (int)i;
+        }
+        acc = s.len + acc;
+    }
+    return best != -1;
+}
+
 size_t Graph::node_count() const
 {
     return cross_eq.size() + cross_light.size() + roads.size() + lanes.size();
@@ -314,6 +404,70 @@ const Cross *Graph::nearest_cross(float x, float y, float z, float dist, bool yf
 void Graph::clear_halts()
 {
     for (size_t i = 0; i < lanes.size(); i++) lanes[i].halted = false;
+}
+
+// 0x4191d0 Traffic__nearestLanePos.
+const Lane *Graph::nearest_lane_pos(float x, float y, float z, float *d, float *lat) const
+{
+    int lo = 0, hi = (int)lanes.size() - 1, mid = -1;
+    while (lo <= hi) {
+        mid = (lo + hi) / 2;   // signed, truncating
+        if (x + 20.0f > lanes[(size_t)mid].index_min_x) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    const Lane *best = nullptr;
+    float best_d2 = 0, best_d = 0, best_lat = 0;
+    for (int i = mid; i >= 0; i--) {
+        const Lane &e = lanes[(size_t)i];
+        if (!(e.index_run_max_x > x - 20.0f)) break;
+        if (!(e.index_max_x > x - 20.0f)) continue;
+        // INVENTED: the exe indexes the lane array unchecked.
+        if (e.index_lane >= lanes.size()) continue;
+        const Lane &l = lanes[e.index_lane];
+        float sd = 0, sl = 0;
+        if (!path_project(l.path, x, z, &sd, &sl)) continue;
+        float pos[3];
+        path_pos_at(l.path, sd, pos);
+        float dy = pos[1] - y;
+        if (5.0f > fabsf(dy)) {
+            float d2 = (pos[0] - x) * (pos[0] - x) + dy * dy + (pos[2] - z) * (pos[2] - z);
+            if (!best || best_d2 > d2) {
+                best_d = sd;
+                best = &l;
+                best_d2 = d2;
+                best_lat = sl;
+            }
+        }
+    }
+    if (best) {
+        if (d) *d = best_d;
+        if (lat) *lat = best_lat;
+    }
+    return best;
+}
+
+// 0x419410 Traffic__alignToRoad.
+bool Graph::align_to_road(float pos[3], float dir[3]) const
+{
+    const Lane *l = nearest_lane_pos(pos[0], pos[1], pos[2], nullptr, nullptr);
+    if (!l) return false;
+    // INVENTED: a lane whose road id is not a road returns false (the exe would
+    // dereference the empty table entry).
+    if (l->road < 1 + cross_eq.size() + cross_light.size()) return false;
+    size_t ri = l->road - 1 - cross_eq.size() - cross_light.size();
+    if (ri >= roads.size()) return false;
+    const Path &p = roads[ri].path;
+    // INVENTED: d = 0 before the projection; the exe keeps a stale stack slot.
+    // With >= 1 segment the projection cannot fail anyway.
+    float d = 0.0f, lat = 0;
+    path_project(p, pos[0], pos[2], &d, &lat);
+    if (dir) {
+        float v[3];
+        path_dir_at(p, d, v);
+        for (int i = 0; i < 3; i++) dir[i] = p.length * 0.5f > d ? v[i] : -v[i];
+    }
+    path_pos_at(p, d, pos);
+    return true;
 }
 
 // 0x41a000 Traffic__load.

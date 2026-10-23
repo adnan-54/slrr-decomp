@@ -6376,11 +6376,32 @@ bool gr_get_route_dist(Vm &, const Args &a, Value *out, std::string *err)
 }
 
 // 0x4dd470 GroundRef.alignToRoad(Vector3)V3[]: pos == 0 -> 0; h == 0 -> 0; !getInfo -> 0.
-// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
-bool gr_align_to_road(Vm &, const Args &a, Value *out, std::string *err)
+// p = v.x/y/z; Traffic__alignToRoad(t, p, dir) (result ignored); return {new V3(p),
+// new V3(dir)}.
+// INVENTED: dir is zero-initialised (the exe leaves it uninitialised when no lane is
+// found); a null handle or ground graph yields null instead of dereferencing.
+bool gr_align_to_road(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     if (!want("GroundRef.alignToRoad", a, 2, err)) return false;
     *out = Value::make_null();
+    if (a[1].kind == Value::Null) return true;
+    Object *o;
+    float pos[3];
+    if (!get_o("GroundRef.alignToRoad", a[1], &o, err) || !vec_read(vm, o, pos, err))
+        return false;
+    Runtime *rt = game_rt();
+    traffic::Graph *t = rt ? rt->ground_traffic(value_handle(a[0])) : nullptr;
+    if (!t) return true;
+    float dir[3] = {0.0f, 0.0f, 0.0f};
+    t->align_to_road(pos, dir);
+    Object *a0 = new_point(vm, "java.lang.Vector3", pos, false, err);
+    if (!a0) return false;
+    Object *a1 = new_point(vm, "java.lang.Vector3", dir, false, err);
+    if (!a1) return false;
+    Array *arr = vm.new_array("Ljava.lang.Vector3;", 2);
+    arr->elems[0] = Value::make_obj(a0);
+    arr->elems[1] = Value::make_obj(a1);
+    *out = Value::make_array(arr);
     return true;
 }
 
