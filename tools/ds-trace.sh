@@ -12,4 +12,4 @@ Report: card path, UNRESOLVED items.
 Card id and natives: $1: $2"
 claude -p "$prompt" --settings .claude/settings-deepseek.json --permission-mode acceptEdits \
   --allowedTools "Read,Write,Edit,Glob,Grep,mcp__rea__open_binary,mcp__rea__procedure_pseudo_code,mcp__rea__read_function_instructions,mcp__rea__procedure_callees,Bash(git *),Bash(rtk git *),Bash(ls *),Bash(grep *),Bash(rtk grep *),Bash(cat *)" \
-  --disallowedTools "Bash(git push *),Bash(rtk git push *)" --max-turns 80 2>&1
+  --disallowedTools "Bash(git push *),Bash(rtk git push *)" --max-turns 150 2>&1
