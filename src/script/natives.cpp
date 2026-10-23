@@ -1603,6 +1603,56 @@ bool rr_get_next_child(Vm &, const Args &a, Value *out, std::string *err)
     return wrap_resource(r ? r->next_sibling : nullptr, out, err);
 }
 
+// 0x4e3de0 ResourceRef.load()V
+bool rr_load(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("ResourceRef.load", a, 1, err)) return false;
+    *out = Value::make_null();
+    if (!value_handle(a[0]))
+        std::fprintf(stderr, "vm_resourceref_load: scripted resource not found\n");
+    // shortcut: no ConfigData/streaming service in src. The exe ORs 0x80000 into
+    // RI+0x84 only when GetConfigData("ground_precache") > 0 (0x4e3e0c), then
+    // makes the instance resident (vtbl +0x14) and fetches typed data
+    // (0x51f4f0 mask 0x80000001; on success vtbl +0xc). GetConfigData returns 0
+    // when config data is absent (0x47c110), so the flag branch is not taken.
+    return true;
+}
+
+// 0x4e4500 ResourceRef.unload()V
+bool rr_unload(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("ResourceRef.unload", a, 1, err)) return false;
+    *out = Value::make_null();
+    if (!value_handle(a[0]))
+        std::fprintf(stderr, "vm_resourceref_unload: scripted resource not found\n");
+    // shortcut: no release service in src. 0x4ec800: id != 0 && RI != 0 ->
+    // type == 1 ? deferred-unload queue 0x47e340 (global 0x5fde90) : vtbl +0x1c.
+    return true;
+}
+
+// 0x4e3100 ResourceRef.cache()V
+bool rr_cache(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("ResourceRef.cache", a, 1, err)) return false;
+    *out = Value::make_null();
+    if (!value_handle(a[0]))
+        std::fprintf(stderr, "vm_resourceref_cache: scripted resource not found\n");
+    // shortcut: 0x4e9830(h, 0, 1.0f) walks engine typed objects (0x468b00) and
+    // its float result is discarded (FSTP ST0); no such service in src.
+    return true;
+}
+
+// 0x4e40f0 ResourceRef.precache()V
+bool rr_precache(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("ResourceRef.precache", a, 1, err)) return false;
+    *out = Value::make_null();
+    if (!value_handle(a[0]))
+        std::fprintf(stderr, "vm_resourceref_precache: scripted resource not found\n");
+    // shortcut: 0x4e9830(h, 0x3f800000 /*1.0f as int*/, 1.0f), result discarded.
+    return true;
+}
+
 // ---- java.util.resource.GameRef -------------------------------------------
 
 // 0x4daa40: RI+0x84. No missing-handle error in the exe; returns 0.
@@ -5392,8 +5442,8 @@ const std::vector<Entry> &table()
     {"java.util.resource.ResourceRef", "newNative", "()V", rr_new_native, true},
     {"java.util.resource.ResourceRef", "set", "(I)V", rr_set_id, true},
     {"java.util.resource.ResourceRef", "set", "(Ljava.util.resource.ResourceRef;)V", rr_set_ref, true},
-    {"java.util.resource.ResourceRef", "load", "()V", nullptr, true},
-    {"java.util.resource.ResourceRef", "unload", "()V", nullptr, true},
+    {"java.util.resource.ResourceRef", "load", "()V", rr_load, false},
+    {"java.util.resource.ResourceRef", "unload", "()V", rr_unload, false},
     {"java.util.resource.ResourceRef", "destroy", "()V", nullptr, true},
     {"java.util.resource.ResourceRef", "type", "()I", rr_type, true},
     {"java.util.resource.ResourceRef", "id", "()I", rr_id, true},
@@ -5404,8 +5454,8 @@ const std::vector<Entry> &table()
     {"java.util.resource.ResourceRef", "getNextChild", "()Ljava.util.resource.ResourceRef;", rr_get_next_child, true},
     {"java.util.resource.ResourceRef", "makeTexture", "(Ljava.util.resource.ResourceRef;Ljava.lang.String;)V", nullptr, true},
     {"java.util.resource.ResourceRef", "makeSound", "(Ljava.util.resource.ResourceRef;Ljava.lang.String;)V", nullptr, true},
-    {"java.util.resource.ResourceRef", "cache", "()V", nullptr, true},
-    {"java.util.resource.ResourceRef", "precache", "()V", nullptr, true},
+    {"java.util.resource.ResourceRef", "cache", "()V", rr_cache, false},
+    {"java.util.resource.ResourceRef", "precache", "()V", rr_precache, false},
     {"java.util.resource.ResourceRef", "duplicate", "(Ljava.util.resource.ResourceRef;)V", nullptr, true},
     {"java.util.resource.ResourceRef", "scaleMesh", "(FFF)V", nullptr, true},
     {"java.util.resource.GameRef", "create", "(Ljava.util.resource.GameRef;Ljava.util.resource.GameRef;Ljava.lang.String;Ljava.lang.String;)Ljava.lang.GameType;", gr_create, true},

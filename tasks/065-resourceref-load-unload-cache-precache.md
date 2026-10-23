@@ -1,7 +1,7 @@
 ---
 id: 065
-status: todo
-branch:
+status: implemented
+branch: card/065
 depends: []
 ---
 # resource: ResourceRef.load / unload / cache / precache
