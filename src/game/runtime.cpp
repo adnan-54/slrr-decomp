@@ -183,6 +183,20 @@ void Runtime::detach(Object *script)
     handles_.erase(it);
 }
 
+// 0x525120 -> 0x5188e0: created engine resource, no record. Same owned-node
+// allocation as instantiate (which keeps its ins_game / script / parent logic).
+Runtime::Resource *Runtime::create_resource(uint32_t type, const std::string &name)
+{
+    auto up = std::make_unique<Resource>();
+    Resource *r = up.get();
+    instances_.push_back(std::move(up));
+    r->id = next_instance_id_++;
+    r->type = type;
+    r->name = name.empty() ? "_gameinst" : name;
+    r->instance = true;
+    return r;
+}
+
 void Runtime::unlink(Handle *h)
 {
     if (!h) return;

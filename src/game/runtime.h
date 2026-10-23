@@ -62,6 +62,12 @@ class Runtime {
         float vel[3] = {};
         float ang[3] = {};
         float detail = 0.0f;
+        // res_viewport typed data (0x525120, notes/12 §9): +0xc depth/order,
+        // +0x10..+0x1c relative x,y,w,h.
+        // INVENTED: the exe keeps these in the typed data block, not on the RI.
+        int32_t viewport_depth = 0;    // +0xc
+        float viewport_rect[4] = {};   // +0x10 x, +0x14 y, +0x18 w, +0x1c h
+        bool viewport_active = false;  // INVENTED: game drawn-list (+0x14c) membership
         bool instance = false;
         Object *script = nullptr;          // script instance (typed +0x50)
         int refs = 0;                      // handles attached (RI+0x78 list)
@@ -102,6 +108,8 @@ class Runtime {
     Handle *handle(Object *script) const;
     Handle *attach(Object *script);
     void detach(Object *script);
+    // 0x525120 -> 0x5188e0: a created engine resource (no record); "_viewport" is type 0x12.
+    Resource *create_resource(uint32_t type, const std::string &name);
     // FUN_0040cac0 / FUN_0051f9b0: rebind, ref-counting the target node.
     void bind(Handle *h, Resource *r);
     void bind(Handle *h, uint32_t id, const Package *base = nullptr);

@@ -4829,6 +4829,102 @@ bool tx_get_default_color(Vm &, const Args &, Value *out, std::string *)
     return true;
 }
 
+// ---- java.render.Viewport lifecycle (0x4e6af0 / 0x4e6ab0 / 0x4e6c50 / 0x4e6c90)
+
+// 0x4e6af0 Viewport.create(IFFFF)V: unwrap the receiver, build a type-0x12
+// "_viewport" resource (0x525120 -> 0x5188e0) and rebind the same handle at
+// 0x4e6b6b (FUN_0040cac0).
+// INVENTED: depth and rect are stored on Runtime::Resource; the exe keeps them in
+// the res_viewport typed data block.
+// INVENTED: a missing handle returns null and creates nothing; the exe logs
+// "vm_viewport_create: scripted resource %x not found" and returns.
+// shortcut: the game viewport lists and the FUN_00420970 registration in 0x525120
+// are not modelled; src has no game viewport list.
+// UNRESOLVED: 0x5188e0 / 0x518a40 creation internals; the node is allocated from
+// Runtime::instances_ instead.
+bool vp_create(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Viewport.create", err)) return false;
+    Object *o;
+    if (!receiver_object("Viewport.create", a, &o, err)) return false;
+    int32_t depth;
+    float rect[4];
+    if (!want("Viewport.create", a, 6, err) ||
+        !get_i("Viewport.create", a[1], &depth, err) ||
+        !get_f("Viewport.create", a[2], &rect[0], err) ||
+        !get_f("Viewport.create", a[3], &rect[1], err) ||
+        !get_f("Viewport.create", a[4], &rect[2], err) ||
+        !get_f("Viewport.create", a[5], &rect[3], err))
+        return false;
+    Runtime::Handle *h = game_rt()->handle(o);  // 0x4ecc70
+    if (!h) {
+        *out = Value::make_null();
+        return true;
+    }
+    Runtime::Resource *r = game_rt()->create_resource(0x12, "_viewport");
+    r->viewport_depth = depth;
+    for (int i = 0; i < 4; i++) r->viewport_rect[i] = rect[i];
+    game_rt()->bind(h, r);  // 0x40cac0
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e6ab0 Viewport.activate(I)V: the int argument is never read. 0x4200d0 checks
+// res->type == 0x12 and moves the node to the drawn list game+0x14c.
+// INVENTED: modelled as Resource::viewport_active; the game lists are not
+// modelled. UNRESOLVED: FUN_00421e40 body.
+bool vp_activate(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Viewport.activate", err)) return false;
+    Object *o;
+    if (!receiver_object("Viewport.activate", a, &o, err) ||
+        !want("Viewport.activate", a, 2, err))
+        return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (r && r->type == 0x12) r->viewport_active = true;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e6c50 Viewport.deactivate()V -> 0x420b20 type-0x12 case (0x421f50 removes the
+// node from game+0x14c).
+// INVENTED: modelled as Resource::viewport_active; the game lists are not
+// modelled. UNRESOLVED: FUN_00421f50 body.
+bool vp_deactivate(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Viewport.deactivate", err)) return false;
+    Object *o;
+    if (!receiver_object("Viewport.deactivate", a, &o, err) ||
+        !want("Viewport.deactivate", a, 1, err))
+        return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (r && r->type == 0x12) r->viewport_active = false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e6c90 Viewport.destroy()V: 0x420b20 (deactivate) then 0x4e9450 queues the
+// handle on the delete queue 0x5fde90 (0x47b970).
+// INVENTED: missing handle returns without logging (the exe logs "scripted
+// resource %x not found" and does nothing).
+// shortcut: src has no frame-end delete queue, so detach() frees the handle now
+// while the owned Resource node stays; upgrade when a deferred-delete queue exists.
+// UNRESOLVED: FUN_0047b090 builds the queue payload.
+bool vp_destroy(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Viewport.destroy", err)) return false;
+    Object *o;
+    if (!receiver_object("Viewport.destroy", a, &o, err) ||
+        !want("Viewport.destroy", a, 1, err))
+        return false;
+    Runtime::Handle *h = game_rt()->handle(o);  // 0x4ecc70
+    Runtime::Resource *r = h ? h->target : nullptr;
+    if (r && r->type == 0x12) r->viewport_active = false;  // 0x420b20
+    if (h) game_rt()->detach(o);                           // 0x4e9450
+    *out = Value::make_null();
+    return true;
+}
+
 }  // namespace
 
 namespace natives {
@@ -5092,10 +5188,10 @@ const std::vector<Entry> &table()
     {"java.render.Camera", "create", "(Ljava.util.resource.ResourceRef;Ljava.render.Viewport;IFFFFFII)V", nullptr, true},
     {"java.render.Camera", "destroy", "()V", nullptr, true},
     {"java.render.Camera", "setFog", "(IFF)V", nullptr, true},
-    {"java.render.Viewport", "create", "(IFFFF)V", nullptr, true},
-    {"java.render.Viewport", "destroy", "()V", nullptr, true},
-    {"java.render.Viewport", "activate", "(I)V", nullptr, true},
-    {"java.render.Viewport", "deactivate", "()V", nullptr, true},
+    {"java.render.Viewport", "create", "(IFFFF)V", vp_create, false},
+    {"java.render.Viewport", "destroy", "()V", vp_destroy, false},
+    {"java.render.Viewport", "activate", "(I)V", vp_activate, false},
+    {"java.render.Viewport", "deactivate", "()V", vp_deactivate, false},
     {"java.render.Viewport", "getAspect", "()F", nullptr, true},
     {"java.render.Viewport", "getWidth", "()F", nullptr, true},
     {"java.render.Viewport", "getHeight", "()F", nullptr, true},
