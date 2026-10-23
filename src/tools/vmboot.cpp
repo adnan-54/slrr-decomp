@@ -171,6 +171,7 @@ void game_init_check(Boot &boot, Checker &c)
     else
         state = "running (yielded)";
     std::printf("  THRD-CREATE: %s\n", state.c_str());
+    c.check(create.done && create.error.empty(), "shipped Init(int) constructor runs to completion");
 }
 
 // 0x55ccc0 roots: dir on the install -> package root. The package tree maps a
