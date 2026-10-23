@@ -5992,6 +5992,20 @@ bool gfx_force_rendering(Vm &, const Args &, Value *out, std::string *)
     return true;
 }
 
+// 0x4e5780 GfxEngine.printScreen(String)V -> 0x421b40 Game__printScreen
+// SERVICE MISSING: 0x421b40 locks a copy of the backbuffer (C3DLow vf[0x50]),
+// converts the 4-byte pixels to 3-byte RGB, compresses (0x527060) and writes; src has no
+// backbuffer readback (render::Device) and no image writer. Void native, so the
+// observable result is the exe's null/empty-name and lock-failure path:
+// nothing is written.
+bool gfx_print_screen(Vm &, const Args &a, Value *out, std::string *err)
+{
+    // static native: the declared argument is a[0] (getArgs(ctx, 0, &name) at 0x4e5780)
+    if (!want("GfxEngine.printScreen", a, 1, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
 // 0x4dc900 GfxEngine.renderOK()I: movzx eax, byte [0x5fe0f8]; ret.
 // DAT_005fe0f8 is the result of the last Game__renderFrame, stored by
 // Game__renderAndMeasure at 0x47b5cd; 0 before the first frame.
@@ -6115,6 +6129,25 @@ bool tx_update(Vm &vm, const Args &a, Value *out, std::string *err)
             r->text_data.clear();
     }
     *out = Value::make_null();
+    return true;
+}
+
+// 0x4e5ae0 Text.getWidthPixels(String, ResourceRef)F
+// SERVICE MISSING: the exe measures with the D3D text object (0x421100: vf131
+// setFont, vf134 scale 1.0, vf133 textWidth(str, 1.0)). src has no font-atlas
+// loader (notes/12 §4), so every path returns the exe's no-service 0.0f
+// (null String, font id 0, no service, atlas flag +0x38 bit 3 clear).
+bool tx_get_width_pixels(Vm &, const Args &a, Value *out, std::string *err)
+{
+    // static native: the declared arguments start at a[0] (getArgs(ctx, 0, &str, &font))
+    if (!want("Text.getWidthPixels", a, 2, err)) return false;
+    if (a[0].kind != Value::Str) {  // 0x4e5ae0: null String -> 0.0f
+        // INVENTED: a non-Str slot stands for the exe's null String;
+        // every other path also yields 0.0f while the text service is missing.
+        *out = Value::make_float(0.0f);
+        return true;
+    }
+    *out = Value::make_float(0.0f);
     return true;
 }
 
@@ -6593,6 +6626,23 @@ bool vp_resize(Vm &, const Args &a, Value *out, std::string *err)
         return false;
     if (Runtime::Resource *r = viewport_resource(a[0]))
         for (int i = 0; i < 4; ++i) r->viewport_rect[i] = v[i];
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e6fb0 Viewport.unproject(Vector3,I)Vector3
+// SERVICE MISSING: 0x422320 finds the viewport node in the game lists
+// +0x198/+0x14c by node+0x34 == resource id, walks its children and unprojects
+// through the child whose +0xa98 == camId with the camera matrices at +0x45c
+// (inverse projection) and +0x39c (camera->world). src has no game node list,
+// no viewport->camera link (cam_create, card 072) and no camera matrices, so
+// the lookup never matches: the exe returns null there (0x4e6fb0 fallthrough).
+// shortcut: the Vector3 x/y/z reads (0x4ec980) are skipped: their values are
+// only consumed by the transform that never runs.
+bool vp_unproject(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Viewport.unproject", err)) return false;
+    if (!want("Viewport.unproject", a, 3, err)) return false;
     *out = Value::make_null();
     return true;
 }
@@ -7772,7 +7822,7 @@ const std::vector<Entry> &table()
     {"java.sound.Sound", "hasMixHardware", "()I", snd_has_mix_hardware, false},
     {"java.sound.Sound", "enableDebugDump", "(Ljava.util.resource.ResourceRef;)I", snd_enable_debug_dump, false},
     {"java.render.GfxEngine", "forceRendering", "()V", gfx_force_rendering, false},
-    {"java.render.GfxEngine", "printScreen", "(Ljava.lang.String;)V", nullptr, true},
+    {"java.render.GfxEngine", "printScreen", "(Ljava.lang.String;)V", gfx_print_screen, false},
     {"java.render.GfxEngine", "numDisplayModes", "()I", gfx_num_display_modes, false},
     {"java.render.GfxEngine", "currDisplayMode", "()I", gfx_curr_display_mode, false},
     {"java.render.GfxEngine", "displayModeName", "(I)Ljava.lang.String;", gfx_display_mode_name, false},
@@ -7796,7 +7846,7 @@ const std::vector<Entry> &table()
     {"java.render.Viewport", "getHeight", "()F", vp_get_height, false},
     {"java.render.Viewport", "getTop", "()F", vp_get_top, false},
     {"java.render.Viewport", "getLeft", "()F", vp_get_left, false},
-    {"java.render.Viewport", "unproject", "(Ljava.lang.Vector3;I)Ljava.lang.Vector3;", nullptr, true},
+    {"java.render.Viewport", "unproject", "(Ljava.lang.Vector3;I)Ljava.lang.Vector3;", vp_unproject, false},
     {"java.render.Viewport", "resize", "(FFFF)V", vp_resize, false},
     {"java.render.Text", "setScale", "(FF)V", tx_set_scale, false},
     {"java.render.Text", "setDefaultColor", "(I)V", tx_set_default_color, false},
@@ -7807,7 +7857,7 @@ const std::vector<Entry> &table()
     {"java.render.Text", "setPos", "(FF)V", tx_set_pos, false},
     {"java.render.Text", "getPos", "()Ljava.lang.Vector3;", tx_get_pos, false},
     {"java.render.Text", "update", "()V", tx_update, false},
-    {"java.render.Text", "getWidthPixels", "(Ljava.lang.String;Ljava.util.resource.ResourceRef;)F", nullptr, true},
+    {"java.render.Text", "getWidthPixels", "(Ljava.lang.String;Ljava.util.resource.ResourceRef;)F", tx_get_width_pixels, false},
     {"java.render.Text", "getPos", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", tx_get_pos_into, false},
     {"java.util.resource.Animation", "<init>", "(Ljava.util.resource.RenderRef;Ljava.util.resource.ResourceRef;)", anim_ctor, false},
     {"java.util.resource.Animation", "finalize", "()V", anim_finalize, false},
