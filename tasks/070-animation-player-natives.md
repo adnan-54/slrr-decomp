@@ -1,7 +1,7 @@
 ---
 id: 070
-status: todo
-branch:
+status: implemented
+branch: card/070
 depends: []
 ---
 # render: java.util.resource.Animation player natives

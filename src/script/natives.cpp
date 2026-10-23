@@ -5488,6 +5488,125 @@ bool vp_resize(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// ---- java.util.resource.Animation (notes/12 §9) -------------------------
+// All nine natives drive a render-side animation player: FUN_0051b8d0 creates
+// the 0xc0-byte player under a RenderRef resource instance and the operations
+// append {opcode, value} records to it (+0xb4 buf, +0xb8 count, +0xbc cap).
+// SERVICE MISSING: src/ has no render instance, no RenderRef handle creation
+// and no player, so no guard can pass and nothing is queued.
+
+// 0x4d8a40 Animation.<init>(RenderRef,ResourceRef)V
+// exe: builds the player when the RenderRef RI has typed data (0x4d8a40:
+// Resource__getTyped(RI,0x80000000) -> RI->vf[+0xc] -> FUN_0051be40 ->
+// FUN_0051b8d0), then stores it in the Animation's native-handle field and
+// binds the "obj" RenderRef handle to the argument's RI (FUN_0040cac0).
+// shortcut: no player can be created (native-handle field stays 0). The
+// "obj" bind is unconditional in the exe and IS ported. INVENTED: the exe
+// derefs a null RenderRef argument at 0x4d8b5b and a null obj handle in
+// 0x40cac0; the port skips those instead of faulting.
+bool anim_ctor(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Animation.<init>", err)) return false;
+    Object *o;
+    if (!receiver_object("Animation.<init>", a, &o, err) ||
+        !want("Animation.<init>", a, 3, err))
+        return false;
+    Value v;
+    std::string e;
+    Runtime::Handle *h = vm.get_instance_field(o, "obj", &v, &e) ? value_handle(v) : nullptr;
+    Runtime::Handle *src = value_handle(a[1]);       // renderRef native handle
+    if (h && src) game_rt()->bind(h, src->target);   // 0x40cac0(hObj, renderRef+0xc)
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4d8980 Animation.finalize()V
+// exe: if the "obj" RenderRef handle's resource id (+8) != 0 and the stored
+// player != 0, player->vf[0](1). shortcut: no player exists here.
+bool anim_finalize(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Animation.finalize", a, 1, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4d8d70 Animation.setSpeed(F)V: queue opcode 5 (FUN_004cf350) when the
+// "obj" RenderRef handle has a nonzero resource id.
+// SERVICE MISSING: no player, so the queue helper is unreachable. INVENTED:
+// once the obj bind makes the exe guard pass the exe derefs a null player;
+// the port stays a no-op instead.
+bool anim_set_speed(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Animation.setSpeed", a, 2, err)) return false;
+    float v;
+    if (!get_f("Animation.setSpeed", a[1], &v, err)) return false;
+    (void)v;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4d8d00 Animation.setFade(F)V: queue opcode 6 (FUN_004cf2e0).
+// SERVICE MISSING: no player; INVENTED: no-op instead of the null-player deref.
+bool anim_set_fade(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Animation.setFade", a, 2, err)) return false;
+    float v;
+    if (!get_f("Animation.setFade", a[1], &v, err)) return false;
+    (void)v;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4d89e0 Animation.getPos()F: 0.0f when the "obj" guard fails (0x4d8a26
+// je -> 0x4d8a34 fldz), otherwise player+0x34 / clip length via FUN_0051dde0.
+// SERVICE MISSING: no player, so the exe's no-data value 0.0f. INVENTED: with
+// the obj bound the exe derefs the 0 player; the port still returns 0.0f.
+bool anim_get_pos(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Animation.getPos", a, 1, err)) return false;
+    *out = Value::make_float(0.0f);
+    return true;
+}
+
+// 0x4d8c90 Animation.seek(F)V: queue opcode 4 (FUN_004cf270).
+// SERVICE MISSING: no player; INVENTED: no-op instead of the null-player deref.
+bool anim_seek(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Animation.seek", a, 2, err)) return false;
+    float v;
+    if (!get_f("Animation.seek", a[1], &v, err)) return false;
+    (void)v;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4d8c30 Animation.play()V: queue opcode 0, value 0 (FUN_004d8840).
+// SERVICE MISSING: no player; INVENTED: no-op instead of the null-player deref.
+bool anim_play(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Animation.play", a, 1, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4d8b70 Animation.loopPlay()V: queue opcode 1, value 0 (FUN_004d8780).
+// SERVICE MISSING: no player; INVENTED: no-op instead of the null-player deref.
+bool anim_loop_play(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Animation.loopPlay", a, 1, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4d8bd0 Animation.pause()V: queue opcode 3, value 0 (FUN_004d87e0).
+// SERVICE MISSING: no player; INVENTED: no-op instead of the null-player deref.
+bool anim_pause(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Animation.pause", a, 1, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
 }  // namespace
 
 namespace natives {
@@ -5776,15 +5895,15 @@ const std::vector<Entry> &table()
     {"java.render.Text", "update", "()V", tx_update, false},
     {"java.render.Text", "getWidthPixels", "(Ljava.lang.String;Ljava.util.resource.ResourceRef;)F", nullptr, true},
     {"java.render.Text", "getPos", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", nullptr, true},
-    {"java.util.resource.Animation", "<init>", "(Ljava.util.resource.RenderRef;Ljava.util.resource.ResourceRef;)", nullptr, true},
-    {"java.util.resource.Animation", "finalize", "()V", nullptr, true},
-    {"java.util.resource.Animation", "setSpeed", "(F)V", nullptr, true},
-    {"java.util.resource.Animation", "setFade", "(F)V", nullptr, true},
-    {"java.util.resource.Animation", "getPos", "()F", nullptr, true},
-    {"java.util.resource.Animation", "seek", "(F)V", nullptr, true},
-    {"java.util.resource.Animation", "play", "()V", nullptr, true},
-    {"java.util.resource.Animation", "loopPlay", "()V", nullptr, true},
-    {"java.util.resource.Animation", "pause", "()V", nullptr, true},
+    {"java.util.resource.Animation", "<init>", "(Ljava.util.resource.RenderRef;Ljava.util.resource.ResourceRef;)", anim_ctor, false},
+    {"java.util.resource.Animation", "finalize", "()V", anim_finalize, false},
+    {"java.util.resource.Animation", "setSpeed", "(F)V", anim_set_speed, false},
+    {"java.util.resource.Animation", "setFade", "(F)V", anim_set_fade, false},
+    {"java.util.resource.Animation", "getPos", "()F", anim_get_pos, false},
+    {"java.util.resource.Animation", "seek", "(F)V", anim_seek, false},
+    {"java.util.resource.Animation", "play", "()V", anim_play, false},
+    {"java.util.resource.Animation", "loopPlay", "()V", anim_loop_play, false},
+    {"java.util.resource.Animation", "pause", "()V", anim_pause, false},
     {"java.util.resource.ParticleSystem", "init", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.RenderRef;Ljava.lang.String;)V", nullptr, true},
     {"java.util.resource.ParticleSystem", "stop", "()V", nullptr, true},
     {"java.util.resource.ParticleSystem", "setFreq", "(F)V", nullptr, true},
