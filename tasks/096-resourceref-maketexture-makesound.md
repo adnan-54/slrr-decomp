@@ -1,7 +1,7 @@
 ---
 id: 096
-status: todo
-branch:
+status: implemented
+branch: card/096
 depends: []
 ---
 # script: ResourceRef.makeTexture/makeSound create a script-local node

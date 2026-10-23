@@ -39,6 +39,7 @@ class Runtime {
         std::string script_class;          // `script` ref of the backing record
         const Package *package = nullptr;
         const RpkRecord *record = nullptr; // null for created instances
+        std::string data;                  // 0x518410 descriptor data (created nodes)
         const RdbResource *db = nullptr;
         Resource *parent = nullptr;        // super record or instance parent
         uint32_t parent_id = 0;            // raw super id / parent instance id
@@ -172,6 +173,9 @@ class Runtime {
     void detach(Object *script);
     // 0x525120 -> 0x5188e0: a created engine resource (no record); "_viewport" is type 0x12.
     Resource *create_resource(uint32_t type, const std::string &name);
+    // 0x525020 / 0x524f20 -> 0x518410: script-created type 6/7 node (no record).
+    Resource *define_script_resource(uint32_t type, const std::string &name,
+                                     const std::string &data, Resource *parent);
     // FUN_0040cac0 / FUN_0051f9b0: rebind, ref-counting the target node.
     void bind(Handle *h, Resource *r);
     void bind(Handle *h, uint32_t id, const Package *base = nullptr);
@@ -250,5 +254,6 @@ class Runtime {
     std::list<std::unique_ptr<Callback>> callbacks_;
     std::list<std::unique_ptr<Handle>> unload_q_, delete_q_;   // Game+0xe8 / +0x134
     uint32_t next_instance_id_ = 0x80000000u;
+    uint32_t next_script_id_ = 1;  // INVENTED low word; 0x518a40 pool not traced
     static Runtime *active_;
 };

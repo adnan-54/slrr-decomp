@@ -376,6 +376,24 @@ Runtime::Resource *Runtime::create_resource(uint32_t type, const std::string &na
     return r;
 }
 
+// 0x518410 -> 0x525b50 / 0x5263a0: node from a script descriptor. The exe keeps the
+// buffer; src copies the text. +0x84 |= 0x200 is done by the create helpers.
+Runtime::Resource *Runtime::define_script_resource(uint32_t type, const std::string &name,
+                                                   const std::string &data, Resource *parent)
+{
+    auto up = std::make_unique<Resource>();
+    Resource *r = up.get();
+    instances_.push_back(std::move(up));
+    r->id = 0xffff0000u | next_script_id_++;   // 0x518a40 high word (see UNRESOLVED)
+    r->type = type;
+    r->name = name;
+    r->data = data;
+    r->flags |= 0x200;
+    r->instance = true;   // id prefix 0xffff; same stand-in as unload (runtime.cpp:630)
+    if (parent) reparent(r, parent);
+    return r;
+}
+
 void Runtime::unlink(Handle *h)
 {
     if (!h) return;

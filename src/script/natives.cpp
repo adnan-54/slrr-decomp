@@ -1558,6 +1558,31 @@ bool rr_delete_native(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4e3ff0 / 0x4e3f60 shared path. No log: the exe just returns.
+static bool rr_make_resource(const char *who, uint32_t type, const char *name,
+                             const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt(who, err)) return false;
+    Object *o;
+    if (!receiver_object(who, a, &o, err) || !want(who, a, 3, err)) return false;
+    Runtime::Handle *h = game_rt()->handle(o);        // 0x4ecc70
+    Runtime::Handle *parent = value_handle(a[1]);     // getArgs L payload = ref node
+    *out = Value::make_null();
+    if (!h || !parent || a[2].kind != Value::Str) return true;   // null arg -> return
+    const std::string text =
+        "sourcefile " + a[2].s + "\r\nflags 0\r\n";               // 0x5a05c8 format
+    Runtime::Resource *node =
+        game_rt()->define_script_resource(type, name, text, parent->target);
+    game_rt()->bind(h, node);                         // 0x40cac0
+    return true;
+}
+
+bool rr_make_texture(Vm &, const Args &a, Value *out, std::string *err)   // 0x4e3ff0
+{ return rr_make_resource("ResourceRef.makeTexture", 7, "_texture", a, out, err); }
+
+bool rr_make_sound(Vm &, const Args &a, Value *out, std::string *err)     // 0x4e3f60
+{ return rr_make_resource("ResourceRef.makeSound", 6, "_sfx", a, out, err); }
+
 // 0x4e43a0 -> FUN_0051f9b0: unresolved ids clear the handle (the exe drops the
 // old link, then only rebinds when FUN_005183a0 returns an instance).
 bool rr_set_id(Vm &, const Args &a, Value *out, std::string *err)
@@ -4660,9 +4685,16 @@ void sfx_load(Runtime::Resource *r)
 {
     audio::SfxService &s = audio::sfx_service();
     audio::SoundParams params;
-    const bool have = r->record && r->package && r->record->data_size > 0 &&
-        audio::parse_sound_params((const char *)r->package->rpk.data(*r->record),
-                                  r->record->data_size, &params);
+    const char *data = nullptr;
+    size_t size = 0;
+    if (r->record && r->package && r->record->data_size > 0) {
+        data = (const char *)r->package->rpk.data(*r->record);
+        size = r->record->data_size;
+    } else if (!r->data.empty()) {
+        data = r->data.data();   // 0x518410 descriptor data (makeSound)
+        size = r->data.size();
+    }
+    const bool have = data && audio::parse_sound_params(data, size, &params);
     std::vector<uint8_t> file;
     bool read = false;
     if (have) {
@@ -7339,8 +7371,8 @@ const std::vector<Entry> &table()
     {"java.util.resource.ResourceRef", "getWTRoot", "()Ljava.util.resource.ResourceRef;", rr_get_wt_root, true},
     {"java.util.resource.ResourceRef", "getFirstChild", "()Ljava.util.resource.ResourceRef;", rr_get_first_child, true},
     {"java.util.resource.ResourceRef", "getNextChild", "()Ljava.util.resource.ResourceRef;", rr_get_next_child, true},
-    {"java.util.resource.ResourceRef", "makeTexture", "(Ljava.util.resource.ResourceRef;Ljava.lang.String;)V", nullptr, true},
-    {"java.util.resource.ResourceRef", "makeSound", "(Ljava.util.resource.ResourceRef;Ljava.lang.String;)V", nullptr, true},
+    {"java.util.resource.ResourceRef", "makeTexture", "(Ljava.util.resource.ResourceRef;Ljava.lang.String;)V", rr_make_texture, true},
+    {"java.util.resource.ResourceRef", "makeSound", "(Ljava.util.resource.ResourceRef;Ljava.lang.String;)V", rr_make_sound, true},
     {"java.util.resource.ResourceRef", "cache", "()V", rr_cache, false},
     {"java.util.resource.ResourceRef", "precache", "()V", rr_precache, false},
     {"java.util.resource.ResourceRef", "duplicate", "(Ljava.util.resource.ResourceRef;)V", rr_duplicate, false},
