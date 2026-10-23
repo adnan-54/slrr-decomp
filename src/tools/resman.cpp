@@ -23,6 +23,7 @@
 
 #include "audio/sound.h"
 #include "game/pedestrians.h"
+#include "game/runtime.h"
 #include "game/traffic.h"
 #include "platform/fs.h"
 #include "resource/manager.h"
@@ -641,6 +642,34 @@ static int selfcheck(const char *game_dir)
                 mgr.package_count(), records, report.references, report.class_files,
                 report.class_units, report.cfg_files, report.unresolved, report.empty,
                 report.failures, classes.internal_links(), classes.missing_links());
+    // Global ids (notes/16, 0x518940 / 0x51e860 / 0x517b80): a runtime on a bare
+    // system.rpk mounts sl.rpk by name, and both routes to a system record give
+    // the same global id. Expected names/types are the shipped records.
+    {
+        ResourceManager gm;
+        std::string ge;
+        bool g_ok = gm.open((std::string(game_dir) + "/system.rpk").c_str(), nullptr, &ge);
+        c.check(g_ok, "open system.rpk alone" + (g_ok ? "" : ": " + ge));
+        if (g_ok) {
+            Runtime grt(gm);
+            const Package *sl = gm.registry_package(gm.registry_index("sl"));
+            c.check(sl != nullptr, "registry mounts sl.rpk by name");
+            uint32_t init_id = sl ? gm.global_id(*sl, 0x40) : 0;
+            Runtime::Resource *init = init_id ? grt.resolve(init_id) : nullptr;
+            c.check(init && init->name == "Init" && init->type == 8,
+                    "sl:0x40 resolves to type-8 record \"Init\"");
+            c.check(init && init->parent && init->parent->name == "typ_game_object",
+                    "Init's super 0x00010001 (sl sub-package system.rpk) is typ_game_object");
+            const Package *sys = gm.registry_package(gm.registry_index("system"));
+            uint32_t cfg_a = sys ? gm.global_id(*sys, 0x47) : 0;
+            uint32_t cfg_b = sl ? gm.global_id(*sl, 0x00010047) : 0;
+            c.check(cfg_a != 0 && cfg_a == cfg_b,
+                    "system:0x47 has one global id from either package");
+            Runtime::Resource *cfg = cfg_a ? grt.resolve(cfg_a) : nullptr;
+            c.check(cfg && cfg->name == "Config", "system:0x47 resolves to \"Config\"");
+        }
+    }
+
     std::printf("selfcheck: %s (%d check(s), %d failure(s))\n",
                 c.failures ? "FAILED" : "PASSED", c.checks, c.failures);
     return c.failures ? 1 : 0;

@@ -229,6 +229,8 @@ bool ResourceManager::open(const char *rpk_path, const char *rdb_path, std::stri
     pkg.mount = canonical_package(rpk_path);
     packages_.push_back(std::move(pkg));
     Package &opened = packages_.back();
+    // A slot registered earlier under a short name ("sl\\") that names this
+    // file is the same registry entry (0x518940 matches by name).
     opened.registry_index = registry_index(opened.mount);
     reg_pkgs_[opened.registry_index] = &opened;
     // 0x51e310: Package::load registers every sub-package name too.
@@ -238,11 +240,24 @@ bool ResourceManager::open(const char *rpk_path, const char *rdb_path, std::stri
 }
 
 // 0x518940: find-or-append in the global name registry.
+// INVENTED: src opens packages by full path while the exe's registry holds the
+// names as written ("system.rpk", "sl"); two canonical keys name the same entry
+// when one is a path-boundary suffix of the other (same rule as
+// find_open_package), so one package never gets two registry slots.
+static bool same_package_key(const std::string &a, const std::string &b)
+{
+    const std::string &lng = a.size() >= b.size() ? a : b;
+    const std::string &sht = a.size() >= b.size() ? b : a;
+    if (sht.empty()) return lng.empty();
+    if (lng.compare(lng.size() - sht.size(), sht.size(), sht) != 0) return false;
+    return lng.size() == sht.size() || lng[lng.size() - sht.size() - 1] == '\\';
+}
+
 uint32_t ResourceManager::registry_index(const std::string &name)
 {
     std::string key = canonical_package(name);
     for (size_t i = 0; i < reg_names_.size(); i++)
-        if (reg_names_[i] == key) return (uint32_t)i;
+        if (same_package_key(reg_names_[i], key)) return (uint32_t)i;
     reg_names_.push_back(key);
     reg_pkgs_.push_back(nullptr);
     return (uint32_t)(reg_names_.size() - 1);
