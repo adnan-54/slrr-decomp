@@ -1,6 +1,6 @@
 ---
 id: 057
-status: draft
+status: todo
 branch:
 depends: []
 ---
@@ -42,7 +42,7 @@ handle is `(uint32_t)(uintptr_t)o`, exactly the value `object_hashcode` returns.
     cls    = [receiver + 0xc];                      // instance -> class record
     jcls   = [cls + 4];                             // JavaClass: +0x24 pool, +0x3c class const
     name   = ConstantPool__getString(pool, ConstantPool__getClass(pool, [jcls+0x3c]));
-    log_append(&DAT_007a2838, &DAT_005a5ad8, 0x100);   // see UNRESOLVED below
+    log_append(&DAT_007a2838, "!", 0x100);            // 0x5a5ad8 = "!\0" (Claude: bytes 21 00)
     log_append(&DAT_007a2838, "JVM ERROR:: ", 0x100);
     log_append(&DAT_007a2838, name, 0x100);
     log_append(&DAT_007a2838, " with message: ", 0x100);
@@ -53,10 +53,8 @@ handle is `(uint32_t)(uintptr_t)o`, exactly the value `object_hashcode` returns.
 the same log sink as `System.log` (0x4e5700, ported as `system_log`). Return: `V`
 (no value).
 
-UNRESOLVED: `FUN_00569320(&DAT_007a2838,&DAT_005a5ad8,0x100);` — `0x5a5ad8` is not in
-`analysis/strings.tsv`; it sits between `'deleteNative'` @0x5a5ac8 and
-`'java.util.resource.ResourceRef'` @0x5a5ae0. Probably the empty-string buffer reset;
-treat it as appending nothing (do not invent output).
+Gate (Claude): 0x5a5ad8 bytes are `21 00` = "!", so the logged line is
+`!JVM ERROR:: <name> with message: <msg>`. Format 0x5a54c4 bytes = "%s<%0x>" (verified).
 
 ### Monitor natives (trace only; do not implement)
 The receiver is the monitor object. `ctx+4` is the current engine Thread
