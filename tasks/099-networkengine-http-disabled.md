@@ -1,7 +1,7 @@
 ---
 id: 099
-status: todo
-branch:
+status: implemented
+branch: card/099
 depends: []
 ---
 # java.net.NetworkEngine: httpRequest / httpRequestAsync (disabled in the exe)

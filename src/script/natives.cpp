@@ -468,6 +468,15 @@ bool zero_int(Vm &, const Args &, Value *out, std::string *)
     return true;
 }
 
+// ---- java.net.NetworkEngine ----------------------------------------------
+// 0x461910: xor eax,eax; ret. Shared with System.runFinalization; the exe's
+// networking is disabled, so httpRequest's L return becomes a null reference.
+bool network_http_request(Vm &, const Args &, Value *out, std::string *)
+{
+    *out = Value::make_null();
+    return true;
+}
+
 bool system_arraycopy(Vm &, const Args &a, Value *out, std::string *err)
 {
     const char *who = "System.arraycopy";
@@ -7330,8 +7339,8 @@ const std::vector<Entry> &table()
     {"java.lang.Object", "runMethod", "(Ljava.lang.String;F)I", object_runmethod_float, false},
     {"java.lang.Object", "runMethod", "(Ljava.lang.String;Ljava.lang.Object;)I", object_runmethod_ref, false},
     {"java.lang.Object", "runMethod", "(Ljava.lang.String;)I", object_runmethod_void, false},
-    {"java.net.NetworkEngine", "httpRequest", "(Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;)Ljava.lang.String;", nullptr, true},
-    {"java.net.NetworkEngine", "httpRequestAsync", "(Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;Ljava.util.resource.GameRef;Ljava.lang.String;)I", nullptr, true},
+    {"java.net.NetworkEngine", "httpRequest", "(Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;)Ljava.lang.String;", network_http_request, false},
+    {"java.net.NetworkEngine", "httpRequestAsync", "(Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;Ljava.util.resource.GameRef;Ljava.lang.String;)I", zero_int, false},
     {"java.util.Steam", "initAPI", "()I", steam_init_api, false},
     {"java.util.Steam", "neutralize", "()V", steam_neutralize, false},
     {"java.util.Steam", "getPackage", "(I)Ljava.lang.String;", steam_get_package, false},
