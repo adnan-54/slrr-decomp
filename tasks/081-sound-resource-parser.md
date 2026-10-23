@@ -1,7 +1,7 @@
 ---
 id: 081
-status: todo
-branch:
+status: implemented
+branch: card/081
 depends: []
 ---
 # audio: sound resource parser (res_sound .rsd text) + WAV reader + PCM decode

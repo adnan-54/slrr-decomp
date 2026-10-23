@@ -16,7 +16,7 @@ LIB_SRC  := script/classfile.cpp script/vm.cpp script/natives.cpp \
             input/platform_backend.cpp vehicle/vehicle.cpp vehicle/dyno.cpp app/boot.cpp \
             game/runtime.cpp game/car.cpp platform/fs.cpp \
             audio/audio.cpp audio/sfx.cpp audio/music.cpp audio/mixer.cpp \
-            audio/dsound.cpp
+            audio/dsound.cpp audio/sound.cpp
 LIB_OBJ  := $(LIB_SRC:%.cpp=$(BUILD)/%.o)
 LIB      := $(BUILD)/libengine.a
 
@@ -62,6 +62,7 @@ check: all
 	$(BUILD)/classdump --conformance "$(GAME)"
 	cd .. && src/$(BUILD)/rpkdump $(ROOT_CHECK)
 	cd .. && src/$(BUILD)/resman --selfcheck
+	cd .. && src/$(BUILD)/resman --sounds "bin/the game"
 	cd .. && src/$(BUILD)/cfgdump --selfcheck
 	cd .. && src/$(BUILD)/vmboot --selfcheck
 	cd .. && src/$(BUILD)/scxcheck --selfcheck

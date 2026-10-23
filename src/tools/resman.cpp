@@ -7,15 +7,22 @@
 //   resman --selfcheck [GAME_DIR]
 //       assert-based check over GAME_DIR/system.rpk+.rdb and
 //       GAME_DIR/cars/racers/Axis.rpk+.rdb (default "bin/the game").
+//   resman --sounds [GAME_DIR]
+//       parse every res_sound record (type 6) in every paired .rpk under
+//       GAME_DIR, cross-check with the .rdb .rsd text, and parse/decode every
+//       WAV they reference (default "bin/the game").
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include <map>
 #include <string>
 #include <vector>
 
+#include "audio/sound.h"
+#include "platform/fs.h"
 #include "resource/manager.h"
 #include "script/vm.h"
 
@@ -24,7 +31,8 @@ static void usage()
     std::fprintf(stderr,
                  "usage:\n"
                  "  resman [--resolve ID] RPK RDB [RPK RDB ...]\n"
-                 "  resman --selfcheck [GAME_DIR]\n");
+                 "  resman --selfcheck [GAME_DIR]\n"
+                 "  resman --sounds [GAME_DIR]\n");
 }
 
 static bool parse_id(const char *s, uint32_t *out)
@@ -424,6 +432,177 @@ static int selfcheck(const char *game_dir)
     return c.failures ? 1 : 0;
 }
 
+// ---------------------------------------------------------------- sounds
+
+static char lower_ascii(char c)
+{
+    return c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
+}
+
+static bool iends_with(const std::string &s, const char *suffix)
+{
+    size_t n = strlen(suffix);
+    if (s.size() < n) return false;
+    for (size_t i = 0; i < n; i++)
+        if (lower_ascii(s[s.size() - n + i]) != lower_ascii(suffix[i])) return false;
+    return true;
+}
+
+static void find_rpks(const std::string &dir, std::vector<std::string> *out)
+{
+    std::vector<std::string> names;
+    if (!fs::list_dir(dir, &names)) return;
+    for (const std::string &name : names) {
+        if (name == "." || name == "..") continue;
+        std::string path = dir + "/" + name;
+        std::vector<std::string> sub;
+        if (fs::list_dir(path, &sub))   // a directory when its listing succeeds
+            find_rpks(path, out);
+        else if (iends_with(name, ".rpk"))
+            out->push_back(path);
+    }
+}
+
+static std::string sibling_rdb(const std::string &rpk)
+{
+    std::string stem = rpk.substr(0, rpk.size() - 4);
+    if (fs::exists(stem + ".rdb")) return stem + ".rdb";
+    if (fs::exists(stem + ".RDB")) return stem + ".RDB";
+    return std::string();
+}
+
+static bool same_params(const audio::SoundParams &a, const audio::SoundParams &b)
+{
+    return a.sourcefile == b.sourcefile && a.volume == b.volume &&
+           a.mindist == b.mindist && a.maxdist == b.maxdist &&
+           a.instances == b.instances && a.flags == b.flags;
+}
+
+static int sounds(const char *game_dir)
+{
+    std::printf("resman sounds: %s\n", game_dir);
+
+    std::vector<std::string> rpks;
+    find_rpks(game_dir, &rpks);
+
+    size_t paired = 0, opened = 0, open_failures = 0;
+    size_t records = 0, without_source = 0;
+    size_t compared = 0, no_rsd = 0, mismatches = 0;
+    size_t missing_files = 0, read_failures = 0;
+    size_t wav_ok = 0, wav_failures = 0, decode_ok = 0, rejected = 0;
+    std::map<uint16_t, size_t> rejected_bits;
+    std::string first_mismatch, first_wav_failure;
+
+    for (const std::string &rpk_path : rpks) {
+        std::string rdb_path = sibling_rdb(rpk_path);
+        if (rdb_path.empty()) continue;
+        paired++;
+
+        ResourceManager mgr;
+        std::string err;
+        if (!mgr.open(rpk_path.c_str(), rdb_path.c_str(), &err)) {
+            open_failures++;
+            std::printf("  open FAILED %s: %s\n", rpk_path.c_str(), err.c_str());
+            continue;
+        }
+        opened++;
+
+        const Package &pkg = mgr.package(0);
+        for (const RpkRecord &rec : pkg.rpk.records) {
+            if (rec.type != 6 || rec.data_size == 0) continue;
+            records++;
+
+            audio::SoundParams p;
+            bool have_src = audio::parse_sound_params(
+                (const char *)pkg.rpk.data(rec), rec.data_size, &p);
+
+            const RdbResource *res = pkg.rdb.find(rec.id);
+            if (res && res->has_rsd) {
+                compared++;
+                audio::SoundParams rp;
+                audio::parse_sound_params(res->rsd.data(), res->rsd.size(), &rp);
+                if (!same_params(p, rp)) {
+                    mismatches++;
+                    if (first_mismatch.empty()) {
+                        char id[16];
+                        std::snprintf(id, sizeof id, "0x%08x", rec.id);
+                        first_mismatch = rpk_path + " " + id + " \"" + rec.name + "\"";
+                    }
+                }
+            } else {
+                no_rsd++;
+            }
+
+            if (!have_src) {
+                without_source++;
+                continue;
+            }
+            std::string path = mgr.resolve_path(p.sourcefile);
+            if (path.empty()) {
+                missing_files++;
+                continue;
+            }
+            std::vector<uint8_t> bytes;
+            std::string e;
+            if (!fs::read_file(path, &bytes, &e)) {
+                read_failures++;
+                if (first_wav_failure.empty()) first_wav_failure = path + ": " + e;
+                continue;
+            }
+            audio::WavView w;
+            int r = audio::parse_wav(bytes.data(), bytes.size(), &w);
+            if (r != 0) {
+                wav_failures++;
+                if (first_wav_failure.empty()) {
+                    char code[16];
+                    std::snprintf(code, sizeof code, "%d", r);
+                    first_wav_failure = path + ": parse_wav " + code;
+                }
+                continue;
+            }
+            wav_ok++;
+            std::vector<int16_t> stereo;
+            if (audio::decode_pcm(w, &stereo))
+                decode_ok++;
+            else {
+                rejected++;
+                rejected_bits[w.bits]++;
+            }
+        }
+    }
+
+    Checker c;
+    c.check(mismatches == 0,
+            "0 rpk/rdb sound parameter mismatches over " + std::to_string(compared) +
+                " record(s)" + (first_mismatch.empty() ? "" : ", first " + first_mismatch));
+    c.check(wav_failures == 0,
+            "0 WAV parse failures over " + std::to_string(wav_ok + wav_failures) +
+                " WAV(s)" + (first_wav_failure.empty() ? "" : ", first " + first_wav_failure));
+
+    std::printf("packages: %zu .rpk, %zu paired, %zu opened, %zu open failure(s)\n",
+                rpks.size(), paired, opened, open_failures);
+    std::printf("sounds: %zu type-6 record(s) with data, %zu without sourcefile\n",
+                records, without_source);
+    std::printf("rsd: %zu compared with .rdb, %zu without .rdb .rsd, %zu mismatch(es)\n",
+                compared, no_rsd, mismatches);
+    std::printf("files: %zu missing, %zu unreadable\n", missing_files, read_failures);
+    std::printf("wav: %zu parsed, %zu failure(s); decode: %zu ok, %zu rejected",
+                wav_ok, wav_failures, decode_ok, rejected);
+    if (!rejected_bits.empty()) {
+        std::printf(" (");
+        bool first = true;
+        for (const auto &kv : rejected_bits) {
+            std::printf("%s%u-bit", first ? "" : ", ", (unsigned)kv.first);
+            first = false;
+        }
+        std::printf(")");
+    }
+    std::printf("\n");
+    std::printf("sounds: %s (%d check(s), %d failure(s))\n",
+                c.failures ? "FAILED" : "PASSED", c.checks, c.failures);
+    return c.failures ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -432,6 +611,8 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "--selfcheck") == 0)
         return selfcheck(argc >= 3 ? argv[2] : "bin/the game");
+    if (strcmp(argv[1], "--sounds") == 0)
+        return sounds(argc >= 3 ? argv[2] : "bin/the game");
 
     uint32_t resolve_target = 0;
     bool have_resolve = false;
