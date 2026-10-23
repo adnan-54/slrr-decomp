@@ -34,11 +34,11 @@ bool ieq(const std::string &a, const std::string &b)
     return true;
 }
 
-// "X.java" -> "X" for ext ".java"; "" unless the text after the FIRST '.' is
-// exactly ext (0x55fd90: "name up to the first '.'").
+// "X.java" -> "X" for ext ".java"; "" unless the text from the LAST '.' is
+// exactly ext (0x55fd90 uses 0x569370 = strrchr; the name ends at that dot).
 std::string stem(const std::string &file, const char *ext)
 {
-    size_t dot = file.find('.');
+    size_t dot = file.rfind('.');
     if (dot == std::string::npos) return std::string();
     if (file.compare(dot, std::string::npos, ext) != 0) return std::string();
     return file.substr(0, dot);

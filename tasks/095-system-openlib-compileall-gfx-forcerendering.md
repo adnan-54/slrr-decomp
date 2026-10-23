@@ -100,7 +100,8 @@ argument (cf. the 0x4dc91d comment). Manager singleton = `[0x5db008]`.
     UNRESOLVED: the first argument of the 0x5598f0 call, raw line
     `FUN_00569340(local_448,local_148,iVar6 + (-3 - (int)local_148));` (path prefix
     derivation not decoded — irrelevant once the call is skipped).
-    The `.java` test uses the FIRST dot (`strchr`), not a suffix test.
+    CORRECTION (2026-10-23): 0x569370 is strrchr, so the `.java` test is on the LAST dot
+    (a suffix test); src fixed in compile_scan.
 
 ## Changes
 1. `src/resource/manager.h`

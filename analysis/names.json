@@ -1957,5 +1957,15 @@
   "0x501e10": "PhysicsWorld__setWater",
   "0x4f8330": "PhysicsWorld__addWaterLimit",
   "0x527140": "Str__vscan",
-  "0x569380": "Str__scan"
+  "0x569380": "Str__scan",
+  "0x569370": "crt_strrchr",
+  "0x5282d0": "crt_strrchr_impl",
+  "0x569330": "crt_strchr",
+  "0x528090": "crt_strchr_impl",
+  "0x569730": "Timer__nowMs",
+  "0x55caf0": "JavaMachine__runThreads",
+  "0x55cf20": "JavaMachine__tick",
+  "0x55fc10": "Package__findDir",
+  "0x55f780": "Package__register",
+  "0x55ccc0": "JVM__init"
 }

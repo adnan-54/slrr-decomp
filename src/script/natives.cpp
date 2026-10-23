@@ -2698,8 +2698,8 @@ int32_t compile_scan(const std::string &dir)
             if (e.is_dir) {
                 n += compile_scan(base + e.name);
             } else {
-                // Exe test is the FIRST dot (strchr), not a suffix test.
-                size_t dot = e.name.find('.');
+                // 0x569370 = strrchr: the text after the LAST dot must be ".java".
+                size_t dot = e.name.rfind('.');
                 if (dot != std::string::npos &&
                     e.name.compare(dot, std::string::npos, ".java") == 0)
                     n++;  // 0x5598f0(dir, ...) skipped: no Java compiler

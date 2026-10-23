@@ -59,7 +59,7 @@ Address range of the VM code: roughly **0x548c40–0x565000** (~360 functions). 
 - Adding a directory (0x55f550) also adds every subdirectory as a child package node (0x560180), so
   `java.util.resource` = `system\scripts\util\resource` without its own registration.
 - A directory's class names (0x55fd90, lazy): `src\*.java` names first, then `*.class` names not yet
-  listed; name = text before the first '.'.
+  listed; name = text before the LAST '.' (0x569370 = strrchr; 0x569330 = strchr).
 - getClass(name) 0x55add0: loaded class table (hash, 0x55af50) -> else 0x55c0c0: findDir 0x55fc10 walks the
   tree by dotted segments, returns the first directory of the leaf package whose listing has the
   class name -> 0x55bec0 (compileSource if stale, read `dir\Name.class`). Not found -> "JVM::getClass:
