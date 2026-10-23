@@ -1,6 +1,6 @@
 ---
 id: 064
-status: draft
+status: todo
 branch:
 depends: []
 ---
@@ -198,3 +198,6 @@ masks; nplay and stop use different ones.
   this session (Ghidra prints bare `DAT_` labels; raw line
   `FUN_004ec980(local_8,&DAT_005a34d8)`); they are `x`/`y`/`z` per notes/06 line 420.
   The port therefore reads `"x"`, `"y"`, `"z"` by name.
+
+## Gate (Claude)
+Approved as the no-service port. Follow-up needed: process-wide SFX service (VoicePool + AudioAssets owner + sound-resource parser), then re-open the posting path.
