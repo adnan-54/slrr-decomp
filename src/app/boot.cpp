@@ -117,24 +117,46 @@ const BootResult &Boot::run(const std::string &rpk)
 // 0x47d760 control gate.
 void FrameLoop::frame(int now_ms)
 {
-    if (now_ms - last_control_ms_ > 15) {
-        input::update((float)(now_ms - last_control_ms_) * 0.001f);  // 0x566160
-        // shortcut: sim step 0x47e050 not ported.
-        if (Runtime *rt = Runtime::active()) {
+    Runtime *rt = Runtime::active();
+    if (rt && rt->vm()) natives::set_clock(*rt->vm(), now_ms);
+
+    if (now_ms - last_control_ms_ >= 16) {  // exe: cmp eax,0x10; jl
+        float dt = (float)(now_ms - last_control_ms_) * 0.001f;
+        input::update(dt);  // 0x566160
+        if (rt) {
             rt->flush_deferred();  // 0x47d070 (end of sim step 0x47e050)
-            if (rt->vm())
+            if (rt->vm()) {
+                natives::advance_sim(*rt->vm(), dt);  // 0x47e050 clock part
                 rt->run_timers((float)natives::sim_time(*rt->vm()));  // 0x47b700
+            }
         }
         last_control_ms_ = now_ms;
     }
 
+    // 0x47d760: VM tick every >= 8 ms; last_vm_ms_ advances even without a VM.
+    if (now_ms - last_vm_ms_ >= 8) {  // exe: cmp eax,8; jl
+        // INVENTED: game+0x234 is treated as set whenever a VM exists;
+        // 0x55cf20's GC work is not ported, only its runThreads call.
+        if (rt && rt->vm()) natives::run_threads(*rt->vm(), 10.0f, 0);
+        last_vm_ms_ = now_ms;
+    }
+
     // 0x47d760: per-frame deferred flush, then listener + voice service,
     // both outside the 15 ms control gate.
-    if (Runtime *rt = Runtime::active()) rt->flush_deferred();  // 0x47d070
+    if (rt) rt->flush_deferred();  // 0x47d070
     // No camera in src = the exe's DAT_005f1e44 <= 0 branch: listener at the origin.
     audio::SfxService &sfx = audio::sfx_service();
     const float listener[3] = {0.0f, 0.0f, 0.0f};
     for (int i = 0; i < 3; i++) sfx.pool.listener[i] = listener[i];  // 0x568bb0
     sfx.mixer.set_listener(listener);                                 // 0x546cd0
     sfx.pool.service(*sfx.backend);                                   // 0x5690a0
+
+    // 0x47dc80: wake scripts waiting on java.render.Frontend.render.
+    if (rt && rt->vm() && rt->vm()->find_class("java.render.Frontend")) {
+        Value v;
+        std::string e;
+        if (rt->vm()->get_static_field("java.render.Frontend", "render", &v, &e) &&
+            v.kind == Value::Obj && v.obj)
+            natives::monitor_notify_all(*rt->vm(), v.obj);  // 0x54d3a0
+    }
 }

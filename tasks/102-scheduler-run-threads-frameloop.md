@@ -1,7 +1,7 @@
 ---
 id: 102
-status: todo
-branch:
+status: implemented
+branch: card/102
 depends: [101]
 ---
 # script VM: JavaMachine::runThreads (0x55caf0) from the frame loop; sim clock; Frontend render wake

@@ -1528,6 +1528,19 @@ bool Vm::get_instance_field(Object *obj, const std::string &name, Value *out,
     return materialize(obj->fields[idx], out, err);
 }
 
+bool Vm::get_static_field(const std::string &cls, const std::string &name, Value *out,
+                          std::string *err)
+{
+    ClassState *cs = find_class(cls);
+    ClassState *owner = nullptr;
+    size_t slot = 0;
+    if (!cs || !find_static(cs, &name, nullptr, &owner, &slot)) return false;
+    // 0x549750 runs the class static init before reading the slot.
+    if (!ensure_static(owner, slot, err)) return false;
+    *out = owner->statics[slot];
+    return true;
+}
+
 bool Vm::set_instance_field(Object *obj, const std::string &name, const Value &value,
                             std::string *err)
 {

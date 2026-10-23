@@ -19,5 +19,13 @@ const std::vector<Entry> &table();
 void install(Vm &vm);
 // 0x60251c Scheduler::sim_seconds, the clock behind System.simTime.
 double sim_time(Vm &vm);
+// 0x55caf0 JavaMachine::runThreads: one pass over the thread run list.
+void run_threads(Vm &vm, float budget_ms, int min_prio);
+// 0x569730: the frame loop's millisecond clock, read by Thread.sleep.
+void set_clock(Vm &vm, double now_ms);
+// 0x54d3a0: drain an object's monitor wait list (Object.notifyAll body).
+void monitor_notify_all(Vm &vm, Object *o);
+// 0x47e050: advance the sim clock by min(warp * dt, 0.1f).
+void advance_sim(Vm &vm, float dt);
 
 }  // namespace natives

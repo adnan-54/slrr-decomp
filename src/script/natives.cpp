@@ -147,7 +147,7 @@ struct Scheduler {
     int load_priority = 0;       // 0x5fe3bc
     bool pumping = false;
     // 0x54d430 gets the executing engine Thread as ctx+4; the equivalent here is the
-    // ScriptThreadState whose slice is running (set by pump_threads).
+    // ScriptThreadState whose slice is running (set by run_threads).
     ScriptThreadState *current = nullptr;
     // Receiver's wait list: the exe keeps a T_Container* at object+0x14. Object
     // identity is the key; entries are appended and popped at the tail (LIFO).
@@ -194,35 +194,6 @@ const ClassUnit *class_state_unit(ClassState *st)
     const ClassUnit *unit = nullptr;
     if (st) ::memcpy(&unit, st, sizeof unit);
     return unit;
-}
-
-// One 256-token slice per started, unsuspended thread. Runners are kept after
-// completion (and after stop) so a script cannot destroy the Thread object that
-// is currently on the pump's stack.
-void pump_threads(Vm &vm)
-{
-    Scheduler &s = sched(vm);
-    if (s.pumping) return;
-    s.pumping = true;
-    for (size_t i = 0; i < s.threads.size(); i++) {
-        ScriptThreadState *t = s.threads[i].get();
-        // 0x55caf0: sleep expires when wake(+0x30) < now (strict).
-        if (t->sleeping && t->wake_ms < s.now_ms) t->sleeping = false;
-        if (!t->runner || t->suspended || t->done || t->waiting || t->sleeping ||
-            !t->started || t->in_slice)
-            continue;
-        t->in_slice = true;
-        s.current = t;  // ctx+4
-        Thread::Status st = t->runner->run_slice(256);
-        s.current = nullptr;
-        t->in_slice = false;
-        if (st == Thread::Yielded) continue;
-        if (st == Thread::Failed)
-            std::fprintf(stderr, "vm thread failed: %s\n", t->runner->error().c_str());
-        t->started = false;
-        t->done = true;
-    }
-    s.pumping = false;
 }
 
 bool thread_init(Vm &vm, const Args &a, Value *out, std::string *err)
@@ -1404,7 +1375,7 @@ void monitor_notify_thread(ScriptThreadState *t)
     if (!t->waiting) std::fprintf(stderr, "Thread::notify: not waiting\n");
     t->waiting = false;
     // shortcut: exe skips the run-list relink when thread+0x2c bit 0x20 is set
-    // (meaning UNRESOLVED); pump_threads already gates suspended/done threads.
+    // (meaning UNRESOLVED); run_threads already gates suspended/done threads.
 }
 
 // 0x4e0440 Object.wait()V -> 0x54d430(monitor, ctx+4 thread) -> 0x564950.
@@ -1457,12 +1428,7 @@ bool object_notify_all(Vm &vm, const Args &a, Value *out, std::string *err)
         !get_o("Object.notifyAll", a[0], &o, err))
         return false;
     *out = Value::make_null();
-    Scheduler &s = sched(vm);
-    auto it = s.monitors.find(o);
-    if (it == s.monitors.end()) return true;
-    for (size_t i = it->second.size(); i-- > 0;)  // exe pops tail first
-        monitor_notify_thread(it->second[i]);
-    s.monitors.erase(it);
+    natives::monitor_notify_all(vm, o);
     return true;
 }
 
@@ -7285,6 +7251,71 @@ namespace natives {
 
 // 0x60251c: the same clock System.simTime (0x4e5810) returns.
 double sim_time(Vm &vm) { return sched(vm).sim_seconds; }
+
+// 0x569730 clock, passed in by the host frame loop.
+void set_clock(Vm &vm, double now_ms) { sched(vm).now_ms = now_ms; }
+
+// 0x55caf0 JavaMachine::runThreads(float budget_ms, int min_prio).
+// The run list is registration order (INVENTED: the exe re-appends woken and
+// resumed threads at the tail; the vector order is stable). Runners are kept
+// after completion (and after stop) so a script cannot destroy the Thread
+// object that is currently on the pump's stack.
+// shortcut: src has no per-slice wall clock, so one call makes ONE pass and each
+// eligible thread gets run_slice(256). The exe gives it s*q ms with
+// q = min(budget, 10) and s = prio < 0 ? (prio + 10) * 0.089999996f + 0.1f
+// : prio * 9.9f + 1.0f.
+void run_threads(Vm &vm, float budget_ms, int min_prio)
+{
+    (void)budget_ms;
+    Scheduler &s = sched(vm);
+    if (s.pumping) return;
+    s.pumping = true;
+    for (size_t i = 0; i < s.threads.size(); i++) {
+        ScriptThreadState *t = s.threads[i].get();
+        // 0x55caf0: dead (0x80) / waiting (0x10) / suspended (0x20) are off the
+        // run list, and flags 0x44 block a slice.
+        if (!t->runner || !t->started || t->done || t->waiting || t->suspended ||
+            t->in_slice || min_prio > t->priority)
+            continue;
+        // 0x55caf0: sleep expires when wake(+0x30) < now (strict).
+        if (t->sleeping && t->wake_ms < s.now_ms) t->sleeping = false;
+        if (t->sleeping) continue;
+        t->in_slice = true;
+        s.current = t;  // ctx+4
+        Thread::Status st = t->runner->run_slice(256);
+        s.current = nullptr;
+        t->in_slice = false;
+        if (st == Thread::Yielded) continue;
+        if (st == Thread::Failed)
+            std::fprintf(stderr, "vm thread failed: %s\n", t->runner->error().c_str());
+        // 0x55caf0: flags 0x40 (finished) -> 0x80 (dead).
+        t->started = false;
+        t->done = true;
+    }
+    s.pumping = false;
+}
+
+// 0x54d3a0: drain the object's wait list, tail to head.
+void monitor_notify_all(Vm &vm, Object *o)
+{
+    Scheduler &s = sched(vm);
+    auto it = s.monitors.find(o);
+    if (it == s.monitors.end()) return;
+    for (size_t i = it->second.size(); i-- > 0;)  // exe pops tail first
+        monitor_notify_thread(it->second[i]);
+    s.monitors.erase(it);
+}
+
+// 0x47e050 control step, clock part: step = min(warp * dt, 0.1f).
+// shortcut: the exe advances the physics world's clock in world sub-steps
+// (0x502060); src has no world in the frame loop, so the whole step is added.
+void advance_sim(Vm &vm, float dt)
+{
+    Scheduler &s = sched(vm);
+    if (s.quit_request) return;  // 0x5f0c74
+    float step = std::min(s.warp * dt, 0.1f);  // 0x5da468
+    if (step > 0) s.sim_seconds += step;
+}
 
 const std::vector<Entry> &table()
 {

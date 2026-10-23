@@ -192,6 +192,9 @@ class Vm {
     // Named instance field access for natives that manipulate script objects.
     bool get_instance_field(Object *obj, const std::string &name, Value *out,
                             std::string *err) const;
+    // 0x549750: static field read; runs the field's initializer first.
+    bool get_static_field(const std::string &cls, const std::string &name, Value *out,
+                          std::string *err);
     bool set_instance_field(Object *obj, const std::string &name, const Value &value,
                             std::string *err);
 

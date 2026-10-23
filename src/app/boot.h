@@ -52,11 +52,12 @@ class Boot {
 // the last control step runs input::update (0x566160) with that interval.
 class FrameLoop {
   public:
-    explicit FrameLoop(int start_ms) : last_control_ms_(start_ms) {}
+    explicit FrameLoop(int start_ms) : last_control_ms_(start_ms), last_vm_ms_(start_ms) {}
     // now_ms: the 0x569730 millisecond clock truncated to int.
     void frame(int now_ms);
     int last_control_ms() const { return last_control_ms_; }
 
   private:
     int last_control_ms_;
+    int last_vm_ms_;
 };
