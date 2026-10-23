@@ -5832,6 +5832,43 @@ bool rr_set_matrix_bone(Vm &vm, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4e25d0 RenderRef.lineCreate(ResourceRef parent, ResourceRef type)I
+// 0x4e8ca0 creates render instance "line" (0x524840/0x40cac0/0x468b00/0x51bb30)
+// and stores the 0x15c-byte strip at typed+0x1c; the type ref's factory lives at
+// typed+0x2c. The exe returns 0 whenever any of those guards fails, which is
+// always here.
+// SERVICE MISSING: no render typed-data layer, no line factory, no instance.
+bool rr_line_create(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("RenderRef.lineCreate", a, 3, err)) return false;
+    *out = Value::make_int(0);
+    return true;
+}
+
+// 0x4e24f0 RenderRef.lineAdd(Vector3 p, Vector3 dir, I colour, F width)V
+// 0x4ec6a0 needs the receiver's typed data (T+0x1c line object created by
+// lineCreate) and calls 0x478690 to append a ribbon segment. Both are absent.
+// SERVICE MISSING: T+0x1c / 0x478690.
+bool rr_line_add(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("RenderRef.lineAdd", a, 5, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e2640 RenderRef.plotRoute(ResourceRef a, ResourceRef b, I colour, F density,
+// Vector3 scale)I
+// Samples the process route (0x5fe450 path, 0x5fe454 len, 0x5fe458 s, 0x5fe45c e)
+// and feeds each sample to 0x4ec6a0. src models no route (findRoute keeps no
+// globals), so the exe's first check, DAT_005fe450 == 0, always returns 0.
+// SERVICE MISSING: process route globals and the line service above.
+bool rr_plot_route(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("RenderRef.plotRoute", a, 6, err)) return false;
+    *out = Value::make_int(0);
+    return true;
+}
+
 // 0x4e29f0 RenderRef.setLight(III)V
 bool rr_set_light(Vm &, const Args &a, Value *out, std::string *err)
 {
@@ -7222,9 +7259,9 @@ const std::vector<Entry> &table()
     {"java.util.resource.RenderRef", "setType", "(Ljava.util.resource.ResourceRef;)V", rr_set_type, false},
     {"java.util.resource.RenderRef", "getTypeID", "()I", rr_get_type_id, false},
     {"java.util.resource.RenderRef", "getDetail", "()F", gr_get_detail, false},
-    {"java.util.resource.RenderRef", "lineCreate", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;)I", nullptr, true},
-    {"java.util.resource.RenderRef", "lineAdd", "(Ljava.lang.Vector3;Ljava.lang.Vector3;IF)V", nullptr, true},
-    {"java.util.resource.RenderRef", "plotRoute", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;IFLjava.lang.Vector3;)I", nullptr, true},
+    {"java.util.resource.RenderRef", "lineCreate", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;)I", rr_line_create, false},
+    {"java.util.resource.RenderRef", "lineAdd", "(Ljava.lang.Vector3;Ljava.lang.Vector3;IF)V", rr_line_add, false},
+    {"java.util.resource.RenderRef", "plotRoute", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;IFLjava.lang.Vector3;)I", rr_plot_route, false},
     {"java.util.resource.PhysicsRef", "create", "(Ljava.util.resource.ResourceRef;ILjava.lang.String;)V", nullptr, true},
     {"java.util.resource.PhysicsRef", "createBox", "(Ljava.util.resource.ResourceRef;FFFLjava.lang.String;)V", nullptr, true},
     {"java.util.resource.PhysicsRef", "createSphere", "(Ljava.util.resource.ResourceRef;FLjava.lang.String;)V", nullptr, true},
