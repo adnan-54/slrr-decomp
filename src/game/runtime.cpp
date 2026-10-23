@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "platform/fs.h"
+#include "script/natives.h"
 #include "script/vm.h"
 
 Runtime *Runtime::active_ = nullptr;
@@ -460,6 +461,26 @@ Runtime::Resource *Runtime::instantiate(Resource *type, Resource *parent,
         if (parent->instance) r->world_root = parent->world_root ? parent->world_root : parent;
     }
     if (scripted) r->script = script_instance(r);
+    // 0x523c80: a script class runs its <init> in a THRD-CREATE thread (prio 10,
+    // flags 0) with the new instance id as the single int argument, untimed.
+    // INVENTED: the exe binds the script object's native handle first (0x4ed320);
+    // src resolves it lazily via handle(obj), so there is nothing to bind here.
+    if (scripted && r->script && vm_) {
+        std::vector<Value> args{Value::make_int((int32_t)r->id)};
+        ClassState *decl = nullptr;
+        std::string e;
+        const MethodInfo *m =
+            vm_->find_method(r->script->cls, "<init>", "(I)V", 1, args, &decl, &e);
+        const ClassUnit *unit = class_state_unit(decl);
+        if (m && unit) {
+            natives::spawn_untimed(*vm_,
+                                   vm_->start(*unit, *m, r->script, args, &e), 10,
+                                   "THRD-CREATE");
+        } else {
+            // 0x561700 Thread::callMethod: missing method -> log, no run.
+            std::fprintf(stderr, "Thread::callMethod: \"<init>(I)V\" not found\n");
+        }
+    }
     (void)err;
     return r;
 }
@@ -499,10 +520,6 @@ Object *Runtime::script_instance(Resource *r)
     ClassState *cs = vm_->find_class(r->script_class);
     if (!cs) return nullptr;
     std::string err;
-    // The exe spawns the script constructor in a THRD-CREATE thread; the
-    // rebuild creates the instance with default fields and does not run it.
-    // shortcut: no constructor thread, upgrade when the script scheduler owns
-    // game-object creation.
     Object *o = vm_->new_object(cs, &err);
     if (!o) return nullptr;
     r->script = o;

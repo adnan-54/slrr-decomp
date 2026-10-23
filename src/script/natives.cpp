@@ -7255,6 +7255,40 @@ double sim_time(Vm &vm) { return sched(vm).sim_seconds; }
 // 0x569730 clock, passed in by the host frame loop.
 void set_clock(Vm &vm, double now_ms) { sched(vm).now_ms = now_ms; }
 
+// 0x5612f0 Thread::Thread(vm, prio, flags, name): append at the tail of the VM
+// run list. 0x562d70 Thread::run(0): budget 0 means no time check, so drain
+// slices until the frames finish or a mask-0xfa flag stops the thread. A
+// yielded thread stays registered for run_threads.
+bool spawn_untimed(Vm &vm, std::unique_ptr<Thread> runner, int32_t priority,
+                   const std::string &name)
+{
+    Scheduler &s = sched(vm);
+    if (!runner) return false;
+    std::unique_ptr<ScriptThreadState> up(new ScriptThreadState);
+    ScriptThreadState *t = up.get();
+    t->name = name;
+    t->priority = priority;
+    t->started = true;
+    t->runner = std::move(runner);
+    s.threads.push_back(std::move(up));
+    ScriptThreadState *saved = s.current;  // the caller may be a script thread
+    s.current = t;
+    t->in_slice = true;
+    Thread::Status st;
+    do {
+        st = t->runner->run_slice(256);
+    } while (st == Thread::Yielded && !t->sleeping && !t->waiting &&
+             !t->suspended && !t->done);
+    t->in_slice = false;
+    s.current = saved;
+    if (st == Thread::Yielded) return true;  // continue later in run_threads
+    if (st == Thread::Failed)
+        std::fprintf(stderr, "vm thread failed: %s\n", t->runner->error().c_str());
+    t->started = false;
+    t->done = true;
+    return st != Thread::Failed;
+}
+
 // 0x55caf0 JavaMachine::runThreads(float budget_ms, int min_prio).
 // The run list is registration order (INVENTED: the exe re-appends woken and
 // resumed threads at the tail; the vector order is stable). Runners are kept

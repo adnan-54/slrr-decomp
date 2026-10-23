@@ -21,6 +21,10 @@ void install(Vm &vm);
 double sim_time(Vm &vm);
 // 0x55caf0 JavaMachine::runThreads: one pass over the thread run list.
 void run_threads(Vm &vm, float budget_ms, int min_prio);
+// 0x5612f0 + 0x562d70(0): register a scheduler thread (prio, flags 0) and run it
+// untimed until it finishes or a flag stops it; returns false if it failed.
+bool spawn_untimed(Vm &vm, std::unique_ptr<Thread> runner, int32_t priority,
+                   const std::string &name);
 // 0x569730: the frame loop's millisecond clock, read by Thread.sleep.
 void set_clock(Vm &vm, double now_ms);
 // 0x54d3a0: drain an object's monitor wait list (Object.notifyAll body).

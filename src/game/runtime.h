@@ -181,8 +181,8 @@ class Runtime {
     int refs(const Resource *r) const { return r ? r->refs : 0; }
 
     // Create a game instance of type under parent. scripted selects the
-    // create/create_native pair; script objects are made but their constructor
-    // thread is not spawned.
+    // create/create_native pair; a script object's <init>(I) runs in the
+    // THRD-CREATE thread.
     Resource *instantiate(Resource *type, Resource *parent, const std::string &alias,
                           const std::string &params, bool scripted, std::string *err);
     void reparent(Resource *r, Resource *parent);

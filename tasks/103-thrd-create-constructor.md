@@ -1,7 +1,7 @@
 ---
 id: 103
-status: todo
-branch:
+status: implemented
+branch: card/103
 depends: [102]
 ---
 # game: scripted instance creation runs the constructor in a THRD-CREATE thread (0x523c80)
