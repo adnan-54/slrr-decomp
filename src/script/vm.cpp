@@ -322,6 +322,26 @@ static bool parse_params(const std::string &sig, std::vector<char> *out, int *ar
     return true;
 }
 
+// Parameter descriptors of "(...)R", one string per parameter ("I", "Lx;", "[F").
+static std::vector<std::string> param_descs(const std::string &sig)
+{
+    std::vector<std::string> out;
+    size_t i = 1;
+    while (i < sig.size() && sig[i] != ')') {
+        size_t start = i;
+        while (i < sig.size() && sig[i] == '[') i++;
+        if (i < sig.size() && sig[i] == 'L') {
+            size_t e = sig.find(';', i);
+            if (e == std::string::npos) break;
+            i = e + 1;
+        } else {
+            i++;
+        }
+        out.push_back(sig.substr(start, i - start));
+    }
+    return out;
+}
+
 static std::string return_desc(const std::string &sig)
 {
     size_t p = sig.rfind(')');
@@ -329,18 +349,27 @@ static std::string return_desc(const std::string &sig)
     return sig.substr(p + 1);
 }
 
-static int arg_score(char param, const Value &v)
+static bool is_instance_of(const Value &v, const std::string &desc, const Vm *vm = nullptr);
+
+// Per-argument match distance for overload choice (0x54a150 -> 0x5607d0: 0 =
+// exact, larger = needs conversion, -1 = no match).
+// shortcut: the exe matches the call site's STATIC argument types (0x560930);
+// src has runtime values only. An object/String assignable to the parameter
+// class costs 0, any other object 1 (lax, so calls whose parameter classes are
+// not loaded still resolve). 0x5607d0's exact cost table is not traced.
+static int arg_cost(char param, const std::string &pdesc, const Value &v, const Vm *vm)
 {
     switch (param) {
-    case 'I': return v.kind == Value::Int ? 2 : 0;
-    case 'F': return v.kind == Value::Float ? 2 : (v.kind == Value::Int ? 1 : 0);
+    case 'I': return v.kind == Value::Int ? 0 : -1;
+    case 'F': return v.kind == Value::Float ? 0 : (v.kind == Value::Int ? 1 : -1);
     case 'L':
-        return (v.kind == Value::Obj || v.kind == Value::Str || v.kind == Value::Array ||
-                v.kind == Value::Type)
-                   ? 2
-                   : (v.kind == Value::Null ? 1 : 0);
-    case '[': return v.kind == Value::Array ? 2 : (v.kind == Value::Null ? 1 : 0);
-    default: return v.kind == Value::Int && param == 'Z' ? 2 : 0;
+        if (v.kind == Value::Obj || v.kind == Value::Str)
+            return is_instance_of(v, pdesc, vm) ? 0 : 1;
+        return (v.kind == Value::Array || v.kind == Value::Type)
+                   ? 0
+                   : (v.kind == Value::Null ? 1 : -1);
+    case '[': return v.kind == Value::Array ? 0 : (v.kind == Value::Null ? 1 : -1);
+    default: return v.kind == Value::Int && param == 'Z' ? 0 : -1;
     }
 }
 
@@ -376,7 +405,25 @@ static bool find_static(ClassState *cs, const std::string *name, const std::stri
     return false;
 }
 
-static bool is_instance_of(const Value &v, const std::string &desc)
+// Does class state `s` (or a superclass) name `want`, directly or through its
+// interfaces? Interfaces' own super-interfaces are followed when the VM knows
+// them (find_class only, no loading).
+static bool class_is(const ClassState *s, const std::string &want, const Vm *vm, int depth = 0)
+{
+    if (depth > 32) return false;
+    for (; s; s = s->super) {
+        if (s->name == want) return true;
+        if (!s->unit) continue;
+        for (int32_t idx : s->unit->interfaces) {
+            std::string in = s->unit->class_name(idx);
+            if (in == want) return true;
+            if (vm && class_is(vm->find_class(in), want, vm, depth + 1)) return true;
+        }
+    }
+    return false;
+}
+
+static bool is_instance_of(const Value &v, const std::string &desc, const Vm *vm)
 {
     if (v.kind == Value::Null) return false;
     if (!desc.empty() && desc[0] == '[') return v.kind == Value::Array;
@@ -384,9 +431,7 @@ static bool is_instance_of(const Value &v, const std::string &desc)
     if (want.empty()) return false;
     if (v.kind == Value::Str) return want == "java.lang.String";
     if (v.kind != Value::Obj || !v.obj || !v.obj->cls) return false;
-    for (ClassState *s = v.obj->cls; s; s = s->super)
-        if (s->name == want) return true;
-    return false;
+    return class_is(v.obj->cls, want, vm);
 }
 
 static void fill_frame(Frame *f, ClassState *decl, const MethodInfo *m, Object *self,
@@ -423,7 +468,14 @@ static void fill_frame(Frame *f, ClassState *decl, const MethodInfo *m, Object *
 
 bool Thread::fail(const std::string &msg)
 {
-    error_ = (line_ ? "line " + std::to_string(line_) + ": " : "") + msg;
+    std::string where;
+    if (!frames_.empty() && frames_.back()->unit) {
+        const Frame &f = *frames_.back();
+        where = f.unit->class_name(f.unit->self_class);
+        const char *mn = f.method ? f.unit->str(f.method->name) : nullptr;
+        where += "." + std::string(mn ? mn : "<field init>") + " ";
+    }
+    error_ = where + (line_ ? "line " + std::to_string(line_) + ": " : "") + msg;
     return false;
 }
 
@@ -852,9 +904,12 @@ bool Thread::invoke(Frame &f, uint32_t op, uint32_t operand)
     if (m->is_static) {
         self = nullptr;
     } else if (!self) {
-        if (!have_recv || recv.kind != Value::Obj || !recv.obj)
+        // A String receiver is a Value, not an Object: its natives get it as
+        // `this` through the receiver argument of start_call.
+        bool str_recv = have_recv && recv.kind == Value::Str && (m->flags & 0x40);
+        if (!str_recv && (!have_recv || recv.kind != Value::Obj || !recv.obj))
             return fail("instance method " + name + " without receiver");
-        self = recv.obj;
+        if (!str_recv) self = recv.obj;
     }
     return start_call(decl, m, self, have_recv ? &recv : nullptr, &args, false);
 }
@@ -1209,7 +1264,7 @@ bool Thread::step()
             Value v;
             if (!pop(f, &v)) return false;
             if (!vm_->materialize(v, &v, &e)) return fail(e);
-            push(f, Value::make_int(is_instance_of(v, desc) ? 1 : 0));
+            push(f, Value::make_int(is_instance_of(v, desc, vm_) ? 1 : 0));
             return true;
         }
         if (f.pending_cast) {
@@ -1612,11 +1667,17 @@ const MethodInfo *Vm::find_method(ClassState *start, const std::string &name,
         *err = "method not found: " + start->name + "." + name + desc;
         return nullptr;
     }
+    // 0x54a150 Class::getMethod: classes from derived to base, each class's
+    // methods from the LAST declared to the first; a strictly smaller distance
+    // replaces the best (ties keep the first found, i.e. the later-declared
+    // overload; the exe logs "more matching methods found"); an exact match
+    // (distance 0) stops the search.
     const MethodInfo *best = nullptr;
     ClassState *bestdecl = nullptr;
-    int bestscore = -1;
-    for (ClassState *s = start; s; s = s->super) {
-        for (const MethodInfo &m : s->unit->methods) {
+    int bestcost = 1000000;
+    for (ClassState *s = start; s && bestcost != 0; s = s->super) {
+        for (size_t mi = s->unit->methods.size(); mi-- > 0;) {
+            const MethodInfo &m = s->unit->methods[mi];
             const char *n = s->unit->str(m.name);
             if (!n || name != n) continue;
             const char *sg = s->unit->str(m.sig);
@@ -1624,25 +1685,27 @@ const MethodInfo *Vm::find_method(ClassState *start, const std::string &name,
             std::vector<char> params;
             int arity = 0;
             if (!parse_params(sg, &params, &arity) || arity != argc) continue;
-            int score = 0;
+            std::vector<std::string> pdescs = param_descs(sg);
+            int cost = 0;
             bool ok = true;
             for (int i = 0; i < argc; i++) {
-                int sc = arg_score(params[(size_t)i], args[(size_t)i]);
-                if (!sc) {
+                int c = arg_cost(params[(size_t)i],
+                                 (size_t)i < pdescs.size() ? pdescs[(size_t)i] : std::string(),
+                                 args[(size_t)i], this);
+                if (c < 0) {
                     ok = false;
                     break;
                 }
-                score += sc;
+                cost += c;
             }
             if (!ok) continue;
-            if (score > bestscore) {
+            if (cost < bestcost) {
                 best = &m;
                 bestdecl = s;
-                bestscore = score;
-                if (score == 2 * argc) break;
+                bestcost = cost;
+                if (cost == 0) break;
             }
         }
-        if (best) break; // a derived class hides same-name overloads below it
     }
     if (!best) {
         *err = "method not found: " + start->name + "." + name + " (" +

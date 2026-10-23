@@ -70,3 +70,16 @@ Address range of the VM code: roughly **0x548c40–0x565000** (~360 functions). 
   directory by FQN; 75 under `sl\scripts\game\CareerEvents` / `Gamemodes` declare `package java.game`
   (parent package), so they are reachable only after a record loads them by path (which then adds that
   directory to `java.game`); 72 extra class units live in files named after another class.
+
+## Method/overload resolution (verified 2026-10-23)
+- Thread::callMethod 0x561700 builds the call descriptor from the STATIC types of the pushed arguments
+  (0x560930) and asks Class::getMethod 0x5494c0 (cache) -> 0x54a150: walk the class chain from the
+  start class to its bases; inside each class scan the methods from the LAST declared to the first;
+  0x5607d0 gives a match distance (0 exact, -1 no match); a strictly smaller distance replaces the
+  best, ties keep the first found (= later-declared overload) and log "Class::getMethod: more matching
+  methods found"; distance 0 stops the search.
+- src (vm.cpp find_method): same scan order and tie rule; distances come from runtime values
+  (assignable object/String 0, other object or null 1, int->float 1) - shortcut, 0x5607d0's table not
+  traced. Shipped case: 2.3.1 `Thread()` does `this(this)`; the exe takes `Thread(Runnable)` (declared
+  after `Thread(String)`), forward scanning took `Thread(String)` and broke identifyThread.
+- Member calls on a String receiver go to the String natives with the String value as `this`.
