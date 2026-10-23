@@ -5310,6 +5310,61 @@ bool tx_get_default_color(Vm &, const Args &, Value *out, std::string *)
     return true;
 }
 
+// 0x4e5c40 java.render.Text.changeColor(I)V
+// INVENTED: typed data T+0x17c mapped onto the bound Runtime::Resource.
+bool tx_change_color(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Text.changeColor", err)) return false;
+    Object *o;
+    int32_t color;
+    if (!receiver_object("Text.changeColor", a, &o, err) ||
+        !want("Text.changeColor", a, 2, err) ||
+        !get_i("Text.changeColor", a[1], &color, err))
+        return false;
+    Runtime::Handle *h = text_renderinst(vm, o);
+    Runtime::Resource *r = h ? h->target : nullptr;
+    if (r) r->text_color = (uint32_t)color;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e5bb0 java.render.Text.changeAlign(I)V
+// INVENTED: typed data T+0x174 mapped onto the bound Runtime::Resource.
+bool tx_change_align(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Text.changeAlign", err)) return false;
+    Object *o;
+    int32_t align;
+    if (!receiver_object("Text.changeAlign", a, &o, err) ||
+        !want("Text.changeAlign", a, 2, err) ||
+        !get_i("Text.changeAlign", a[1], &align, err))
+        return false;
+    Runtime::Handle *h = text_renderinst(vm, o);
+    Runtime::Resource *r = h ? h->target : nullptr;
+    if (r) r->text_align = align;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e5d80 java.render.Text.setScale(FF)V
+// shortcut: 0x4e5d80 scales the render nodes via T+0x114 (0x4d5f50/0x4d8710); src has no
+// such link, so this is the exe's no-link path (no effect).
+bool tx_set_scale(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Text.setScale", err)) return false;
+    Object *o;
+    float sx, sy;
+    if (!receiver_object("Text.setScale", a, &o, err) ||
+        !want("Text.setScale", a, 3, err) ||
+        !get_f("Text.setScale", a[1], &sx, err) ||
+        !get_f("Text.setScale", a[2], &sy, err))
+        return false;
+    (void)sx;
+    (void)sy;
+    *out = Value::make_null();
+    return true;
+}
+
 // ---- java.render.GfxEngine: video, flush, envmap (notes/12 §2, §9) --------
 
 // DAT_005ef0d4: 4-argument openVideo's extra option (0x44ef50 stores it).
@@ -6260,12 +6315,12 @@ const std::vector<Entry> &table()
     {"java.render.Viewport", "getLeft", "()F", vp_get_left, false},
     {"java.render.Viewport", "unproject", "(Ljava.lang.Vector3;I)Ljava.lang.Vector3;", nullptr, true},
     {"java.render.Viewport", "resize", "(FFFF)V", vp_resize, false},
-    {"java.render.Text", "setScale", "(FF)V", nullptr, true},
+    {"java.render.Text", "setScale", "(FF)V", tx_set_scale, false},
     {"java.render.Text", "setDefaultColor", "(I)V", tx_set_default_color, false},
     {"java.render.Text", "getDefaultColor", "()I", tx_get_default_color, false},
     {"java.render.Text", "create", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;FF)V", tx_create, false},
-    {"java.render.Text", "changeColor", "(I)V", nullptr, true},
-    {"java.render.Text", "changeAlign", "(I)V", nullptr, true},
+    {"java.render.Text", "changeColor", "(I)V", tx_change_color, false},
+    {"java.render.Text", "changeAlign", "(I)V", tx_change_align, false},
     {"java.render.Text", "setPos", "(FF)V", tx_set_pos, false},
     {"java.render.Text", "getPos", "()Ljava.lang.Vector3;", tx_get_pos, false},
     {"java.render.Text", "update", "()V", tx_update, false},

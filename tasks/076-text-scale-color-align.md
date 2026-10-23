@@ -1,7 +1,7 @@
 ---
 id: 076
-status: todo
-branch:
+status: implemented
+branch: card/076
 depends: []
 ---
 # render/script: java.render.Text setScale / changeColor / changeAlign
