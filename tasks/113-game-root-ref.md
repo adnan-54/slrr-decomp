@@ -1,7 +1,7 @@
 ---
 id: 113
-status: todo
-branch:
+status: implemented
+branch: card/113
 depends: [111]
 ---
 # runtime: game root ref (DAT_005fde50) as default parent of GameRef.create

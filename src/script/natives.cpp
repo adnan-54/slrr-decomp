@@ -2328,9 +2328,10 @@ bool gr_get_script_instance(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
-// 0x4da620: receiver handle required; type defaults to DAT_005fde50 in the exe
-// (not modeled); a zero parent id short-circuits to null. createScripted binds
-// the receiver handle to the new instance and returns its script instance.
+// 0x4da620: receiver handle required; a null parent defaults to the game root
+// ref DAT_005fde50 (runtime game_root); a zero parent id short-circuits to null.
+// createScripted binds the receiver handle to the new instance and returns its
+// script instance.
 bool gr_create(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!need_rt("GameRef.create", err)) return false;
@@ -2343,6 +2344,7 @@ bool gr_create(Vm &, const Args &a, Value *out, std::string *err)
     if (!h) return true;
     Runtime::Resource *parent = value_resource(a[1]);
     Runtime::Resource *type = value_resource(a[2]);
+    if (!parent) parent = rt->game_root();
     if (!parent || parent->id == 0 || !type) return true;
     Runtime::Resource *inst = rt->instantiate(type, parent, value_string(a, 4),
                                               value_string(a, 3), true, err);

@@ -189,6 +189,9 @@ class Runtime {
     // THRD-CREATE thread.
     Resource *instantiate(Resource *type, Resource *parent, const std::string &alias,
                           const std::string &params, bool scripted, std::string *err);
+    // DAT_005fde50: game root ref, lazily created; the default parent of
+    // GameRef.create and GameInit's instance. Name/type are INVENTED.
+    Resource *game_root();
     void reparent(Resource *r, Resource *parent);
     // Script object for a node's script class, created once and cached.
     Object *script_instance(Resource *r);
@@ -257,5 +260,6 @@ class Runtime {
     std::list<std::unique_ptr<Handle>> unload_q_, delete_q_;   // Game+0xe8 / +0x134
     uint32_t next_instance_id_ = 0x80000000u;
     uint32_t next_script_id_ = 1;  // INVENTED low word; 0x518a40 pool not traced
+    Resource *game_root_ = nullptr;   // DAT_005fde50
     static Runtime *active_;
 };

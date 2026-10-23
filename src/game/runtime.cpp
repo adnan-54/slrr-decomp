@@ -511,6 +511,13 @@ Runtime::Resource *Runtime::instantiate(Resource *type, Resource *parent,
     return r;
 }
 
+// DAT_005fde50 game root ref: one node for the process. Name/type INVENTED.
+Runtime::Resource *Runtime::game_root()
+{
+    if (!game_root_) game_root_ = instantiate(nullptr, nullptr, "GameRoot", "", false, nullptr);
+    return game_root_;
+}
+
 void Runtime::reparent(Resource *r, Resource *parent)
 {
     if (!r || r->parent == parent) return;

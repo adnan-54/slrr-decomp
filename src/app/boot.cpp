@@ -162,10 +162,8 @@ bool Boot::game_init(std::string *err)
         *err = "init: resource id " + std::to_string((uint32_t)v.i) + " does not resolve";
         return false;
     }
-    // INVENTED: the exe's parent is the game root ref DAT_005fde50, which src
-    // does not model -> null parent.
     Runtime::Resource *inst =
-        runtime_->instantiate(type, nullptr, "GameInit", "", true, &e);
+        runtime_->instantiate(type, runtime_->game_root(), "GameInit", "", true, &e);
     if (!inst) {
         *err = "init: instantiate GameInit: " + e;
         return false;
