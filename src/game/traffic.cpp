@@ -289,6 +289,33 @@ size_t Graph::node_count() const
     return cross_eq.size() + cross_light.size() + roads.size() + lanes.size();
 }
 
+// 0x419050 Traffic__nearestCross.
+const Cross *Graph::nearest_cross(float x, float y, float z, float dist, bool yflag) const
+{
+    const Cross *best = nullptr;
+    float best_key = 0.0f;   // the yflag slot before the first hit; unread then
+    for (int pass = 0; pass < 2; pass++) {
+        const std::vector<Cross> &list = pass == 0 ? cross_eq : cross_light;
+        for (size_t i = 0; i < list.size(); i++) {
+            const Cross &e = list[i];
+            if (yflag && !(fabsf(e.pos[1] - y) < 5.0f)) continue;
+            float dx = e.pos[0] - x, dy = e.pos[1] - y, dz = e.pos[2] - z;
+            float key = fabsf(sqrtf(dx * dx + dy * dy + dz * dz) - dist);
+            if (!best || key < best_key) {
+                best = &e;
+                best_key = key;
+            }
+        }
+    }
+    return best;
+}
+
+// 0x417c50 Traffic__clearHalts.
+void Graph::clear_halts()
+{
+    for (size_t i = 0; i < lanes.size(); i++) lanes[i].halted = false;
+}
+
 // 0x41a000 Traffic__load.
 bool Graph::load(const uint8_t *data, size_t size, size_t *consumed, std::string *err)
 {

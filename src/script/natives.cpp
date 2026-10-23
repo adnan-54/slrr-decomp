@@ -6277,11 +6277,13 @@ bool gr_halt_traffic_road(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
-// 0x4dd6c0 GroundRef.clearHalts()V: if (getInfo) Traffic__clearHalts().
-// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+// 0x4dd6c0 GroundRef.clearHalts()V: t = getInfo(h, 0x39); if (t) Traffic__clearHalts(t).
 bool gr_clear_halts(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!want("GroundRef.clearHalts", a, 1, err)) return false;
+    Runtime *rt = game_rt();
+    traffic::Graph *t = rt ? rt->ground_traffic(value_handle(a[0])) : nullptr;
+    if (t) t->clear_halts();
     *out = Value::make_null();
     return true;
 }
@@ -6302,12 +6304,27 @@ bool gr_set_traffic_cross_stop_offset(Vm &, const Args &a, Value *out, std::stri
 }
 
 // 0x4dd880 GroundRef.getNearestCross(Vector3,F)V3: pos == 0 -> 0; h == 0 -> 0;
-// !getInfo -> 0.
-// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
-bool gr_get_nearest_cross(Vm &, const Args &a, Value *out, std::string *err)
+// !getInfo -> 0; c = Traffic__nearestCross(t, x, y, z, dist, 0) -> c+0x24.
+// INVENTED: a null cross yields null; the exe dereferences it.
+bool gr_get_nearest_cross(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     if (!want("GroundRef.getNearestCross", a, 3, err)) return false;
     *out = Value::make_null();
+    if (a[1].kind == Value::Null) return true;
+    Object *o;
+    float pos[3], dist;
+    if (!get_o("GroundRef.getNearestCross", a[1], &o, err) ||
+        !vec_read(vm, o, pos, err) ||
+        !get_f("GroundRef.getNearestCross", a[2], &dist, err))
+        return false;
+    Runtime *rt = game_rt();
+    traffic::Graph *t = rt ? rt->ground_traffic(value_handle(a[0])) : nullptr;
+    if (!t) return true;
+    const traffic::Cross *c = t->nearest_cross(pos[0], pos[1], pos[2], dist, false);
+    if (!c) return true;   // INVENTED: the exe dereferences a null cross.
+    Object *v = new_point(vm, "java.lang.Vector3", c->pos, false, err);
+    if (!v) return false;
+    *out = Value::make_obj(v);
     return true;
 }
 

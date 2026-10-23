@@ -49,6 +49,9 @@ struct Graph {
     // INVENTED: ids instead of pointers; bounds checks the exe does not have.
     bool load(const uint8_t *data, size_t size, size_t *consumed, std::string *err);
     size_t node_count() const;  // eq + light + road + lane
+    // 0x419050: cross_eq first, then cross_light; first strict minimum wins.
+    const Cross *nearest_cross(float x, float y, float z, float dist, bool yflag) const;
+    void clear_halts();   // 0x417c50: every lane's halt flag (+0xc4) = 0
 };
 
 void segment_pos(const Segment &s, float d, float out[3]);   // 0x4134e0
