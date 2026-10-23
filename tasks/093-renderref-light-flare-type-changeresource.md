@@ -1,7 +1,7 @@
 ---
 id: 093
-status: todo
-branch:
+status: implemented
+branch: card/093
 depends: []
 ---
 # render/script: RenderRef setLight / setFlare / setType / changeResource

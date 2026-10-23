@@ -80,6 +80,21 @@ class Runtime {
             float local[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};  // +0x64..+0xa0
         };
         std::vector<Bone> bones;    // list order = name order
+        // Render-instance typed data (RI+0x108, vtable 0x5a7ec0; 0x4ebef0/0x4ebe00/
+        // 0x51e090). INVENTED mapping: the exe keeps these in the typed data block,
+        // src has no typed-data layer, so they live on the bound Resource.
+        float light_c0[3] = {};        // +0x10,+0x14,+0x18 setLight arg 1 (RGB)
+        float light_c1[3] = {};        // +0x30,+0x34,+0x38 setLight arg 2
+        float light_c2[3] = {};        // +0x20,+0x24,+0x28 setLight arg 3
+        Resource *flare_texture = nullptr; // +0xc4 ref node target (0x4ebe00)
+        float flare_f0 = 0.0f;         // +0xd4 first F
+        float flare_f1 = 0.0f;         // +0xd8 second F
+        int32_t flare_i0 = 0;          // +0xe0 first I
+        int32_t flare_i1 = 0;          // +0x100 second I
+        int32_t flare_i2 = 0;          // +0xe4 third I
+        Resource *type_resource = nullptr; // +0x108 ref node target (0x51e090)
+        uint32_t type_resource_id = 0;     // +0x110 ref node id (compared by setType)
+        bool type_relinked = false;        // +0x118 = 1 when the type link changed
         // res_viewport typed data (0x525120, notes/12 §9): +0xc depth/order,
         // +0x10..+0x1c relative x,y,w,h.
         // INVENTED: the exe keeps these in the typed data block, not on the RI.

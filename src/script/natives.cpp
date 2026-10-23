@@ -5832,6 +5832,98 @@ bool rr_set_matrix_bone(Vm &vm, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4e29f0 RenderRef.setLight(III)V
+bool rr_set_light(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("RenderRef.setLight", err)) return false;
+    Object *o;
+    int32_t c[3];
+    if (!receiver_object("RenderRef.setLight", a, &o, err) ||
+        !want("RenderRef.setLight", a, 4, err) ||
+        !get_i("RenderRef.setLight", a[1], &c[0], err) ||
+        !get_i("RenderRef.setLight", a[2], &c[1], err) ||
+        !get_i("RenderRef.setLight", a[3], &c[2], err))
+        return false;
+    *out = Value::make_null();
+    Runtime::Resource *r = value_resource(a[0]);
+    if (!r) return true;      // INVENTED: the exe dereferences a null handle
+    static const int sh[3] = {16, 8, 0};
+    float *dst[3] = {r->light_c0, r->light_c1, r->light_c2};
+    for (int k = 0; k < 3; ++k)
+        for (int i = 0; i < 3; ++i)
+            dst[k][i] = (float)((c[k] >> sh[i]) & 0xff) * 0.00390625f;
+    // shortcut: resident/typed fetch (0x51f4f0) and the dead extra-arg path
+    // (+0x4c/+0x54, always 0 from 0x4e29f0) are collapsed.
+    return true;
+}
+
+// 0x4e2950 RenderRef.setFlare(ResourceRef,IFFII)V
+bool rr_set_flare(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("RenderRef.setFlare", err)) return false;
+    Object *o;
+    int32_t i1, i2, i3;
+    float f1, f2;
+    if (!receiver_object("RenderRef.setFlare", a, &o, err) ||
+        !want("RenderRef.setFlare", a, 7, err) ||
+        !get_i("RenderRef.setFlare", a[2], &i1, err) ||
+        !get_f("RenderRef.setFlare", a[3], &f1, err) ||
+        !get_f("RenderRef.setFlare", a[4], &f2, err) ||
+        !get_i("RenderRef.setFlare", a[5], &i2, err) ||
+        !get_i("RenderRef.setFlare", a[6], &i3, err))
+        return false;
+    *out = Value::make_null();
+    Runtime::Resource *r = value_resource(a[0]);
+    if (!r) return true;      // INVENTED: the exe dereferences a null handle
+    Runtime::Handle *tex = value_handle(a[1]);
+    r->flare_texture = tex ? tex->target : nullptr;   // 0x4ebe00 T+0xc4 link
+    r->flare_f0 = f1;         // +0xd4
+    r->flare_f1 = f2;         // +0xd8
+    r->flare_i0 = i1;         // +0xe0
+    r->flare_i1 = i2;         // +0x100
+    r->flare_i2 = i3;         // +0xe4
+    // shortcut: the stack RefNode used only as a lifetime anchor, the resident
+    // call and the 0x51f4f0 fetch are collapsed.
+    return true;
+}
+
+// 0x4e2eb0 RenderRef.setType(ResourceRef)V
+bool rr_set_type(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("RenderRef.setType", err)) return false;
+    Object *o;
+    if (!receiver_object("RenderRef.setType", a, &o, err) ||
+        !want("RenderRef.setType", a, 2, err))
+        return false;
+    *out = Value::make_null();
+    Runtime::Resource *r = value_resource(a[0]);
+    if (!r) return true;      // INVENTED: the exe dereferences a null handle
+    Runtime::Handle *ref = value_handle(a[1]);
+    uint32_t id = ref ? ref->id : 0;
+    if (id != r->type_resource_id) {          // 0x51e090
+        r->type_resource = ref ? ref->target : nullptr;
+        r->type_resource_id = id;
+        r->type_relinked = true;
+    }
+    // shortcut: the resident call and the 0x51f4f0 fetch are collapsed.
+    return true;
+}
+
+// 0x4e2090 RenderRef.changeResource(ResourceRef,ResourceRef)V
+bool rr_change_resource(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("RenderRef.changeResource", err)) return false;
+    Object *o;
+    if (!receiver_object("RenderRef.changeResource", a, &o, err) ||
+        !want("RenderRef.changeResource", a, 3, err))
+        return false;
+    *out = Value::make_null();
+    // 0x4e2090 -> T->vf[+8](a, b); the render-instance data vtable 0x5a7ec0
+    // slot +8 is 0x46acd0 (XOR EAX,EAX; RET 8): both refs are ignored.
+    // shortcut: resident/typed-fetch side effects collapse to nothing in src.
+    return true;
+}
+
 // ---- java.render.Viewport lifecycle (0x4e6af0 / 0x4e6ab0 / 0x4e6c50 / 0x4e6c90)
 
 // 0x4e6af0 Viewport.create(IFFFF)V: unwrap the receiver, build a type-0x12
@@ -7123,11 +7215,11 @@ const std::vector<Entry> &table()
     {"java.util.resource.RenderRef", "getBoneId", "(Ljava.lang.String;)I", rr_get_bone_id, false},
     {"java.util.resource.RenderRef", "setMatrix", "(ILjava.util.resource.ResourceRef;Ljava.lang.Vector3;Ljava.lang.Ypr;)V", rr_set_matrix_bone, false},
     {"java.util.resource.RenderRef", "setMatrix", "(Ljava.lang.Vector3;Ljava.lang.Ypr;)V", rr_set_matrix, false},
-    {"java.util.resource.RenderRef", "changeResource", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;)V", nullptr, true},
+    {"java.util.resource.RenderRef", "changeResource", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;)V", rr_change_resource, false},
     {"java.util.resource.RenderRef", "setColor", "(I)V", rr_set_color, false},
-    {"java.util.resource.RenderRef", "setLight", "(III)V", nullptr, true},
-    {"java.util.resource.RenderRef", "setFlare", "(Ljava.util.resource.ResourceRef;IFFII)V", nullptr, true},
-    {"java.util.resource.RenderRef", "setType", "(Ljava.util.resource.ResourceRef;)V", nullptr, true},
+    {"java.util.resource.RenderRef", "setLight", "(III)V", rr_set_light, false},
+    {"java.util.resource.RenderRef", "setFlare", "(Ljava.util.resource.ResourceRef;IFFII)V", rr_set_flare, false},
+    {"java.util.resource.RenderRef", "setType", "(Ljava.util.resource.ResourceRef;)V", rr_set_type, false},
     {"java.util.resource.RenderRef", "getTypeID", "()I", rr_get_type_id, false},
     {"java.util.resource.RenderRef", "getDetail", "()F", gr_get_detail, false},
     {"java.util.resource.RenderRef", "lineCreate", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;)I", nullptr, true},
