@@ -11,6 +11,10 @@ for id in "$@"; do
 
 Co-Authored-By: DeepSeek V4 Flash <noreply@deepseek.com>"; fi
   git switch -q main 2>/dev/null
+  # agents sometimes name the branch card/<id>-<slug>; normalize it
+  alt=$(git branch --format='%(refname:short)' --list "card/$id-*" | head -1)
+  if ! git rev-parse -q --verify card/$id >/dev/null && [ -n "$alt" ]; then
+    git branch -m "$alt" card/$id; fi
   if ! git rev-parse -q --verify card/$id >/dev/null || [ "$(git rev-list --count main..card/$id)" = 0 ]; then
     echo "FAIL $id: no commit on card/$id"; git status --short | head; exit 1; fi
   if ! git merge -q --ff-only card/$id && ! git merge -q --no-edit card/$id; then echo "FAIL $id: merge"; exit 1; fi
