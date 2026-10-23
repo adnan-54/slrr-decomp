@@ -1,8 +1,8 @@
 ---
 id: 061
-status: blocked
+status: todo
 branch:
-depends: []
+depends: [063]
 ---
 # render: Viewport accessors (aspect / width / height / top / left / resize)
 
@@ -147,3 +147,9 @@ Blocked: without a producer (Viewport.create 0x4e6af0 -> 0x525120/0x40cac0) ever
 getter takes the fallback path, so porting now only adds an unused field. Re-open after
 the Viewport.create/destroy card (063) is traced and merged; fold the rect into that
 card's viewport object instead of `Runtime::Resource`.
+
+## Gate 2 (Claude) — SCOPE OVERRIDE after card 063
+Card 063 adds `Runtime::Resource::viewport_rect[4]` and binds it in `Viewport.create`.
+Do NOT edit src/game/runtime.h here: use the 063 field as is. Getters read
+`viewport_rect[0..3]` (left/top/width/height); `resize` writes it; both only when the
+bound resource's `type == 0x12`, otherwise the fallbacks below. Files: src/script/natives.cpp only.

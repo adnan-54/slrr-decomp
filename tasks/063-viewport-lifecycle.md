@@ -1,6 +1,6 @@
 ---
 id: 063
-status: draft
+status: todo
 branch:
 depends: []
 ---
@@ -201,3 +201,7 @@ the same words card 061's getters/resize read and write.
 - Nothing in `src/` attaches a handle to a plain `new Viewport` object; if the script class
   constructor does not call `ResourceRef.newNative` (as the Java side does), `create` always
   takes the exe's missing-handle branch.
+
+## Gate (Claude)
+0x525120 re-decompiled: type 0x12, "_viewport", res+0x98 = 1.0f, typed +0xc depth,
++0x10..+0x1c x,y,w,h all match. Approved.
