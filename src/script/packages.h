@@ -38,6 +38,8 @@ class PackageTree {
     void list_names(DirEntry *entry);                    // 0x55fd90
     std::string find_dir(Node *node, const std::string &fqn);  // 0x55fc10
     static size_t count_nodes(const Node *node);
+    static bool dir_elsewhere(const Node *node, const Node *self,
+                              const std::string &dir);   // 0x55fb50
 
     std::unique_ptr<Node> root_;
     std::string game_dir_;

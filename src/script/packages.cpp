@@ -116,13 +116,28 @@ int PackageTree::register_dir(Node *node, const std::string &dir,
     return add_dir(node, dir);
 }
 
-// 0x55f550 addDir + 0x560180 subdirectory scan: a dir already present returns
-// -1; otherwise every subdirectory (skip "." / "..") becomes a child node whose
-// ctor recursively registers the whole subtree.
+// 0x55fb50 (ECX = tree root via node+0xc): is dir registered at a node other
+// than self? self's whole subtree is skipped.
+bool PackageTree::dir_elsewhere(const Node *node, const Node *self, const std::string &dir)
+{
+    if (node == self) return false;
+    for (const DirEntry &e : node->dirs)
+        if (e.path == dir) return true;
+    for (const auto &child : node->children)
+        if (dir_elsewhere(child.get(), self, dir)) return true;
+    return false;
+}
+
+// 0x55f550 addDir + 0x560180 subdirectory scan: a dir registered at another
+// package returns -1 (0x55bec0 then logs "Package conflict"); a dir already on
+// this node returns 1 without rescanning; otherwise the dir is added and every
+// subdirectory (skip "." / "..") becomes a child node whose ctor recursively
+// registers the whole subtree.
 int PackageTree::add_dir(Node *node, const std::string &dir)
 {
-    for (const DirEntry &e : node->dirs)
-        if (e.path == dir) return -1;
+    if (dir_elsewhere(root_.get(), node, dir)) return -1;
+    for (size_t i = node->dirs.size(); i-- > 0;)   // exe scans from the end
+        if (node->dirs[i].path == dir) return 1;
     node->dirs.push_back(DirEntry{dir, {}, false});
 
     std::string disk = disk_path(dir);
