@@ -1,7 +1,7 @@
 ---
 id: 059
-status: todo
-branch: ""
+status: implemented
+branch: card/059
 depends: []
 ---
 # java.util.Steam: initAPI / neutralize / getPackage / setAchievement / resetAchievements

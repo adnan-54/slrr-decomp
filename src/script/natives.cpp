@@ -524,6 +524,80 @@ bool system_log(Vm &, const Args &a, Value *out, std::string *)
     return true;
 }
 
+// ---- java.util.Steam ------------------------------------------------------
+
+// 0x7a75df: global "neutralized" flag, read by 0x49446b, 0x494646, 0x49a4f8.
+bool steam_neutralized = false;
+
+// INVENTED: the engine has no Steam service, so every steam_api.dll call takes
+// its failure path and only the log line is observable.
+void steam_failure(const char *message)
+{
+    std::fprintf(stderr, "%s\n", message);
+}
+
+// 0x4e4c80 Steam.initAPI()I
+bool steam_init_api(Vm &, const Args &, Value *out, std::string *)
+{
+    // INVENTED: steam_init() (0x564af0) always fails without the Steam service.
+    steam_failure("vm_steam_init_api: Failed to initialize Steam API");
+    *out = Value::make_int(0);
+    return true;
+}
+
+// 0x4e4d40 Steam.neutralize()V (raw bytes c6 05 df 75 7a 00 01 c3)
+bool steam_neutralize(Vm &, const Args &, Value *out, std::string *)
+{
+    steam_neutralized = true;  // *(uint8_t*)0x7a75df = 1
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x564ac0: pure DLC-id -> directory mapping.
+const char *steam_package_dir(int32_t id)
+{
+    if (id < 0) return "Error! Invalid Steam package ID!";
+    if (id == 0x7d5dc) return "dlc\\redline_cars_remake_pack\\";
+    return "Invalid DLC ID!";
+}
+
+// 0x4e4c10 Steam.getPackage(I)Ljava.lang.String;
+bool steam_get_package(Vm &, const Args &a, Value *out, std::string *err)
+{
+    const char *who = "Steam.getPackage";
+    if (!want(who, a, 1, err)) return false;
+    int32_t id;
+    if (!get_i(who, a[0], &id, err)) return false;
+    // 0x564b10 only gates a second call to the same mapping; no Steam call needed.
+    // The exe also sets the remap flag DAT_007a75e4; ParseOptions::steam_version_remap
+    // already defaults to true.
+    *out = Value::make_str(steam_package_dir(id));
+    return true;
+}
+
+// 0x4e4e00 Steam.setAchievement(Ljava.lang.String;)V
+bool steam_set_achievement(Vm &, const Args &a, Value *out, std::string *err)
+{
+    const char *who = "Steam.setAchievement";
+    if (!want(who, a, 1, err)) return false;
+    const std::string *name;
+    if (!get_s(who, a[0], &name, err)) return false;
+    (void)name;
+    // INVENTED: 0x564b50 (SetAchievement + StoreStats) always fails.
+    steam_failure("vm_steam_set_achievement: Failed to set Steam achievement");
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e4d50 Steam.resetAchievements()V
+bool steam_reset_achievements(Vm &, const Args &, Value *out, std::string *)
+{
+    // INVENTED: 0x564b30 (ResetAllStats) always fails.
+    steam_failure("vm_steam_reset_achievements: Failed to reset Steam achievements");
+    *out = Value::make_null();
+    return true;
+}
+
 // ---- java.lang.Debug / java.util.Replay -----------------------------------
 
 bool file_path(const char *who, const std::string &in, std::string *out,
@@ -5089,11 +5163,11 @@ const std::vector<Entry> &table()
     {"java.lang.Object", "runMethod", "(Ljava.lang.String;)I", nullptr, true},
     {"java.net.NetworkEngine", "httpRequest", "(Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;)Ljava.lang.String;", nullptr, true},
     {"java.net.NetworkEngine", "httpRequestAsync", "(Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;Ljava.util.resource.GameRef;Ljava.lang.String;)I", nullptr, true},
-    {"java.util.Steam", "initAPI", "()I", nullptr, true},
-    {"java.util.Steam", "neutralize", "()V", nullptr, true},
-    {"java.util.Steam", "getPackage", "(I)Ljava.lang.String;", nullptr, true},
-    {"java.util.Steam", "setAchievement", "(Ljava.lang.String;)V", nullptr, true},
-    {"java.util.Steam", "resetAchievements", "()V", nullptr, true},
+    {"java.util.Steam", "initAPI", "()I", steam_init_api, false},
+    {"java.util.Steam", "neutralize", "()V", steam_neutralize, false},
+    {"java.util.Steam", "getPackage", "(I)Ljava.lang.String;", steam_get_package, false},
+    {"java.util.Steam", "setAchievement", "(Ljava.lang.String;)V", steam_set_achievement, false},
+    {"java.util.Steam", "resetAchievements", "()V", steam_reset_achievements, false},
     };
     return rows;
 }
