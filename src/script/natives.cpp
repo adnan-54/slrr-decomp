@@ -6146,6 +6146,288 @@ bool gr_set_fog(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// ---- GroundRef service-less natives (notes/19 §5) ------------------------
+// Each exe implementation reads its arguments, then gates on Game__getInfo(self,
+// 0x39) or (self, 0x3d). The gate resolves a native ground object through the
+// typed layer; src has neither, so it is always 0 here.
+
+// 0x4dc400 GroundRef.setWater(FFF)V: getArgs; if (h->RI) physics world set/clear.
+// SERVICE MISSING: no process-wide physics world (PhysicsWorld__setWater 0x501e10).
+bool gr_set_water(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.setWater", a, 4, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4dc2b0 GroundRef.setWater(Vector3,Vector3,FF)V: same, point/normal from the two Vector3.
+// SERVICE MISSING: no process-wide physics world (PhysicsWorld__setWater 0x501e10).
+bool gr_set_water_v(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.setWater", a, 5, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4da500 GroundRef.addWaterLimit(Vector3,Vector3)V: if (h->RI) PhysicsWorld__addWaterLimit.
+// SERVICE MISSING: no process-wide physics world (PhysicsWorld__setWater 0x501e10).
+bool gr_add_water_limit(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.addWaterLimit", a, 3, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4dd090 GroundRef.addTrafficCar(GameRef,Vector3)I: if (inst == 0) log, return 0;
+// if (!getInfo(h, 0x39)) return 0.
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+// INVENTED: the exe appends in "<file>" at line <n>; a NativeFn has no frame.
+bool gr_add_traffic_car(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.addTrafficCar", a, 3, err)) return false;
+    if (a[1].kind == Value::Null || (a[1].kind == Value::Obj && !a[1].obj))
+        std::fprintf(stderr, "vm_ground_addtrafficcar: Traffic car instance is null\n");
+    *out = Value::make_int(0);
+    return true;
+}
+
+// 0x4de520 GroundRef.remTrafficCar(I)V: if (car) TrafficCar__remove(car); ids are raw
+// car pointers, none exist.
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+bool gr_rem_traffic_car(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.remTrafficCar", a, 2, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4de5f0 GroundRef.notifyTrafficCar(II)I: if (car == 0) return 0.
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+bool gr_notify_traffic_car(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.notifyTrafficCar", a, 3, err)) return false;
+    *out = Value::make_int(0);
+    return true;
+}
+
+// 0x4dc9e0 GroundRef.addTrafficN(GameRef,IFFF)I: if (n < 1 || !getInfo(h, 0x39)) return 0.
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+bool gr_add_traffic_n(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.addTrafficN", a, 6, err)) return false;
+    *out = Value::make_int(0);
+    return true;
+}
+
+// 0x4dcdc0 GroundRef.addTrafficP(GameRef,Vector3,IFFF)I: if (n < 1 || !getInfo || pos == 0)
+// return 0.
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+bool gr_add_traffic_p(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.addTrafficP", a, 7, err)) return false;
+    *out = Value::make_int(0);
+    return true;
+}
+
+// 0x4dd840 GroundRef.delTraffic()V: if (getInfo(h, 0x39)) Traffic__clear().
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+bool gr_del_traffic(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.delTraffic", a, 1, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e6280 GroundRef.setTrafficCarBehaviour(II)V: if (car && car+0x138) car+0x160 = mode.
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+bool gr_set_traffic_car_behaviour(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.setTrafficCarBehaviour", a, 3, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4de360 GroundRef.haltTrafficCross(Vector3,F)V: if (getInfo) { nearestCross(pos);
+// cross->halt(time, 1) }.
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+bool gr_halt_traffic_cross(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.haltTrafficCross", a, 3, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4dd700 GroundRef.haltTrafficPath(Vector3,Vector3)V: if (p1 && p2 && getInfo)
+// Traffic__haltPath(p1, p2).
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+bool gr_halt_traffic_path(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.haltTrafficPath", a, 3, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4de270 GroundRef.haltTrafficRoad(Vector3,Vector3)V: if (p1 && p2 && getInfo)
+// Traffic__haltRoad(p1, p2).
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+bool gr_halt_traffic_road(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.haltTrafficRoad", a, 3, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4dd6c0 GroundRef.clearHalts()V: if (getInfo) Traffic__clearHalts().
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+bool gr_clear_halts(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.clearHalts", a, 1, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4dd7f0 GroundRef.setTrafficCrossStopOffset(F)V: if (t = getInfo) t+0x3140 = f.
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+bool gr_set_traffic_cross_stop_offset(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.setTrafficCrossStopOffset", a, 2, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4dd880 GroundRef.getNearestCross(Vector3,F)V3: pos == 0 -> 0; h == 0 -> 0;
+// !getInfo -> 0.
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+bool gr_get_nearest_cross(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.getNearestCross", a, 3, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4ddfb0 GroundRef.getStartDirection(Vector3,Vector3)V3: if (!getInfo) return 0.
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+bool gr_get_start_direction(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.getStartDirection", a, 3, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4ddc50 GroundRef.getRouteLength(Vector3,Vector3)F / findRoute: r = -1.0f;
+// if (p1 && p2 && getInfo) findRoute; return r.
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+bool gr_find_route(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.findRoute", a, 3, err)) return false;
+    *out = Value::make_float(-1.0f);
+    return true;
+}
+
+// 0x4ddc30 GroundRef.getRouteLength()F: return route(0x5fe450) ? routeLen(0x5fe454) : 0.0f.
+// shortcut: no route state until findRoute (0x417e50) is ported; the route is never set.
+bool gr_get_route_length(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.getRouteLength", a, 1, err)) return false;
+    *out = Value::make_float(0.0f);
+    return true;
+}
+
+// 0x4dde50 GroundRef.getRoutePos(F)V3: if (route == 0) return 0.
+// shortcut: no route state until findRoute (0x417e50) is ported; the route is never set.
+bool gr_get_route_pos(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.getRoutePos", a, 2, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4ddb50 GroundRef.getRouteDist(Vector3)F: r = -1.0f; if (route == 0 ||
+// !(0 < routeLen)) return 0.0f; if (pos == 0) return r.
+// shortcut: no route state until findRoute (0x417e50) is ported; the route is never set.
+bool gr_get_route_dist(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.getRouteDist", a, 2, err)) return false;
+    *out = Value::make_float(0.0f);
+    return true;
+}
+
+// 0x4dd470 GroundRef.alignToRoad(Vector3)V3[]: pos == 0 -> 0; h == 0 -> 0; !getInfo -> 0.
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+bool gr_align_to_road(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.alignToRoad", a, 2, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4de580 GroundRef.setPedestrianDensityN(F)V: if (getInfo(h, 0x3d))
+// Pedestrians__setDensity(d, d*1.1).
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x3d) is 0 (notes/19).
+bool gr_set_pedestrian_density_n(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.setPedestrianDensityN", a, 2, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4dc940 GroundRef.addPedestrianType(GameRef)V: if (getInfo(h, 0x3d)) { make type
+// resident; Pedestrians__addType(type) }.
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x3d) is 0 (notes/19).
+bool gr_add_pedestrian_type(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.addPedestrianType", a, 2, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4de4d0 GroundRef.removePedestrianType(GameRef)V: if (getInfo(h, 0x3d))
+// Pedestrians__removeType(type).
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x3d) is 0 (notes/19).
+bool gr_remove_pedestrian_type(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.removePedestrianType", a, 2, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4de420 GroundRef.pedestrianDistance(Vector3,I)F: if (!getInfo(h, 0x3d)) return -1.0f.
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x3d) is 0 (notes/19).
+bool gr_pedestrian_distance(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.pedestrianDistance", a, 3, err)) return false;
+    *out = Value::make_float(-1.0f);
+    return true;
+}
+
+// 0x4de1c0 GroundRef.getTrafficCarPos(I,Vector3)V: if (car) { pos = carPos(car);
+// out.x/y/z = pos }.
+// SERVICE MISSING: no native ground object, ids are raw car pointers and none exist.
+bool gr_get_traffic_car_pos(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.getTrafficCarPos", a, 3, err)) return false;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4dda10 GroundRef.getPedestrianPos(Vector3,Vector3,I)V: getArgs(self, &pos, &out,
+// &type); if (!getInfo(h, 0x3d)) { out.x = out.y = out.z = 0; return; }.
+// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x3d) is 0 (notes/19).
+// INVENTED: the exe writes through a null out object; the port skips a null argument.
+bool gr_get_pedestrian_pos(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GroundRef.getPedestrianPos", a, 4, err)) return false;
+    if (a[2].kind != Value::Null) {
+        Object *o;
+        if (!get_o("GroundRef.getPedestrianPos", a[2], &o, err)) return false;
+        if (!write_f(vm, o, "x", 0.0f, err) || !write_f(vm, o, "y", 0.0f, err) ||
+            !write_f(vm, o, "z", 0.0f, err))
+            return false;
+    }
+    *out = Value::make_null();
+    return true;
+}
+
 // ---- java.util.resource.Animation (notes/12 §9) -------------------------
 // All nine natives drive a render-side animation player: FUN_0051b8d0 creates
 // the 0xc0-byte player under a RenderRef resource instance and the operations
@@ -6625,36 +6907,36 @@ const std::vector<Entry> &table()
     {"java.util.resource.GameRef", "getPos", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", gr_get_pos_out, true},
     {"java.util.resource.GameRef", "getOri", "(Ljava.lang.Ypr;)Ljava.lang.Ypr;", gr_get_ori_out, true},
     {"java.util.resource.GameRef", "getVel", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", gr_get_vel_out, true},
-    {"java.util.resource.GroundRef", "setWater", "(FFF)V", nullptr, true},
-    {"java.util.resource.GroundRef", "setWater", "(Ljava.lang.Vector3;Ljava.lang.Vector3;FF)V", nullptr, true},
-    {"java.util.resource.GroundRef", "addWaterLimit", "(Ljava.lang.Vector3;Ljava.lang.Vector3;)V", nullptr, true},
+    {"java.util.resource.GroundRef", "setWater", "(FFF)V", gr_set_water, false},
+    {"java.util.resource.GroundRef", "setWater", "(Ljava.lang.Vector3;Ljava.lang.Vector3;FF)V", gr_set_water_v, false},
+    {"java.util.resource.GroundRef", "addWaterLimit", "(Ljava.lang.Vector3;Ljava.lang.Vector3;)V", gr_add_water_limit, false},
     {"java.util.resource.GroundRef", "setFog", "(IFF)V", gr_set_fog, false},
-    {"java.util.resource.GroundRef", "addTrafficCar", "(Ljava.util.resource.GameRef;Ljava.lang.Vector3;)I", nullptr, true},
-    {"java.util.resource.GroundRef", "remTrafficCar", "(I)V", nullptr, true},
-    {"java.util.resource.GroundRef", "notifyTrafficCar", "(II)I", nullptr, true},
-    {"java.util.resource.GroundRef", "addTrafficN", "(Ljava.util.resource.GameRef;IFFF)I", nullptr, true},
-    {"java.util.resource.GroundRef", "addTrafficP", "(Ljava.util.resource.GameRef;Ljava.lang.Vector3;IFFF)I", nullptr, true},
-    {"java.util.resource.GroundRef", "delTraffic", "()V", nullptr, true},
-    {"java.util.resource.GroundRef", "setTrafficCarBehaviour", "(II)V", nullptr, true},
-    {"java.util.resource.GroundRef", "haltTrafficCross", "(Ljava.lang.Vector3;F)V", nullptr, true},
-    {"java.util.resource.GroundRef", "haltTrafficPath", "(Ljava.lang.Vector3;Ljava.lang.Vector3;)V", nullptr, true},
-    {"java.util.resource.GroundRef", "haltTrafficRoad", "(Ljava.lang.Vector3;Ljava.lang.Vector3;)V", nullptr, true},
-    {"java.util.resource.GroundRef", "clearHalts", "()V", nullptr, true},
-    {"java.util.resource.GroundRef", "setTrafficCrossStopOffset", "(F)V", nullptr, true},
-    {"java.util.resource.GroundRef", "getNearestCross", "(Ljava.lang.Vector3;F)Ljava.lang.Vector3;", nullptr, true},
-    {"java.util.resource.GroundRef", "getStartDirection", "(Ljava.lang.Vector3;Ljava.lang.Vector3;)Ljava.lang.Vector3;", nullptr, true},
-    {"java.util.resource.GroundRef", "getRouteLength", "(Ljava.lang.Vector3;Ljava.lang.Vector3;)F", nullptr, true},
-    {"java.util.resource.GroundRef", "alignToRoad", "(Ljava.lang.Vector3;)[Ljava.lang.Vector3;", nullptr, true},
-    {"java.util.resource.GroundRef", "findRoute", "(Ljava.lang.Vector3;Ljava.lang.Vector3;)F", nullptr, true},
-    {"java.util.resource.GroundRef", "getRouteLength", "()F", nullptr, true},
-    {"java.util.resource.GroundRef", "getRoutePos", "(F)Ljava.lang.Vector3;", nullptr, true},
-    {"java.util.resource.GroundRef", "getRouteDist", "(Ljava.lang.Vector3;)F", nullptr, true},
-    {"java.util.resource.GroundRef", "setPedestrianDensityN", "(F)V", nullptr, true},
-    {"java.util.resource.GroundRef", "addPedestrianType", "(Ljava.util.resource.GameRef;)V", nullptr, true},
-    {"java.util.resource.GroundRef", "removePedestrianType", "(Ljava.util.resource.GameRef;)V", nullptr, true},
-    {"java.util.resource.GroundRef", "pedestrianDistance", "(Ljava.lang.Vector3;I)F", nullptr, true},
-    {"java.util.resource.GroundRef", "getTrafficCarPos", "(ILjava.lang.Vector3;)V", nullptr, true},
-    {"java.util.resource.GroundRef", "getPedestrianPos", "(Ljava.lang.Vector3;Ljava.lang.Vector3;I)V", nullptr, true},
+    {"java.util.resource.GroundRef", "addTrafficCar", "(Ljava.util.resource.GameRef;Ljava.lang.Vector3;)I", gr_add_traffic_car, false},
+    {"java.util.resource.GroundRef", "remTrafficCar", "(I)V", gr_rem_traffic_car, false},
+    {"java.util.resource.GroundRef", "notifyTrafficCar", "(II)I", gr_notify_traffic_car, false},
+    {"java.util.resource.GroundRef", "addTrafficN", "(Ljava.util.resource.GameRef;IFFF)I", gr_add_traffic_n, false},
+    {"java.util.resource.GroundRef", "addTrafficP", "(Ljava.util.resource.GameRef;Ljava.lang.Vector3;IFFF)I", gr_add_traffic_p, false},
+    {"java.util.resource.GroundRef", "delTraffic", "()V", gr_del_traffic, false},
+    {"java.util.resource.GroundRef", "setTrafficCarBehaviour", "(II)V", gr_set_traffic_car_behaviour, false},
+    {"java.util.resource.GroundRef", "haltTrafficCross", "(Ljava.lang.Vector3;F)V", gr_halt_traffic_cross, false},
+    {"java.util.resource.GroundRef", "haltTrafficPath", "(Ljava.lang.Vector3;Ljava.lang.Vector3;)V", gr_halt_traffic_path, false},
+    {"java.util.resource.GroundRef", "haltTrafficRoad", "(Ljava.lang.Vector3;Ljava.lang.Vector3;)V", gr_halt_traffic_road, false},
+    {"java.util.resource.GroundRef", "clearHalts", "()V", gr_clear_halts, false},
+    {"java.util.resource.GroundRef", "setTrafficCrossStopOffset", "(F)V", gr_set_traffic_cross_stop_offset, false},
+    {"java.util.resource.GroundRef", "getNearestCross", "(Ljava.lang.Vector3;F)Ljava.lang.Vector3;", gr_get_nearest_cross, false},
+    {"java.util.resource.GroundRef", "getStartDirection", "(Ljava.lang.Vector3;Ljava.lang.Vector3;)Ljava.lang.Vector3;", gr_get_start_direction, false},
+    {"java.util.resource.GroundRef", "getRouteLength", "(Ljava.lang.Vector3;Ljava.lang.Vector3;)F", gr_find_route, false},
+    {"java.util.resource.GroundRef", "alignToRoad", "(Ljava.lang.Vector3;)[Ljava.lang.Vector3;", gr_align_to_road, false},
+    {"java.util.resource.GroundRef", "findRoute", "(Ljava.lang.Vector3;Ljava.lang.Vector3;)F", gr_find_route, false},
+    {"java.util.resource.GroundRef", "getRouteLength", "()F", gr_get_route_length, false},
+    {"java.util.resource.GroundRef", "getRoutePos", "(F)Ljava.lang.Vector3;", gr_get_route_pos, false},
+    {"java.util.resource.GroundRef", "getRouteDist", "(Ljava.lang.Vector3;)F", gr_get_route_dist, false},
+    {"java.util.resource.GroundRef", "setPedestrianDensityN", "(F)V", gr_set_pedestrian_density_n, false},
+    {"java.util.resource.GroundRef", "addPedestrianType", "(Ljava.util.resource.GameRef;)V", gr_add_pedestrian_type, false},
+    {"java.util.resource.GroundRef", "removePedestrianType", "(Ljava.util.resource.GameRef;)V", gr_remove_pedestrian_type, false},
+    {"java.util.resource.GroundRef", "pedestrianDistance", "(Ljava.lang.Vector3;I)F", gr_pedestrian_distance, false},
+    {"java.util.resource.GroundRef", "getTrafficCarPos", "(ILjava.lang.Vector3;)V", gr_get_traffic_car_pos, false},
+    {"java.util.resource.GroundRef", "getPedestrianPos", "(Ljava.lang.Vector3;Ljava.lang.Vector3;I)V", gr_get_pedestrian_pos, false},
     {"java.util.resource.RenderRef", "create", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.RenderRef;Ljava.lang.String;)V", rr_create, false},
     {"java.util.resource.RenderRef", "getBoneId", "(Ljava.lang.String;)I", rr_get_bone_id, false},
     {"java.util.resource.RenderRef", "setMatrix", "(ILjava.util.resource.ResourceRef;Ljava.lang.Vector3;Ljava.lang.Ypr;)V", rr_set_matrix_bone, false},
