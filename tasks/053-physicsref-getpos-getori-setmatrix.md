@@ -1,6 +1,6 @@
 ---
 id: 053
-status: blocked  # needs untraced helpers or a missing service (physics body / collision / type manager); see UNRESOLVED
+status: todo
 branch:
 depends: []
 ---
@@ -167,3 +167,14 @@ pose-buffer service itself is not modelled in `src/`.
 - `gameObject()` internals: the RI vtable slot names (`+0x14` resident, `+0xc` typed object) and
   `Resource__getTyped(0xa0000000)` come from notes/13 §1 and were not re-traced for this card;
   the `+0xb4` state block exists only in the missing physics service.
+
+## Claude decision (overrides the null mapping above)
+Card 054 now creates the physics instance (inst->type = 2) and binds it to the receiver
+handle, so in the exe `gameObject()` is non-zero here and the pose comes from the body.
+Stand-in: keep a pose per physics instance (pos[3] + ypr[3], default 0) in a small side
+table in natives.cpp keyed by `Runtime::Resource*` (same style as other side tables there).
+setMatrix stores pos/ypr into it; getPos returns a new Vector3 from it; getOri a new Ypr.
+Only a handle with no bound resource gives null / no-op. Mark the table `INVENTED:` (stands
+in for the body state typed+0xb4, refreshed by 0x504180). After the change report the new
+`tools/vmboot-capped.sh --selfcheck | tail -3` stop line (GameInit stops at
+Osd.createButton line 1240 setMatrix today).
