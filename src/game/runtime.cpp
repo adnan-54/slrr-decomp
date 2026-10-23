@@ -65,6 +65,11 @@ Runtime::~Runtime()
     // the resources' ref lists do not outlive them.
     for (auto &t : timers_) unlink(&t->handle);
     timers_.clear();
+    // INVENTED: same cleanup for the deferred queues (dtor not traced).
+    for (auto &h : unload_q_) unlink(h.get());
+    for (auto &h : delete_q_) unlink(h.get());
+    unload_q_.clear();
+    delete_q_.clear();
     for (auto &kv : handles_) delete kv.second;
     handles_.clear();
 }
@@ -360,8 +365,8 @@ void Runtime::queue_event(Resource *target, Resource *sender, uint32_t code,
     };
     for (size_t i = 0; i < list.size(); i++) {
         const Resource::Notification &n = list[i];
-        // INVENTED: a null watcher never happens (no destroy hook) but the exe
-        // drops such entries; keep the check.
+        // INVENTED: a null watcher never happens but the exe drops such entries;
+        // zeroed by destroy's handle clear (0x51f970). Keep the check.
         if (!n.watcher) {
             drop(n);
             continue;
@@ -376,6 +381,120 @@ void Runtime::queue_event(Resource *target, Resource *sender, uint32_t code,
                         n.has_method ? n.method.c_str() : nullptr);
         if (n.mask & 0x80000000u) drop(n);
     }
+}
+
+// 0x47e340 Game__queueUnload / 0x47b970 Game__queueDelete: a ResourceRefDLNode
+// (0x47b090) owns a handle bound to the would-be-unloaded resource's id.
+void Runtime::queue_unload(Handle *h)
+{
+    auto n = std::make_unique<Handle>();
+    bind(n.get(), h->target);
+    unload_q_.push_back(std::move(n));
+}
+
+void Runtime::queue_delete(Handle *h)
+{
+    // 0x47b970 fetches typed data when the resource is a game instance; the
+    // result is unused, so there is no src effect.
+    auto n = std::make_unique<Handle>();
+    bind(n.get(), h->target);
+    delete_q_.push_back(std::move(n));
+}
+
+// 0x47d070 Game__flushDeferred: drain both lists until a pass does nothing.
+void Runtime::flush_deferred()
+{
+    bool work;
+    do {
+        work = false;
+        while (!unload_q_.empty()) {
+            // Process before pop_front: script code run by queue_event may append.
+            Handle *h = unload_q_.front().get();
+            if (h->id) {
+                Resource *r = h->target;
+                if (r) {
+                    if (r->type == 1) queue_event(r, nullptr, 2, Value::make_null());
+                    unload(r);
+                }
+                unlink(h);
+            }
+            unload_q_.pop_front();
+            work = true;
+        }
+        while (!delete_q_.empty()) {
+            Handle *h = delete_q_.front().get();
+            if (h->id) {
+                Resource *r = h->target;
+                if (r) {
+                    if (r->type == 1) queue_event(r, nullptr, 2, Value::make_null());
+                    unload(r);
+                    destroy(r);  // vf0(1); D3 zeroes h, so unlink is a no-op
+                }
+                unlink(h);
+            }
+            delete_q_.pop_front();
+            work = true;
+        }
+        // shortcut: generic list Game+0x1cc has no producer traced in src.
+    } while (work);
+    // shortcut: Game+0x234 -> 0x559f60 not traced; nothing to run.
+}
+
+// 0x51a1b0 unload, param 1 (type 1 game instance; other kinds carry no src state).
+void Runtime::unload(Resource *r)
+{
+    if (!r || r->type != 1) return;
+    // U1: game-instance children first (exe passes param|2).
+    std::vector<Resource *> children = r->children;
+    for (Resource *c : children)
+        if (c->type == 1) unload(c);
+    // U2: 0x54c600 unroots the script object then the slot is zeroed.
+    // shortcut: the src VM has no root list; dropping the pointer is the whole effect.
+    r->script = nullptr;
+    // U3: delete every notification on the instance.
+    r->notifications.clear();
+    // U4: destroy children of the same package or runtime-created ones. The exe
+    // tests id>>16 equal or 0xffff; src instance ids are 0x80000000+, so
+    // `instance` stands in for the runtime-created 0xffff prefix.
+    for (Resource *c : children)
+        if (c->instance || (c->package && c->package == r->package)) destroy(c);
+    // shortcut: +0x154 native instance dtor, "Undefined GameType Destructor"
+    // log, arrays +0x11c/+0x124/+0x13c/+0x150, handles +0x128/+0x140 and the
+    // loaded bit (0x51f790) have no src counterpart.
+}
+
+// vf0(1) common part: 0x519500 / 0x51b5a0 / 0x526bd0 -> 0x51ebe0 -> 0x569890.
+void Runtime::destroy(Resource *r)
+{
+    if (!r) return;
+    // D1: the class dtor runs its unload again (idempotent).
+    unload(r);
+    // D3: 0x51f970 ResourceNode__clearRefs; every bound handle is zeroed.
+    for (Handle *h = r->handles; h;) {
+        Handle *nx = h->next;
+        h->target = nullptr;
+        h->id = 0;
+        h->prev = h->next = nullptr;
+        h = nx;
+    }
+    r->handles = nullptr;
+    r->refs = 0;
+    // src keeps the watcher as a raw Resource* where the exe holds a handle that
+    // D3 just zeroed; drop those references here.
+    for (auto &kv : records_)
+        for (auto &n : kv.second->notifications)
+            if (n.watcher == r) n.watcher = nullptr;
+    for (auto &up : instances_)
+        for (auto &n : up->notifications)
+            if (n.watcher == r) n.watcher = nullptr;
+    // D4: 0x569890 TreeNode__dtor destroys every child recursively.
+    while (!r->children.empty()) destroy(r->children.front());
+    // D5: 0x569b70 TListNode__dtor leaves the parent's child list.
+    reparent(r, nullptr);
+    // shortcut: D2 (0x5173e0 id recycling) and D6 (memory free) are not
+    // modelled; the node stays in instances_/records_ because side tables keyed
+    // by Resource* (g_parts/g_cars, the controller map) would dangle. Upgrade
+    // when those tables get a destroy hook.
 }
 
 // 0x4e7a60 Handle::addTimer(due, flags, param, method), ECX = handle.

@@ -1623,10 +1623,19 @@ bool rr_unload(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!want("ResourceRef.unload", a, 1, err)) return false;
     *out = Value::make_null();
-    if (!value_handle(a[0]))
+    Runtime::Handle *h = value_handle(a[0]);
+    if (!h) {
         std::fprintf(stderr, "vm_resourceref_unload: scripted resource not found\n");
-    // shortcut: no release service in src. 0x4ec800: id != 0 && RI != 0 ->
-    // type == 1 ? deferred-unload queue 0x47e340 (global 0x5fde90) : vtbl +0x1c.
+        return true;
+    }
+    // 0x4ec800: game instances go to the deferred unload queue (0x47e340);
+    // every other kind unloads now (0x51a1b0 vf[+0x1c]).
+    if (h->id && h->target) {
+        if (h->target->type == 1)
+            game_rt()->queue_unload(h);
+        else
+            game_rt()->unload(h->target);
+    }
     return true;
 }
 
@@ -1659,11 +1668,9 @@ bool rr_destroy(Vm &, const Args &a, Value *out, std::string *err)
     if (!want("ResourceRef.destroy", a, 1, err)) return false;
     *out = Value::make_null();
     Runtime::Handle *h = value_handle(a[0]);
-    // 0x4e9450 (ECX = h) requires both id (+0x8) and RI (+0xc); only then
-    // 0x47b970 queues the deferred delete on global 0x5fde90.
-    // shortcut: no frame-end delete queue in src; detach removes the ref node
-    // now (card 063's mapping for the same helper). The Resource node stays.
-    if (h && h->id != 0 && h->target) game_rt()->detach(a[0].obj);
+    // 0x4e9450 (ECX = h) requires both id (+0x8) and RI (+0xc); 0x47b970 then
+    // appends the deferred delete node (drained by 0x47d070).
+    if (h && h->id && h->target) game_rt()->queue_delete(h);
     return true;
 }
 
@@ -5184,12 +5191,9 @@ bool vp_deactivate(Vm &, const Args &a, Value *out, std::string *err)
 }
 
 // 0x4e6c90 Viewport.destroy()V: 0x420b20 (deactivate) then 0x4e9450 queues the
-// handle on the delete queue 0x5fde90 (0x47b970).
+// handle on the delete list 0x5fde90 (0x47b970).
 // INVENTED: missing handle returns without logging (the exe logs "scripted
 // resource %x not found" and does nothing).
-// shortcut: src has no frame-end delete queue, so detach() frees the handle now
-// while the owned Resource node stays; upgrade when a deferred-delete queue exists.
-// UNRESOLVED: FUN_0047b090 builds the queue payload.
 bool vp_destroy(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!need_rt("Viewport.destroy", err)) return false;
@@ -5200,7 +5204,7 @@ bool vp_destroy(Vm &, const Args &a, Value *out, std::string *err)
     Runtime::Handle *h = game_rt()->handle(o);  // 0x4ecc70
     Runtime::Resource *r = h ? h->target : nullptr;
     if (r && r->type == 0x12) r->viewport_active = false;  // 0x420b20
-    if (h) game_rt()->detach(o);                           // 0x4e9450
+    if (h && h->id && h->target) game_rt()->queue_delete(h);  // 0x4e9450
     *out = Value::make_null();
     return true;
 }

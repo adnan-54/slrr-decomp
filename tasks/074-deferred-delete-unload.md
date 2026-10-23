@@ -1,7 +1,7 @@
 ---
 id: 074
-status: todo
-branch:
+status: implemented
+branch: card/074
 depends: [073]
 ---
 # game/script: Game deferred unload/delete queues + drain (ResourceRef.unload/destroy, Viewport.destroy)

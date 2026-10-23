@@ -141,6 +141,14 @@ class Runtime {
     // Value::Int, Value::Obj or Value::Null; method null = default handler name.
     void queue_event(Resource *target, Resource *sender, uint32_t code,
                      const Value &param, const char *method = nullptr);
+    // 0x47e340 / 0x47b970: append a ResourceRefDLNode (0x47b090) bound to h->target.
+    // Callers check h->id && h->target first (0x4ec800 / 0x4e9450).
+    void queue_unload(Handle *h);
+    void queue_delete(Handle *h);
+    // 0x47d070 Game__flushDeferred: drain both lists until a pass does nothing.
+    void flush_deferred();
+    // vf[+0x1c](1) for the kinds src models (0x51a1b0 type 1; others no-op).
+    void unload(Resource *r);
     // TimedEvent (0x4e7530): Game timer list +0x180, appended by 0x4e7a60.
     struct Timer {
         Handle handle;          // +0x24 own ref, bound to the receiver's resource
@@ -165,6 +173,7 @@ class Runtime {
                                   uint32_t *local) const;
     std::string script_class_of(const Package &pkg, const RpkRecord &rec) const;
     void unlink(Handle *h);
+    void destroy(Resource *r);   // vf0(1) common part, D1..D5
 
     ResourceManager *resources_ = nullptr;
     Vm *vm_ = nullptr;
@@ -173,6 +182,7 @@ class Runtime {
     std::vector<std::unique_ptr<Resource>> instances_;
     std::map<Object *, Handle *> handles_;
     std::list<std::unique_ptr<Timer>> timers_;
+    std::list<std::unique_ptr<Handle>> unload_q_, delete_q_;   // Game+0xe8 / +0x134
     uint32_t next_instance_id_ = 0x80000000u;
     static Runtime *active_;
 };
