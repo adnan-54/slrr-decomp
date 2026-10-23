@@ -1,6 +1,6 @@
 ---
 id: 095
-status: draft
+status: todo
 branch:
 depends: []
 ---
@@ -130,7 +130,8 @@ argument (cf. the 0x4dc91d comment). Manager singleton = `[0x5db008]`.
        passes the raw pointer to strlen/FindFirstFileA without a check).
        compile_scan: log "CompileAll: begin file scan..."; `if (dir.size() + 2 > 0xff)`
        -> log the "Path is too long! Can't compile %s" line and return 0; build
-       `dir` with a trailing `'/'` then `"*"`; `fs::find` (the FindFirstFileA/Next
+       `dir` with a trailing `'/'` (only when `dir` is non-empty and does not already end
+       in a separator: 0x555510 checks len != 0 first) then `"*"`; `fs::find` (the FindFirstFileA/Next
        wrappers); for each `fs::FindEntry`: skip `.`/`..`; `is_dir` ->
        `n += compile_scan(dir + "/" + name)`; else first dot via `find('.')` and
        `compare(dot, npos, ".java") == 0` -> `n++`; log "CompileAll: success!"; return n.
