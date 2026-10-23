@@ -1,7 +1,7 @@
 ---
 id: 078
-status: todo
-branch:
+status: implemented
+branch: card/078
 depends: []
 ---
 # script: System.info / isLoading / isLoadingReset / getConfigOptions

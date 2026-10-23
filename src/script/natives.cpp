@@ -892,6 +892,62 @@ bool system_mem_usage(Vm &, const Args &, Value *out, std::string *)
     return true;
 }
 
+// 0x4e55c0: jumps to 0x47c240, which reloads the gameplay settings into engine globals.
+bool system_get_config_options(Vm &, const Args &, Value *out, std::string *)
+{
+    // shortcut: no ConfigData store / renderer settings service in src; the exe
+    // reloads gameplay settings through 0x47c240 (int/float/has-key reads into
+    // ~40 globals), then re-creates two gfx resources at 0x422230.
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e5690: return *(int *)(*(int **)0x5db008 + 0x16d854); (raw bytes a1 08 b0 5d 00
+// 8b 80 54 d8 16 00 c3).
+bool system_is_loading(Vm &, const Args &, Value *out, std::string *)
+{
+    // shortcut: no async resource loader in src; the exe reads the per-type loading
+    // flag at [[0x5db008]+0x16d854], 0 until the streamer sets it.
+    *out = Value::make_int(0);
+    return true;
+}
+
+// 0x4e56a0: jmp 0x5191b0 with ecx = resource manager (unused by the target).
+bool system_is_loading_reset(Vm &, const Args &, Value *out, std::string *)
+{
+    // 0x5191b0: rate = *(int *)0x5db02c; for (i = 0; i < 32; i++)
+    //   *(int *)(0x773a20 + 4 * i) = rate;  *(int *)0x773a1c = rate << 5;
+    // shortcut: no streamer in src; the exe resets its per-frame load budget.
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e55d0: counts / VM fields formatted with "%d" into a 0x100 byte buffer.
+bool system_info(Vm &, const Args &a, Value *out, std::string *err)
+{
+    const char *who = "System.info";
+    int32_t n;
+    if (!want(who, a, 1, err) || !get_i(who, a[0], &n, err)) return false;
+    char buf[256];
+    switch (n) {
+    case 0:  // shortcut: no T_List<Thread> service in src; exe counts VM+0x18.
+    case 1:  // shortcut: no T_List<Thread> service in src; exe counts VM+0x1c.
+    case 2:  // shortcut: no T_List<Instance> service in src; exe counts VM+0x10.
+    case 3:  // UNRESOLVED: VM+0x24 writer not traced (ctor 0x553980 only zeroes it)
+             // — exe raw: uVar1 = *(undefined4 *)(*param_1 + 0x24);
+    case 4:  // UNRESOLVED: VM+0x28 writer not traced (ctor 0x553980 only zeroes it)
+             // — exe raw: uVar1 = *(undefined4 *)(*param_1 + 0x28);
+    case 5:  // 0x7a383c is 0 in the image
+        snprintf(buf, sizeof buf, "%d", (int)0);
+        *out = Value::make_str(buf);
+        return true;
+    default:  // the exe switch is unsigned, so negatives also land here
+        // INVENTED: exe builds a String from an uninitialised stack buffer; return "".
+        *out = Value::make_str("");
+        return true;
+    }
+}
+
 // ---- java.lang.Integer / Float --------------------------------------------
 
 bool int_tostring(Vm &, const Args &a, Value *out, std::string *err)
@@ -6296,14 +6352,14 @@ const std::vector<Entry> &table()
     {"java.lang.System", "timeWarp", "(F)F", system_time_warp, false},
     {"java.lang.System", "openLib", "(Ljava.lang.String;)I", nullptr, true},
     {"java.lang.System", "compileAll", "(Ljava.lang.String;)I", nullptr, true},
-    {"java.lang.System", "info", "(I)Ljava.lang.String;", nullptr, true},
+    {"java.lang.System", "info", "(I)Ljava.lang.String;", system_info, false},
     {"java.lang.System", "buildNumber", "()I", system_build_number, false},
     {"java.lang.System", "setLdPriority", "(I)V", system_set_ld_priority, false},
     {"java.lang.System", "syncGameTime", "(F)V", system_sync_game_time, false},
     {"java.lang.System", "setMeasure", "(F)V", system_set_measure, false},
-    {"java.lang.System", "getConfigOptions", "()V", nullptr, true},
-    {"java.lang.System", "isLoadingReset", "()V", nullptr, true},
-    {"java.lang.System", "isLoading", "()I", nullptr, true},
+    {"java.lang.System", "getConfigOptions", "()V", system_get_config_options, false},
+    {"java.lang.System", "isLoadingReset", "()V", system_is_loading_reset, false},
+    {"java.lang.System", "isLoading", "()I", system_is_loading, false},
     {"java.lang.System", "memUsage", "()I", system_mem_usage, false},
     {"java.lang.Float", "toString", "(FLjava.lang.String;)Ljava.lang.String;", float_tostring, false},
     {"java.lang.Integer", "toString", "(I)Ljava.lang.String;", int_tostring, false},
