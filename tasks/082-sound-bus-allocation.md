@@ -1,7 +1,7 @@
 ---
 id: 082
-status: todo
-branch:
+status: implemented
+branch: card/082
 depends: [081]
 ---
 # audio: bus allocation/release in SoftwareMixer (Sound__createBus) + post_event bus check

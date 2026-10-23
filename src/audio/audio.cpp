@@ -341,6 +341,8 @@ int post_event(VoicePool &pool, const AudioAssets &assets, int32_t resource,
     const AudioAssets::Asset *asset = assets.get(resource);
     if (!asset)
         return -1;
+    if (asset->bus < 0)
+        return -1;  // 0x4eb5c0: -1 < C+0x60 required
     float final_volume = asset->volume * volume;
     if (!(final_volume > kVolumeThreshold))
         return -1;

@@ -11,6 +11,9 @@ SoftwareMixer::SoftwareMixer()
         // Sound resource defaults of FUN_00525d90 (mindist 5, maxdist 1000).
         min_distance_[i] = 5.0f;
         max_distance_[i] = 1000.0f;
+        // set_sample users keep today's behaviour until create_bus overwrites.
+        voice_limit_[i] = kVoicesPerBus;
+        bus_3d_[i] = true;
     }
 }
 
@@ -57,6 +60,44 @@ float SoftwareMixer::bus_max_distance(int bus) const
     return bus >= 0 && bus < kBuses ? max_distance_[bus] : 0.0f;
 }
 
+// Sound__createBus 0x546860. INVENTED: the exe's "-1 when sound is not
+// initialised" has no src counterpart (the software mixer always exists).
+int SoftwareMixer::create_bus(const int16_t *pcm, size_t frames, int rate,
+                              int instances, bool is3d, float min_distance,
+                              float max_distance)
+{
+    int bus = 0;
+    while (bus < kBuses && samples_[bus].frames() > 0)
+        bus++;
+    if (bus >= kBuses)
+        return -1;
+    if (frames == 0 || pcm == nullptr)
+        return -2;
+    set_sample(bus, pcm, frames, rate);
+    set_bus_distances(bus, min_distance, max_distance);
+    voice_limit_[bus] = instances < 9 ? instances : 8;
+    bus_3d_[bus] = is3d;
+    return bus;
+}
+
+// Sound__releaseBus 0x546b40 -> 0x5474f0. INVENTED: the exe leaves limit/3D
+// until the bus is reused; resetting them keeps a stale bus_available() false.
+void SoftwareMixer::release_bus(int bus)
+{
+    if (bus < 0 || bus >= kBuses)
+        return;
+    for (int slot = 0; slot < kVoicesPerBus; slot++)
+        voices_[bus * kVoicesPerBus + slot].active = false;
+    clear_sample(bus);
+    voice_limit_[bus] = kVoicesPerBus;
+    bus_3d_[bus] = true;
+}
+
+bool SoftwareMixer::bus_3d(int bus) const
+{
+    return bus >= 0 && bus < kBuses && bus_3d_[bus];
+}
+
 void SoftwareMixer::set_listener(const float pos[3])
 {
     for (int i = 0; i < 3; i++)
@@ -93,11 +134,12 @@ float SoftwareMixer::distance_gain(int bus, const float pos[3],
 // FUN_005476e0 scales the event volume by the distance gain and only then
 // quantizes it through the dB table (0x5e0648); index 0 makes it return 0, so
 // the voice is not started (FUN_005466d0) or is stopped (FUN_00548630).
-// The bus 2D flag (sound resource flags bit0, DAT_0079d580) is not modelled.
+// The bus 3D flag (sound resource flags bit0, DAT_0079d580): a 2D bus never
+// gets distance gain (0x5466d0 ORs 4 into the voice flags).
 float SoftwareMixer::voice_gain(int bus, const Voice &voice) const
 {
     float volume = voice.volume;
-    if (!(voice.flags & kSfx2D))
+    if (!(voice.flags & kSfx2D) && bus_3d(bus))
         volume *= distance_gain(bus, voice.pos, voice.radius);
     return volume_gain(volume);
 }
@@ -165,7 +207,7 @@ int SoftwareMixer::mix(int16_t *out, int frames)
 
 int SoftwareMixer::bus_limit(int bus) const
 {
-    return bus >= 0 && bus < kBuses ? kVoicesPerBus : 0;
+    return bus >= 0 && bus < kBuses ? voice_limit_[bus] : 0;
 }
 
 bool SoftwareMixer::bus_available(int bus) const

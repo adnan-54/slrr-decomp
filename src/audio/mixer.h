@@ -33,6 +33,14 @@ class SoftwareMixer : public AudioBackend {
     void set_bus_distances(int bus, float min_distance, float max_distance);
     float bus_min_distance(int bus) const;
     float bus_max_distance(int bus) const;
+    // Sound__createBus 0x546860: first bus without a sample; -1 when none is free, -2 when
+    // the sample is empty (DSBuffer__createFromWav/0x5461e0 failure). frames of interleaved
+    // stereo at rate. instances -> voice limit min(instances, 8); min floored at 0.001.
+    int create_bus(const int16_t *pcm, size_t frames, int rate, int instances, bool is3d,
+                   float min_distance, float max_distance);
+    // Sound__releaseBus 0x546b40/0x5474f0: stop the bus voices and drop the sample.
+    void release_bus(int bus);
+    bool bus_3d(int bus) const;
     void set_listener(const float pos[3]);
     const float *listener() const { return listener_; }
     // Software distance gain of a 3D voice at pos/radius for its bus
@@ -73,6 +81,8 @@ class SoftwareMixer : public AudioBackend {
     MixSample samples_[kBuses];
     float min_distance_[kBuses];
     float max_distance_[kBuses];
+    int voice_limit_[kBuses];
+    bool bus_3d_[kBuses];
     MixVoice voices_[kBuses * kVoicesPerBus];
     float listener_[3] = {0.0f, 0.0f, 0.0f};
     int available_ = 4;
