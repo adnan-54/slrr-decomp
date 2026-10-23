@@ -1546,17 +1546,13 @@ bool rr_get_type_id(Vm &, const Args &a, Value *out, std::string *err)
     if (!need_rt("RenderRef.getTypeID", err)) return false;
     Object *o;
     if (!receiver_object("RenderRef.getTypeID", a, &o, err)) return false;
-    int32_t id = 0;
-    Runtime::Resource *r = value_resource(a[0]);
-    if (r && r->type == 3) {
-        // shortcut: render typed data (FUN_00421610(0xa0000001) +0x110) is not
-        // modeled; the exe also returns 0 when that fetch fails (0x4e23b0).
-    }
+    // shortcut: for type 3 the exe returns render typed data +0x110
+    // (FUN_00421610(0xa0000001)), not modeled; 0 is also its fetch-failure value.
     if (!value_handle(a[0])) {
         // INVENTED: the exe appends the id, file and line; a NativeFn has no frame.
         std::fprintf(stderr, "vm_renderref_gettype: scripted resource not found\n");
     }
-    *out = Value::make_int(id);
+    *out = Value::make_int(0);
     return true;
 }
 
