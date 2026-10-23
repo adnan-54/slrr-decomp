@@ -2033,6 +2033,80 @@ bool ph_create_sphere(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// INVENTED: the exe reads/writes the attached rigid body's pose (state = typed+0xb4,
+// pos at state+0x64+idx*0xd4, ypr at state+0xa4+idx*0xd4, refreshed by 0x504180);
+// src/ has no body service, so a physics instance keeps a stand-in pose here.
+struct PhysicsPose {
+    float pos[3] = {};
+    float ypr[3] = {};
+};
+// shortcut: entries are never freed (no instance-destroy hook yet).
+std::map<Runtime::Resource *, PhysicsPose> &physics_poses()
+{
+    static std::map<Runtime::Resource *, PhysicsPose> m;
+    return m;
+}
+
+// 0x4e1c40 PhysicsRef.getPos: new Vector3 from the scripted resource pose.
+bool ph_get_pos(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("PhysicsRef.getPos", err)) return false;
+    Object *o;
+    if (!receiver_object("PhysicsRef.getPos", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (!r) {  // exe: missing handle logs and returns null
+        *out = Value::make_null();
+        return true;
+    }
+    Object *v = new_point(vm, "java.lang.Vector3", physics_poses()[r].pos, false, err);
+    if (!v) return false;
+    *out = Value::make_obj(v);
+    return true;
+}
+
+// 0x4e1a40 PhysicsRef.getOri: new Ypr from the scripted resource pose.
+bool ph_get_ori(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("PhysicsRef.getOri", err)) return false;
+    Object *o;
+    if (!receiver_object("PhysicsRef.getOri", a, &o, err)) return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (!r) {  // exe: missing handle logs and returns null
+        *out = Value::make_null();
+        return true;
+    }
+    Object *v = new_point(vm, "java.lang.Ypr", physics_poses()[r].ypr, true, err);
+    if (!v) return false;
+    *out = Value::make_obj(v);
+    return true;
+}
+
+// 0x4e1e40 PhysicsRef.setMatrix(Vector3, Ypr); null arguments default to zeros.
+bool ph_set_matrix(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("PhysicsRef.setMatrix", err)) return false;
+    Object *o;
+    if (!receiver_object("PhysicsRef.setMatrix", a, &o, err) ||
+        !want("PhysicsRef.setMatrix", a, 3, err))
+        return false;
+    float pos[3], ypr[3];
+    if (!read_vec_arg(vm, "PhysicsRef.setMatrix", a[1], pos, err) ||
+        !read_ypr_arg(vm, "PhysicsRef.setMatrix", a[2], ypr, err))
+        return false;
+    Runtime::Resource *r = value_resource(a[0]);
+    if (r) {
+        PhysicsPose &p = physics_poses()[r];
+        for (int i = 0; i < 3; i++) {
+            p.pos[i] = pos[i];
+            p.ypr[i] = ypr[i];
+        }
+    }
+    // shortcut: the exe writes both pose buffers, matrix/quat and refreshes
+    // (0x504180); only one pose is stored here (INVENTED).
+    *out = Value::make_null();
+    return true;
+}
+
 // ---- java.util.resource.GameRef -------------------------------------------
 
 // 0x4daa40: RI+0x84. No missing-handle error in the exe; returns 0.
@@ -7854,9 +7928,9 @@ const std::vector<Entry> &table()
     {"java.util.resource.PhysicsRef", "create", "(Ljava.util.resource.ResourceRef;ILjava.lang.String;)V", ph_create, false},
     {"java.util.resource.PhysicsRef", "createBox", "(Ljava.util.resource.ResourceRef;FFFLjava.lang.String;)V", ph_create_box, false},
     {"java.util.resource.PhysicsRef", "createSphere", "(Ljava.util.resource.ResourceRef;FLjava.lang.String;)V", ph_create_sphere, false},
-    {"java.util.resource.PhysicsRef", "setMatrix", "(Ljava.lang.Vector3;Ljava.lang.Ypr;)V", nullptr, true},
-    {"java.util.resource.PhysicsRef", "getPos", "()Ljava.lang.Vector3;", nullptr, true},
-    {"java.util.resource.PhysicsRef", "getOri", "()Ljava.lang.Ypr;", nullptr, true},
+    {"java.util.resource.PhysicsRef", "setMatrix", "(Ljava.lang.Vector3;Ljava.lang.Ypr;)V", ph_set_matrix, false},
+    {"java.util.resource.PhysicsRef", "getPos", "()Ljava.lang.Vector3;", ph_get_pos, false},
+    {"java.util.resource.PhysicsRef", "getOri", "()Ljava.lang.Ypr;", ph_get_ori, false},
     {"java.util.resource.SfxRef", "nplay", "(Ljava.lang.Vector3;FFFII)I", sfxref_nplay, false},
     {"java.util.resource.SfxRef", "stop", "(I)V", sfxref_stop, false},
     {"java.game.Painter", "paintPart", "(Ljava.util.resource.GameRef;I)V", painter_paint_part, false},

@@ -1,7 +1,7 @@
 ---
 id: 053
-status: todo
-branch:
+status: implemented
+branch: card/053
 depends: []
 ---
 # PhysicsRef: getPos/getOri/setMatrix on the scripted resource
