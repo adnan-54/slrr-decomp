@@ -1,7 +1,7 @@
 ---
 id: 058
-status: todo
-branch: ""
+status: implemented
+branch: "card/058"
 depends: []
 ---
 # java.lang.Debug / java.util.Replay: error log and replay file natives

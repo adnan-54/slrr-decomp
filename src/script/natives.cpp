@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <string>
@@ -520,6 +521,183 @@ bool system_log(Vm &, const Args &a, Value *out, std::string *)
                                                                 : a[0].s;
     std::fprintf(stderr, "%s\n", s.c_str());
     *out = Value::make_null();
+    return true;
+}
+
+// ---- java.lang.Debug / java.util.Replay -----------------------------------
+
+bool file_path(const char *who, const std::string &in, std::string *out,
+               std::string *err);
+
+// 0x544fa0: append one line to error.log, CRLF-terminated. The first call in
+// the process writes a "---\r\n" header.
+// shortcut: exe never closes its 64 write handles, upgrade if exact slot exhaustion matters.
+void error_log(const char *text)
+{
+    static bool first = true;
+    FILE *f = std::fopen("error.log", "ab");
+    if (!f) return;
+    if (first) {
+        first = false;
+        std::fwrite("---\r\n", 1, 5, f);
+    }
+    std::fwrite(text, 1, strlen(text), f);
+    std::fwrite("\r\n", 1, 2, f);
+    std::fclose(f);
+}
+
+// 0x544e80: shared by errorEX (code 0) and giveWarning (code 9999). Texts other
+// than a null one go to error.log; a message box follows unless code > 9999, and
+// codes below 9999 exit the process.
+void debug_sink(int code, const char *text)
+{
+    if (!text) text = "Fatal Error";
+    else {
+        error_log(text);
+        if (code > 9999) return;
+    }
+    // INVENTED: no dialog service; the exe shows MessageBoxA(..., MB_ICONERROR).
+    std::fprintf(stderr, "%s\n", text);
+    if (code < 9999) std::exit(0);  // exe: _exit(code)
+}
+
+// 0x4d9350 Debug.errorEX(Ljava.lang.String;)V
+bool debug_error_ex(Vm &, const Args &a, Value *out, std::string *err)
+{
+    const std::string *msg;
+    if (!want("Debug.errorEX", a, 1, err) || !get_s("Debug.errorEX", a[0], &msg, err))
+        return false;
+    char buf[256];
+    snprintf(buf, sizeof buf, "%s", msg->c_str());
+    debug_sink(0, buf);
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4d9380 Debug.giveWarning(Ljava.lang.String;)V
+bool debug_give_warning(Vm &, const Args &a, Value *out, std::string *err)
+{
+    const std::string *msg;
+    if (!want("Debug.giveWarning", a, 1, err) ||
+        !get_s("Debug.giveWarning", a[0], &msg, err))
+        return false;
+    char buf[256];
+    snprintf(buf, sizeof buf, "%s", msg->c_str());
+    debug_sink(9999, buf);
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e30d0 Debug.writeFile / Replay.writeFile(String, String): arg0 is a printf
+// format with arg1 as its single string vararg, then <buffer> + CRLF is appended
+// to the named file (0x544ee0).
+bool debug_write_file(Vm &, const Args &a, Value *out, std::string *err)
+{
+    const std::string *path, *text;
+    if (!want("writeFile", a, 2, err) || !get_s("writeFile", a[0], &path, err) ||
+        !get_s("writeFile", a[1], &text, err))
+        return false;
+    char buf[256];
+    // shortcut: %d/%x/%f in the format string are not type-correct in C++, the exe reads the same stack slot as that type.
+    snprintf(buf, sizeof buf, path->c_str(), text->c_str());
+    FILE *f = std::fopen(buf, "ab");
+    if (f) {
+        std::fwrite(text->data(), 1, text->size(), f);
+        std::fwrite("\r\n", 1, 2, f);
+        std::fclose(f);
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+// ASCII case-insensitive equality, like CRTDLL _stricmp (0x57c167).
+bool str_ieq(const std::string &a, const char *b)
+{
+    size_t i = 0;
+    for (; i < a.size() && b[i]; i++) {
+        int ca = (unsigned char)a[i], cb = (unsigned char)b[i];
+        if (ca >= 'A' && ca <= 'Z') ca += 32;
+        if (cb >= 'A' && cb <= 'Z') cb += 32;
+        if (ca != cb) return false;
+    }
+    return i == a.size() && !b[i];
+}
+
+// strtok(3) over one line with the exe's delimiter set (0x528350).
+bool next_token(const std::string &line, size_t *pos, std::string *tok)
+{
+    static const char delims[] = " ,\t\n\r";
+    size_t i = *pos;
+    while (i < line.size() && strchr(delims, line[i])) i++;
+    if (i >= line.size()) {
+        *pos = i;
+        return false;
+    }
+    size_t start = i;
+    while (i < line.size() && !strchr(delims, line[i])) i++;
+    tok->assign(line, start, i - start);
+    *pos = i;
+    return true;
+}
+
+// 0x4e2f00 Replay.readFile(int index, String key, String path): float stored
+// under key for the frame whose "kf" is index + 1, read from a .rep file.
+bool replay_read_file(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t index;
+    const std::string *key, *path;
+    if (!want("Replay.readFile", a, 3, err) ||
+        !get_i("Replay.readFile", a[0], &index, err) ||
+        !get_s("Replay.readFile", a[1], &key, err) ||
+        !get_s("Replay.readFile", a[2], &path, err))
+        return false;
+    std::string p;
+    if (!file_path("Replay.readFile", *path, &p, err)) return false;
+    std::vector<uint8_t> data;
+    std::string rerr;
+    float result = 0.0f;
+    if (!fs::read_file(p, &data, &rerr)) {
+        *out = Value::make_float(result);  // exe returns 0.0 when open fails
+        return true;
+    }
+
+    bool in_replay = false;
+    int kf = 0;         // INVENTED: exe stack local is uninitialized
+    float value = 0.0f; // INVENTED: exe stack local is uninitialized
+    // shortcut: in-memory lines, exe reads with a fixed 1024-byte buffer and no bounds check.
+    size_t pos = 0;
+    while (pos < data.size()) {
+        size_t nl = pos;
+        while (nl < data.size() && data[nl] != '\n') nl++;
+        std::string line(reinterpret_cast<const char *>(&data[pos]), nl - pos);
+        pos = nl < data.size() ? nl + 1 : nl;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) {
+            if (!in_replay) continue;
+        } else if (!in_replay) {
+            if (line[0] == ';' || line[0] != '[' ||
+                line.find("[replay]") == std::string::npos)
+                continue;
+            in_replay = true;
+        }
+        size_t tp = 0;
+        std::string tok;
+        // INVENTED: a line of only delimiters yields no token; the exe would
+        // hand a null pointer to _stricmp.
+        if (!next_token(line, &tp, &tok)) continue;
+        if (str_ieq(tok, "kf")) {
+            std::string v;
+            if (next_token(line, &tp, &v)) sscanf(v.c_str(), "%d", &kf);
+        } else if (str_ieq(tok, key->c_str()) && index == kf - 1) {
+            std::string v;
+            if (next_token(line, &tp, &v)) sscanf(v.c_str(), "%f", &value);
+            // INVENTED: a missing value leaves the exe's uninitialized local;
+            // keep the previous value instead.
+            in_replay = false;
+            result = value;
+        }
+    }
+    *out = Value::make_float(result);
     return true;
 }
 
@@ -4898,12 +5076,12 @@ const std::vector<Entry> &table()
     {"java.game.Painter", "xPaint", "(Ljava.util.resource.GameRef;)V", nullptr, true},
     {"java.game.Navigator", "updateNavigator", "(Ljava.util.resource.GameRef;I)V", nullptr, true},
     {"java.game.Vehicle", "getSpeedSquare", "()F", veh_get_speed_square, false},
-    {"java.util.Replay", "writeFile", "(Ljava.lang.String;Ljava.lang.String;)V", nullptr, true},
-    {"java.util.Replay", "readFile", "(ILjava.lang.String;Ljava.lang.String;)F", nullptr, true},
-    {"java.lang.Debug", "writeFile", "(Ljava.lang.String;Ljava.lang.String;)V", nullptr, true},
+    {"java.util.Replay", "writeFile", "(Ljava.lang.String;Ljava.lang.String;)V", debug_write_file, false},
+    {"java.util.Replay", "readFile", "(ILjava.lang.String;Ljava.lang.String;)F", replay_read_file, false},
+    {"java.lang.Debug", "writeFile", "(Ljava.lang.String;Ljava.lang.String;)V", debug_write_file, false},
     {"java.lang.Object", "errorVM", "(Ljava.lang.String;)V", object_error_vm, false},
-    {"java.lang.Debug", "errorEX", "(Ljava.lang.String;)V", nullptr, true},
-    {"java.lang.Debug", "giveWarning", "(Ljava.lang.String;)V", nullptr, true},
+    {"java.lang.Debug", "errorEX", "(Ljava.lang.String;)V", debug_error_ex, false},
+    {"java.lang.Debug", "giveWarning", "(Ljava.lang.String;)V", debug_give_warning, false},
     {"java.lang.Object", "runDLL", "(Ljava.lang.String;Ljava.lang.String;Ljava.lang.String;[Ljava.lang.String;)Ljava.lang.String;", nullptr, true},
     {"java.lang.Object", "runMethod", "(Ljava.lang.String;I)I", nullptr, true},
     {"java.lang.Object", "runMethod", "(Ljava.lang.String;F)I", nullptr, true},
