@@ -279,8 +279,6 @@ void Runtime::mount_package(const Package *p)
     if (!p) return;
     for (const Package *m : mounted_) if (m == p) return;
     mounted_.push_back(p);   // mark first: parent resolution re-enters resolve
-    std::fprintf(stderr, "DBG mount %s records=%zu\n", p->mount.c_str(),
-                 p->rpk.records.size());
     // 0x518410: every record of a package is mounted at load.
     // INVENTED: create all nodes first. The exe resolves the super id only
     // against already-registered nodes and logs "Unregistrable node" when it

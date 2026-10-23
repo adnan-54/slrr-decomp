@@ -275,7 +275,7 @@ void walk_classes(const std::string &disk_dir, const std::string &pkg,
 
 void package_tree_check(Checker &c)
 {
-    jvm::PackageTree tree(".");   // DBG TEMP: cwd is the game dir
+    jvm::PackageTree tree(".");   // selfcheck() chdirs to the game dir
     tree.add_default_roots();
 
     TreeTally t;
@@ -301,10 +301,11 @@ void package_tree_check(Checker &c)
 int selfcheck()
 {
     Checker c;
-    // DBG TEMP: absolute game dir as cwd so rpkScan's FindFile finds the rpks.
+    // The exe runs with the game dir as cwd; script FindFile (System.rpkScan)
+    // patterns are relative to it.
     char cwd[4096];
     std::string abs = std::string(getcwd(cwd, sizeof cwd)) + "/" + kGameDir;
-    if (chdir(abs.c_str()) != 0) std::fprintf(stderr, "DBG chdir failed\n");
+    if (chdir(abs.c_str()) != 0) std::fprintf(stderr, "vmboot: chdir %s failed\n", abs.c_str());
     const std::string rpk = abs + "/system.rpk";
     std::printf("vmboot selfcheck: %s (rpk only)\n", rpk.c_str());
 
