@@ -4969,6 +4969,15 @@ bool snd_enable_debug_dump(Vm &, const Args &a, Value *out, std::string *err)
 // text renderer is created yet.
 uint32_t g_default_text_color = 0xffffffffu;
 
+// 0x4ecfc0: receiver's "renderinst" field (RenderRef) -> its native handle.
+Runtime::Handle *text_renderinst(Vm &vm, Object *self)
+{
+    Value v;
+    std::string e;
+    if (!vm.get_instance_field(self, "renderinst", &v, &e)) return nullptr;
+    return value_handle(v);
+}
+
 // 0x4e5cd0 java.render.Text.setDefaultColor: DAT_005dadac = color. The exe does
 // not read the receiver (FUN_004b1af0(ctx, 0, &color)).
 bool tx_set_default_color(Vm &, const Args &a, Value *out, std::string *err)
@@ -4986,6 +4995,76 @@ bool tx_set_default_color(Vm &, const Args &a, Value *out, std::string *err)
 bool tx_get_default_color(Vm &, const Args &, Value *out, std::string *)
 {
     *out = Value::make_int((int32_t)g_default_text_color);
+    return true;
+}
+
+// 0x4e5b30 java.render.Text.create(ResourceRef parent, ResourceRef charset, float x, float y)
+// INVENTED: the text state lives on the bound Runtime::Resource; the exe keeps it
+// in the render instance's typed data block.
+// shortcut: the bounds reset (+0xb0/+0xb4..+0xc8) and the bone00 write are not
+// modelled; x/y are stored raw in text_pos.
+// UNRESOLVED: FUN_004e8f40's createInstance internals (0x5188e0/0x518880),
+// FUN_004e77f0/FUN_004ec470 (bone00), FUN_0051f4f0 (typed-data mask).
+bool tx_create(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Text.create", err)) return false;
+    Object *o;
+    if (!receiver_object("Text.create", a, &o, err)) return false;
+    float x, y;
+    if (!want("Text.create", a, 5, err) ||
+        !get_f("Text.create", a[3], &x, err) ||
+        !get_f("Text.create", a[4], &y, err))
+        return false;
+    Runtime::Handle *font = value_handle(a[2]);
+    // 0x4e8f54: charset handle +8 (id) == 0 -> nothing done (exe faults on the
+    // null handle too, safety here is INVENTED).
+    if (!font || font->id == 0) {
+        *out = Value::make_null();
+        return true;
+    }
+    Runtime::Handle *h = text_renderinst(vm, o);
+    if (!h) {  // INVENTED safety (exe would fault)
+        *out = Value::make_null();
+        return true;
+    }
+    Runtime::Resource *r = game_rt()->instantiate(nullptr, value_resource(a[1]), "r_text",
+                                                  std::string(), false, err);
+    if (!r) return false;
+    r->type = 3;        // INSTANCE_RENDER (exe creates the render instance)
+    r->flags |= 0x200;  // instance->+0x84
+    game_rt()->bind(h, r);  // 0x40cac0
+    r->text_flags |= 0x8000;
+    r->text_data.clear();
+    r->text_align = 2;
+    r->text_scale = 1.0f;
+    r->text_color = g_default_text_color;
+    r->text_pos[0] = x;
+    r->text_pos[1] = y;
+    r->text_pos[2] = 0.0f;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e5eb0 java.render.Text.update()V: copy the script's "text" String into the
+// instance string slot (+0x170); "" when the field is missing/null/not a String.
+// INVENTED: stored on the bound Runtime::Resource (text_data), not typed data.
+bool tx_update(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Text.update", err)) return false;
+    Object *o;
+    if (!receiver_object("Text.update", a, &o, err) || !want("Text.update", a, 1, err))
+        return false;
+    Runtime::Handle *h = text_renderinst(vm, o);
+    Runtime::Resource *r = h ? h->target : nullptr;
+    if (r) {
+        Value v;
+        std::string e;
+        if (vm.get_instance_field(o, "text", &v, &e) && v.kind == Value::Str)
+            r->text_data = v.s;
+        else
+            r->text_data.clear();
+    }
+    *out = Value::make_null();
     return true;
 }
 
@@ -5459,12 +5538,12 @@ const std::vector<Entry> &table()
     {"java.render.Text", "setScale", "(FF)V", nullptr, true},
     {"java.render.Text", "setDefaultColor", "(I)V", tx_set_default_color, false},
     {"java.render.Text", "getDefaultColor", "()I", tx_get_default_color, false},
-    {"java.render.Text", "create", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;FF)V", nullptr, true},
+    {"java.render.Text", "create", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;FF)V", tx_create, false},
     {"java.render.Text", "changeColor", "(I)V", nullptr, true},
     {"java.render.Text", "changeAlign", "(I)V", nullptr, true},
     {"java.render.Text", "setPos", "(FF)V", nullptr, true},
     {"java.render.Text", "getPos", "()Ljava.lang.Vector3;", nullptr, true},
-    {"java.render.Text", "update", "()V", nullptr, true},
+    {"java.render.Text", "update", "()V", tx_update, false},
     {"java.render.Text", "getWidthPixels", "(Ljava.lang.String;Ljava.util.resource.ResourceRef;)F", nullptr, true},
     {"java.render.Text", "getPos", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", nullptr, true},
     {"java.util.resource.Animation", "<init>", "(Ljava.util.resource.RenderRef;Ljava.util.resource.ResourceRef;)", nullptr, true},

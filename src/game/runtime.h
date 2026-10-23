@@ -62,6 +62,15 @@ class Runtime {
         float vel[3] = {};
         float ang[3] = {};
         float detail = 0.0f;
+        // java.render.Text state, render-instance typed data +0x16c..+0x17c
+        // (Text__create 0x4e8f40). src has no typed-data/bone service yet, so it
+        // lives on the bound Resource. INVENTED mapping; same as card 062.
+        int32_t text_flags = 0;            // +0x16c (create: |= 0x8000)
+        std::string text_data;             // +0x170 current string (create: "")
+        int32_t text_align = 2;            // +0x174 (2 = left)
+        float text_scale = 1.0f;           // +0x178
+        uint32_t text_color = 0xffffffffu; // +0x17c (DAT_005dadac)
+        float text_pos[3] = {};            // INVENTED: bone00 matrix translation, raw (x,y,0)
         // res_viewport typed data (0x525120, notes/12 §9): +0xc depth/order,
         // +0x10..+0x1c relative x,y,w,h.
         // INVENTED: the exe keeps these in the typed data block, not on the RI.

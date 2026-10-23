@@ -1,7 +1,7 @@
 ---
 id: 067
-status: todo
-branch:
+status: implemented
+branch: card/067
 depends: []
 ---
 # render/script: java.render.Text create + update (render instance, string field)
