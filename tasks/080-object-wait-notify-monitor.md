@@ -1,6 +1,6 @@
 ---
 id: 080
-status: implemented   # gated 2026-10-23 (0x54d430/0x564950/0x54d320/0x54d3a0/0x5629a0 + Thread::run 0x563290)
+status: merged
 branch: card/080
 depends: []
 ---
