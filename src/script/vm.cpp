@@ -213,7 +213,8 @@ static bool apply_binary(int op, Value a, Value b, Value *out, std::string *err)
     }
     if (op == 0x03 || op == 0x04 || op == 0x05 || op == 0x0d || op == 0x0e) {
         if (a.kind != Value::Int || b.kind != Value::Int) {
-            *err = "non-integral operands";
+            *err = "non-integral operands (kinds " + std::to_string((int)a.kind) + ", " +
+                   std::to_string((int)b.kind) + ")";
             return false;
         }
         uint32_t shift = (uint32_t)b.i & 31u;
@@ -456,8 +457,11 @@ static void fill_frame(Frame *f, ClassState *decl, const MethodInfo *m, Object *
     f->locals.resize(nlocals);
     if (!m->is_static && self) f->locals[0] = Value::make_obj(self);
     for (size_t k = 0; k < args.size(); k++) {
-        Value v = args[args.size() - 1 - k];
-        if (k < params.size() && params[k] == 'F' && v.kind == Value::Int)
+        // Locals hold the parameters in reverse (local 1 = last argument), so the
+        // declared type of this argument is params[size - 1 - k].
+        size_t pi = args.size() - 1 - k;
+        Value v = args[pi];
+        if (pi < params.size() && params[pi] == 'F' && v.kind == Value::Int)
             v = Value::make_float((float)v.i);
         f->locals[base + k] = v;
     }
