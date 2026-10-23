@@ -1,7 +1,7 @@
 ---
 id: 104
-status: todo
-branch:
+status: implemented
+branch: card/104
 depends: []
 ---
 # script: the JVM package tree (FQN -> script directory), checked on all shipped classes
@@ -95,3 +95,29 @@ it into the VM as the lazy class loader is card 105 (not here).
 ## Done when
 - `make -C src clean check` green with the new vmboot lines; no unit tests
 - card frontmatter: status implemented, branch name
+
+## Result (implemented)
+Ported 0x55ccc0/0x55f330/0x55f780/0x55f550/0x560180/0x55fd90/0x55fc10 into
+`src/script/packages.*`; vmboot --selfcheck builds the tree and walks all 9 roots.
+Live output: `335 classes checked, 260 resolved, 75 package/dir mismatches
+(shipped), 0 failures, 72 extra units, 0 unreadable (57 nodes)`.
+
+Two shipped-data facts the per-unit walk surfaced (both counted, not hidden):
+- **75 .class files under `sl/Scripts/game/CareerEvents/` and `.../Gamemodes/`
+  declare `package java.game`** (the parent package) in both the `.class` and the
+  shipped `.java` source, so `find_dir("java.game.<Name>")` cannot reach them:
+  the tree only looks in the parent directory's listing. These live one level too
+  deep for the FQN loader; the install loads them from their directory instead
+  (`GameLogic` calls `System.rpkScan("sl\\Scripts\\game\\CareerEvents\\")`). The
+  check classifies a mismatch as this case iff the declared package is a strict
+  ancestor of the directory's package, and reports the count separately.
+- **72 extra class units** live in files named after another class (e.g.
+  `Thread.class` also holds `java.lang.Agent`, `Dialog.class` holds
+  `java.render.osd.dialog.MenuDialog`). 0x55bec0 loads `dir\ClassName.class`,
+  i.e. only the unit matching the file name is reachable by FQN; the others are
+  nested/auxiliary units and are counted as `extra units`, not checked.
+
+Also fixed a latent bug in `src/platform/fs.cpp`: the POSIX `wild_match` never
+matched when pattern and name ended together, so `fs::find` only worked for
+patterns ending in `*` (`dir/*`); `*.java`/`*.class`/`dir/name` always failed.
+Root-cause one-line fix (`if (!*p) return !*s;`), needed by the 0x55fd90 listing.

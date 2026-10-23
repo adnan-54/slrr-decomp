@@ -14,7 +14,10 @@
 #include <vector>
 
 #include "app/boot.h"
+#include "platform/fs.h"
+#include "script/classfile.h"
 #include "script/natives.h"
+#include "script/packages.h"
 
 namespace {
 
@@ -112,6 +115,131 @@ void vector3_check(Boot &boot, Checker &c)
                 (ok ? std::string() : ": " + err));
 }
 
+// 0x55ccc0 roots: dir on the install -> package root. The package tree maps a
+// fully-qualified class name back to the directory that holds the class.
+struct PackageRoot {
+    const char *dir;
+    const char *pkg;
+};
+const PackageRoot kPackageRoots[] = {
+    {"system\\scripts\\lang", "java.lang"},
+    {"system\\scripts\\net", "java.net"},
+    {"system\\scripts\\io", "java.io"},
+    {"system\\scripts\\util", "java.util"},
+    {"system\\scripts\\render", "java.render"},
+    {"system\\scripts\\sound", "java.sound"},
+    {"sl\\scripts\\game", "java.game"},
+    {"parts\\scripts", "java.game.parts"},
+    {"parts\\accessories\\scripts", "java.game.parts.accessories"},
+};
+
+struct TreeTally {
+    long long files = 0;      // .class files seen
+    long long resolved = 0;   // file's class name maps back to its own dir
+    long long pkg_mismatch = 0;  // shipped: class declares a PARENT package of its dir
+    long long failures = 0;      // anything else
+    long long extra_units = 0;   // further class units inside a file (not FQN-loadable)
+    long long unreadable = 0;
+    int shown = 0;
+};
+
+// 0x55bec0 loads "dir\\ClassName.class": only the unit named like the file is
+// reachable through the package tree. Further units in the same file are
+// auxiliary (nested) classes and are counted, not checked.
+void walk_classes(const std::string &disk_dir, const std::string &pkg,
+                  jvm::PackageTree &tree, TreeTally &t)
+{
+    std::vector<fs::FindEntry> entries;
+    if (!fs::find(disk_dir + "/*", &entries)) return;
+    for (const fs::FindEntry &e : entries) {
+        if (e.name == "." || e.name == "..") continue;
+        std::string full = disk_dir + "/" + e.name;
+        if (e.is_dir) {
+            // Subdirectories are sub-packages (0x55f550); src only holds .java.
+            if (e.name != "src") walk_classes(full, pkg + "." + e.name, tree, t);
+            continue;
+        }
+        if (e.name.size() < 6 || e.name.compare(e.name.size() - 6, 6, ".class") != 0)
+            continue;
+        ClassFile file;
+        std::string err;
+        if (!classfile_load(full.c_str(), &file, &err)) {
+            t.unreadable++;
+            continue;
+        }
+        std::string stem = e.name.substr(0, e.name.size() - 6);
+        const ClassUnit *own = nullptr;
+        for (const ClassUnit &u : file.units) {
+            std::string name = u.class_name(u.self_class);
+            size_t dot = name.rfind('.');
+            if (name.substr(dot == std::string::npos ? 0 : dot + 1) == stem) {
+                own = &u;
+                break;
+            }
+        }
+        if (!own) {
+            t.failures++;
+            if (t.shown < 5) {
+                std::printf("  FAIL no unit named '%s' in %s\n", stem.c_str(), full.c_str());
+                t.shown++;
+            }
+            continue;
+        }
+        t.files++;
+        t.extra_units += (long long)file.units.size() - 1;
+        std::string name = own->class_name(own->self_class);
+        std::string dir = tree.find_dir(name);
+        std::string hit = dir.empty() ? std::string() : tree.disk_path(dir);
+        if (hit == disk_dir) {
+            t.resolved++;
+            continue;
+        }
+        // Shipped quirk: CareerEvents/ and Gamemodes/ classes declare
+        // "package java.game" (a parent package), so the FQN tree cannot reach
+        // them; the install loads those files from their directory instead.
+        size_t dot = name.rfind('.');
+        std::string declared = dot == std::string::npos ? std::string() : name.substr(0, dot);
+        bool parent_pkg = !declared.empty() && pkg.size() > declared.size() &&
+                          pkg.compare(0, declared.size(), declared) == 0 &&
+                          pkg[declared.size()] == '.';
+        if (parent_pkg) {
+            t.pkg_mismatch++;
+            continue;
+        }
+        t.failures++;
+        if (t.shown < 5) {
+            std::printf("  FAIL %s says '%s' -> %s\n", full.c_str(), name.c_str(),
+                        hit.empty() ? "(not found)" : hit.c_str());
+            t.shown++;
+        }
+    }
+}
+
+void package_tree_check(Checker &c)
+{
+    jvm::PackageTree tree(kGameDir);
+    tree.add_default_roots();
+
+    TreeTally t;
+    for (const PackageRoot &root : kPackageRoots) {
+        std::string disk = tree.disk_path(root.dir);
+        if (!disk.empty()) walk_classes(disk, root.pkg, tree, t);
+    }
+    std::printf("  package tree: %lld classes checked, %lld resolved, %lld package/dir "
+                "mismatches (shipped), %lld failures, %lld extra units, %lld unreadable "
+                "(%zu nodes)\n",
+                t.files, t.resolved, t.pkg_mismatch, t.failures, t.extra_units, t.unreadable,
+                tree.node_count());
+    c.check(t.files > 0, "package tree checked at least one shipped class");
+    c.check(t.failures == 0 && t.unreadable == 0,
+            "every shipped class file resolves back to its own directory");
+
+    std::string lang = tree.find_dir("java.util.resource.GameRef");
+    std::string game = tree.find_dir("java.game.Init");
+    c.check(!lang.empty(), "find_dir(java.util.resource.GameRef) -> " + lang);
+    c.check(!game.empty(), "find_dir(java.game.Init) -> " + game);
+}
+
 int selfcheck()
 {
     Checker c;
@@ -169,6 +297,7 @@ int selfcheck()
             "missing superclass reported external: " +
                 (entry ? entry->super_name : std::string("?")));
 
+    package_tree_check(c);
     vector3_check(boot, c);
 
     std::printf("selfcheck: %s (%d checks, %d failure(s))\n",

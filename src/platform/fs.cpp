@@ -49,6 +49,7 @@ char lower_ascii(char c)
 
 bool wild_match(const char *s, const char *p)
 {
+    if (!*p) return !*s;   // pattern exhausted: match only if the name is too
     if (*p == '*') {
         while (*p == '*') ++p;
         if (!*p) return true;
