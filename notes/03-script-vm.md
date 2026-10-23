@@ -35,3 +35,18 @@ Address range of the VM code: roughly **0x548c40–0x565000** (~360 functions). 
 1. Walk `Thread::run` in slices; map each `case 0x10xx` to a `JT_*` name and each operator case to the FORMAT.md enum; write the result as a table.
 2. Locate the lexer/parser entry points (`yylex`, grammar actions) — the parser is generated code (flex/bison-like) and can be treated as a black box: rebuild with flex/bison from the grammar recovered from `.java` samples, or hand-write a parser for the Java subset.
 3. Use `.java`/`.class` pairs (2,819) as a conformance suite: our compiler must produce a `.class` the exe accepts, and our interpreter must give the same results.
+
+## Class load path and compile fallback (verified 2026-10-23)
+- Record loader 0x51fcc0 (rsd text of a type record): `script <dir>\Name.class` -> 0x55aca0(dir, Name):
+  look the class up by dotted name in the VM's class table; if absent -> 0x55bec0(dir, Name).
+  `script <FQN>` (no `.class`) -> 0x55add0(FQN). Empty -> "Missing class: %s".
+- 0x55bec0 = `JVM::compileSource` 0x5598f0(dir, Name), then read `<dir>\Name.class` (File__readAll
+  0x565610; < 1 byte -> "JavaMachine::loadClass: failed to load <path>"), parse 0x554ee0, package check
+  0x55f780 ("Package conflict: multiple packages placed at the same location (").
+- 0x5598f0: src = `<dir>\src\Name.java`, cls = `<dir>\Name.class`. Recompile when cls is missing, or src
+  exists and the file times (0x564ef0) differ, or the 12-byte header is not `"TUFA", 4, 0x11ae1` (build
+  0x24f9d in the third word is also accepted). Needed but no source -> "JVM::compileSource: recompilation
+  needed of \"...\" but source not exists" and the old .class is used. After compiling it sets the
+  .class time to the source time (0x5658d0). Syntax error -> fatal message box (0x569570).
+- Other compiler entry: System.compileAll 0x555510 (GameLogic, DEBUG_MODE only).
+- src: no compiler (SERVICE MISSING). Shipped data: 4 Axis part scripts exist only as scripts/src/*.java.

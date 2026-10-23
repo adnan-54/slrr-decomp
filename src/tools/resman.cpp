@@ -363,9 +363,11 @@ static int selfcheck(const char *game_dir)
                                         std::to_string(report.unresolved) + ")");
     c.check(report.empty == 0, "no zero-byte placeholders among these refs");
 
-    // Install data: these 4 refs ship only as .java. The exe never compiles on
-    // demand (compiler 0x5598f0 is reached only from System.compileAll 0x555510,
-    // called by GameLogic in DEBUG_MODE), so the game fails to load them too.
+    // Install data: these 4 refs ship only as <dir>\src\Name.java. The exe's
+    // record loader (0x51fcc0 -> 0x55aca0 -> 0x55bec0) runs JVM::compileSource
+    // 0x5598f0, which compiles the source when the .class is missing, its mtime
+    // differs from the source, or its header is not TUFA v4 build 0x11ae1/0x24f9d.
+    // SERVICE MISSING: src has no Java compiler, so these stay unresolved.
     size_t java_backed = 0;
     for (size_t i = 0; i < mgr.package_count(); i++) {
         const Package &p = mgr.package(i);
