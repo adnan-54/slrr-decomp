@@ -1,6 +1,6 @@
 ---
 id: 111
-status: draft
+status: todo
 branch:
 depends: []
 ---
@@ -158,3 +158,16 @@ record mounting.
   sl.rpk/particles.rpk plus lazy registry mounts, but FindFirstFileA callers
   were not enumerated (tool access denied), so "no scan anywhere" is not
   proven beyond the string/xref evidence.
+
+## Claude gate (overrides the scope note above)
+- There IS a scan, but in script: `GameLogic()` (sl/Scripts/game/GameLogic.java ~347) calls
+  `System.rpkScan("cars\\racers\\")` etc. (script method in System.class: FindFile `*.rpk` +
+  `System.openLib`), then `initVehicleTypes()`. Our VM runs that bytecode already.
+- So mounting on `resolve` alone is NOT enough: `cars:0x1000r.getChildNodes()` resolves
+  cars.rpk, never Axis.rpk. The exe links records at package load (openLib -> 0x518940 ->
+  0x517b80 -> 0x51e310). Make `mount_package` public and ALSO call it where
+  `System.openLib` (natives.cpp, the openLib native) loads/gets a package for the running
+  Runtime (`game_rt()`), so every opened .rpk links its records into their parents.
+  Keep the resolve-time call too (lazy mounts by name). natives.cpp may be edited for this.
+- Report the new `tools/vmboot-capped.sh --selfcheck | tail -3` stop line, and how many
+  children cars:0x1000 got (temporary print is fine, remove before commit).
