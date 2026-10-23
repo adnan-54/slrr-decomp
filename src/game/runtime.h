@@ -92,6 +92,11 @@ class Runtime {
         Handle *next = nullptr;
     };
 
+    // The game's embedded env-map ref node (game+0x98; its RI is game+0xa4).
+    // 0x4dc910 GfxEngine.setGlobalEnvmap rebinds it via FUN_0040cac0;
+    // Game__renderFrame 0x421920 step 2 resolves it to a texture. No reader yet.
+    Handle global_envmap;
+
     Runtime(ResourceManager &resources, Vm *vm = nullptr, ClassPath *classes = nullptr);
     ~Runtime();
     Runtime(const Runtime &) = delete;

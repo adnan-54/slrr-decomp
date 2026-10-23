@@ -1,7 +1,7 @@
 ---
 id: 069
-status: todo
-branch:
+status: implemented
+branch: card/069
 depends: []
 ---
 # render: GfxEngine flush/renderOK/video/envmap natives

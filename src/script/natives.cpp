@@ -5138,6 +5138,96 @@ bool tx_get_default_color(Vm &, const Args &, Value *out, std::string *)
     return true;
 }
 
+// ---- java.render.GfxEngine: video, flush, envmap (notes/12 §2, §9) --------
+
+// DAT_005ef0d4: 4-argument openVideo's extra option (0x44ef50 stores it).
+// shortcut: only the DirectShow paths read it; kept to match 0x4dc8b0's write.
+int32_t g_video_option = 0;
+
+// 0x4dc910 GfxEngine.setGlobalEnvmap(ResourceRef)V
+bool gfx_set_global_envmap(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GfxEngine.setGlobalEnvmap", err)) return false;
+    if (!want("GfxEngine.setGlobalEnvmap", a, 1, err)) return false;
+    // static native: the declared argument is a[0] (getArgs(ctx, 0, &arg) at 0x4dc91d)
+    Runtime::Handle *src = value_handle(a[0]);   // arg ref node +0xc
+    // INVENTED: a Java-null argument faults in the exe (no check at
+    // 0x4dc92e); here it clears the slot like an unbound ref node.
+    game_rt()->bind(&game_rt()->global_envmap, src ? src->target : nullptr);
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4dc840 GfxEngine.flush()V
+// exe: forceRendering(0) [0x4e5560: 7x {0x517f60, 0x518f80, DAT_005e8ca0=0,
+// Game__renderFrame 0x421920, DAT_005dadbc++}], resource-manager flush
+// 0x5176a0(1) on DAT_005db008, then 0x422e40 (three per-frame subsystem
+// updates on [0x5e938c]+0x33c/+0x320/+0x324).
+// shortcut: src has no render frame or resource-manager flush host.
+bool gfx_flush(Vm &, const Args &, Value *out, std::string *)
+{
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4dc900 GfxEngine.renderOK()I: movzx eax, byte [0x5fe0f8]; ret.
+// DAT_005fe0f8 is the result of the last Game__renderFrame, stored by
+// Game__renderAndMeasure at 0x47b5cd; 0 before the first frame.
+// shortcut: src never runs a render frame, so this stays 0.
+bool gfx_render_ok(Vm &, const Args &, Value *out, std::string *)
+{
+    *out = Value::make_int(0);
+    return true;
+}
+
+// 0x4dc870 GfxEngine.openVideo(String,II)I
+bool gfx_open_video(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GfxEngine.openVideo", a, 3, err)) return false;
+    if (a[0].kind == Value::Null) {           // 0x4dc882: null name -> -1
+        *out = Value::make_int(-1);
+        return true;
+    }
+    // SERVICE MISSING: Video__open 0x44e9b0 returns -0x7fffbffb (0x80004005,
+    // E_FAIL) when Video__init 0x44e910 has not set DAT_005ef0c8. The
+    // rebuild never runs Video__init (no COM/DirectShow host).
+    *out = Value::make_int((int32_t)0x80004005u);
+    return true;
+}
+
+// 0x4dc8b0 GfxEngine.openVideo(String,III)I
+bool gfx_open_video_ex(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GfxEngine.openVideo", a, 4, err)) return false;
+    if (a[0].kind == Value::Null) {
+        *out = Value::make_int(-1);
+        return true;
+    }
+    int32_t opt;
+    if (!get_i("GfxEngine.openVideo", a[3], &opt, err)) return false;
+    g_video_option = opt;                     // 0x44ef50 Video__setLoop
+    *out = Value::make_int((int32_t)0x80004005u);
+    return true;
+}
+
+// 0x4dc830 GfxEngine.closeVideo()V: jmp 0x44e780 (Video__close).
+// shortcut: Video__close's whole body is guarded by DAT_005ef0c8, which the
+// rebuild never sets, so there is nothing to release.
+bool gfx_close_video(Vm &, const Args &, Value *out, std::string *)
+{
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4dc860 GfxEngine.isPlayingVideo()I: jmp 0x44e9a0 = mov eax,[0x5ef0cc]; ret.
+// DAT_005ef0cc is set to 1 only by Video__start 0x44edc0 and cleared by
+// Video__close; neither is reachable without a video backend.
+bool gfx_is_playing_video(Vm &, const Args &, Value *out, std::string *)
+{
+    *out = Value::make_int(0);
+    return true;
+}
+
 // 0x4e5b30 java.render.Text.create(ResourceRef parent, ResourceRef charset, float x, float y)
 // INVENTED: the text state lives on the bound Runtime::Resource; the exe keeps it
 // in the render instance's typed data block.
@@ -5654,13 +5744,13 @@ const std::vector<Entry> &table()
     {"java.render.GfxEngine", "currDisplayMode", "()I", gfx_curr_display_mode, false},
     {"java.render.GfxEngine", "displayModeName", "(I)Ljava.lang.String;", gfx_display_mode_name, false},
     {"java.render.GfxEngine", "changeVideoMode", "(III)V", gfx_change_video_mode, false},
-    {"java.render.GfxEngine", "setGlobalEnvmap", "(Ljava.util.resource.ResourceRef;)V", nullptr, true},
-    {"java.render.GfxEngine", "flush", "()V", nullptr, true},
-    {"java.render.GfxEngine", "renderOK", "()I", nullptr, true},
-    {"java.render.GfxEngine", "openVideo", "(Ljava.lang.String;II)I", nullptr, true},
-    {"java.render.GfxEngine", "openVideo", "(Ljava.lang.String;III)I", nullptr, true},
-    {"java.render.GfxEngine", "closeVideo", "()V", nullptr, true},
-    {"java.render.GfxEngine", "isPlayingVideo", "()I", nullptr, true},
+    {"java.render.GfxEngine", "setGlobalEnvmap", "(Ljava.util.resource.ResourceRef;)V", gfx_set_global_envmap, false},
+    {"java.render.GfxEngine", "flush", "()V", gfx_flush, false},
+    {"java.render.GfxEngine", "renderOK", "()I", gfx_render_ok, false},
+    {"java.render.GfxEngine", "openVideo", "(Ljava.lang.String;II)I", gfx_open_video, false},
+    {"java.render.GfxEngine", "openVideo", "(Ljava.lang.String;III)I", gfx_open_video_ex, false},
+    {"java.render.GfxEngine", "closeVideo", "()V", gfx_close_video, false},
+    {"java.render.GfxEngine", "isPlayingVideo", "()I", gfx_is_playing_video, false},
     {"java.render.Camera", "create", "(Ljava.util.resource.ResourceRef;Ljava.render.Viewport;IFFFFFII)V", nullptr, true},
     {"java.render.Camera", "destroy", "()V", nullptr, true},
     {"java.render.Camera", "setFog", "(IFF)V", nullptr, true},
