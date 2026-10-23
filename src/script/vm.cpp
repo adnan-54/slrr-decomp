@@ -1299,7 +1299,11 @@ bool Thread::step()
     case 0x4026: // invoke by name on super
         return invoke(f, ins.op, ins.operand);
     case 0x401b: // member field (explicit receiver inside the 0x11 window)
-        return field_member(f, ins.operand, in_window(f, f.ip - 1));
+        // The first token of an 0x11 window starts the receiver expression
+        // itself (e.g. a static field read), so only later tokens have an
+        // explicit receiver on the stack (same rule as 0x4012).
+        return field_member(f, ins.operand,
+                            in_window(f, f.ip - 1) && f.ip - 1 > f.win_start);
     case 0x401c: // field of the explicit receiver on top of the stack
         return field_name(f, ins.operand);
     default: {
