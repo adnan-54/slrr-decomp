@@ -395,7 +395,7 @@ Errors use `vm_<class>_<method>: …` with script file/line as in note 06.
 | `renderOK()` 0x4dc900 | `return (u8)DAT_005fe0f8` — the result of the last `Game__renderFrame()` (§2), false when that frame was skipped (disasm) |
 | `changeVideoMode(w,h,depth)` 0x4e5480 | `C3DLow vf5 requestVideoMode` (fullscreen only; picks the format like init, sets `+0x1b5` → Reset at next beginFrame) |
 | `numDisplayModes` 0x4e5770 / `currDisplayMode` 0x4e54f0 | tail `JMP`s (disasm): num → 0x4264e0 = `MOV EAX,[DAT_005eb454]; RET`; curr → `FUN_00424110`, which searches the sorted mode list `DAT_005eb450` (0x14-byte entries) for w,h,depth == `C3DLow+0x1bc/+0x1be/+0x1c0` and returns the index (0 if none) |
-| `displayModeName(i)` 0x4e5510 | `"%d %d %d"` (w h refresh) from the sorted mode list `DAT_005eb450` (0x14 per mode, built by vf3 for X8R8G8B8, X1R5G5B5, R5G6B5, qsort `0x427880`) |
+| `displayModeName(i)` 0x4e5510 | `"%d %d %d"` (w h depth; OptionsDialog.java splits it as width/height/depth, card 068) from the sorted mode list `DAT_005eb450` (0x14 per mode, built by vf3 for X8R8G8B8, X1R5G5B5, R5G6B5, qsort `0x427880`) |
 | `printScreen(name)` 0x4e5780 | `Game__printScreen`: lock backbuffer copy (vf20: `GetRenderTargetData` into a SYSTEMMEM surface), RGB → 24-bit buffer, compress (`FUN_00527060`, quality `DAT_005da334`) and write; vf22 is a plain TGA writer |
 | `setGlobalEnvmap(res)` 0x4dc910 | `game+0xa4` link := res (used by `Game__renderFrame` step 2) |
 | `openVideo(file, toTexture, loop)` 0x4dc870/0x4dc8b0 | `Video__open` 0x44e9b0 (4-arg form first sets `Video__setLoop`) |
