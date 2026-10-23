@@ -1,6 +1,7 @@
 // Native method registry: one row per analysis/natives.tsv entry, keyed by
 // (class, method, descriptor) like the exe's native table (notes/06).
 #pragma once
+#include <string>
 #include <vector>
 
 #include "script/vm.h"
@@ -31,5 +32,13 @@ void set_clock(Vm &vm, double now_ms);
 void monitor_notify_all(Vm &vm, Object *o);
 // 0x47e050: advance the sim clock by min(warp * dt, 0.1f).
 void advance_sim(Vm &vm, float dt);
+// Read-only snapshot of the VM's script threads for checks and tools.
+struct ThreadInfo {
+    std::string name;
+    bool started = false, done = false, sleeping = false, waiting = false,
+         suspended = false;
+    std::string error;  // runner->error() when the thread Failed
+};
+std::vector<ThreadInfo> thread_report(Vm &vm);
 
 }  // namespace natives

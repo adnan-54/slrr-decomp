@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "game/runtime.h"
 #include "resource/manager.h"
 #include "script/packages.h"
 #include "script/vm.h"
@@ -25,6 +26,10 @@ struct BootResult {
     size_t missing_links = 0;             // registry super/interface links left external
     std::vector<std::string> external;    // classes referenced by the entry but not loaded
     std::vector<std::string> errors;
+    // 0x47d760 init step: Config.init -> type record -> GameInit instance.
+    std::string game_init_type;           // record name of the type (sl.rpk "Init")
+    std::string game_init_class;          // script class of the created instance
+    bool game_init_created = false;
 };
 
 class Boot {
@@ -32,6 +37,9 @@ class Boot {
     // Runs the sequence once per runtime. A second call without reset() returns
     // the cached result and does not re-run static initializers.
     const BootResult &run(const std::string &rpk);
+    // 0x47d760 init: read Config.init, create the scripted "GameInit" instance
+    // of that type and keep its handle at game+0x238.
+    bool game_init(std::string *err);
     // Destroys the runtime so the next run() starts from scratch.
     void reset();
 
@@ -46,6 +54,8 @@ class Boot {
     std::unique_ptr<ClassPath> classes_;
     std::unique_ptr<Vm> vm_;
     std::unique_ptr<jvm::PackageTree> tree_;
+    std::unique_ptr<Runtime> runtime_;
+    Runtime::Handle game_init_;          // game+0x238
     BootResult result_;
     bool attempted_ = false;
 };

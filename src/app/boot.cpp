@@ -21,6 +21,8 @@ const char *kEntryPath = "sl\\Scripts\\game\\Init.class";
 
 void Boot::reset()
 {
+    runtime_.reset();  // owns handles into resources_, so it goes first
+    game_init_ = Runtime::Handle();
     vm_.reset();
     tree_.reset();
     classes_.reset();
@@ -62,6 +64,11 @@ const BootResult &Boot::run(const std::string &rpk)
 
     vm_ = std::make_unique<Vm>();
     for (const ClassUnit *unit : classes_->units()) vm_->add_class(unit);
+
+    // 0x47d760: the game runtime over the booted VM (resource ids/instances).
+    // Natives dispatch through it once active.
+    runtime_ = std::make_unique<Runtime>(*resources_, vm_.get(), classes_.get());
+    runtime_->activate();
 
     // Package tree over the game directory (the .rpk's own directory). 0x55ccc0
     // installs the roots and resolves the two startup classes.
@@ -125,6 +132,49 @@ const BootResult &Boot::run(const std::string &rpk)
     result_.ok = result_.packages > 0 && result_.entry_found && result_.clinit_ran &&
                  result_.errors.empty();
     return result_;
+}
+
+// 0x47d760 init step, after the entry class: GetConfigData("init") (0x47c110)
+// yields the resource id of the game type; 0x523c80 creates a scripted instance
+// with alias "GameInit"; 0x40cac0 binds it to game+0x238.
+bool Boot::game_init(std::string *err)
+{
+    if (!runtime_ || !vm_) {
+        *err = "game_init: boot not run";
+        return false;
+    }
+    // INVENTED: the exe reads the field through the config game object's script
+    // instance (0x5fe0e4, created by engine startup, not ported). src reads the
+    // static field directly; its initializer (`static int init = sl:0x0040r`)
+    // yields the global id through the resource resolver (cards 105/106).
+    Value v;
+    std::string e;
+    if (!vm_->get_static_field("java.util.Config", "init", &v, &e)) {
+        *err = "GetConfigData: Config data not present (" + e + ")";
+        return false;
+    }
+    if (v.kind != Value::Int || v.i == 0) {
+        *err = "GetConfigData: Config data not present";
+        return false;
+    }
+    Runtime::Resource *type = runtime_->resolve((uint32_t)v.i);
+    if (!type) {
+        *err = "init: resource id " + std::to_string((uint32_t)v.i) + " does not resolve";
+        return false;
+    }
+    // INVENTED: the exe's parent is the game root ref DAT_005fde50, which src
+    // does not model -> null parent.
+    Runtime::Resource *inst =
+        runtime_->instantiate(type, nullptr, "GameInit", "", true, &e);
+    if (!inst) {
+        *err = "init: instantiate GameInit: " + e;
+        return false;
+    }
+    runtime_->bind(&game_init_, inst);
+    result_.game_init_type = type->name;
+    result_.game_init_class = inst->script_class;
+    result_.game_init_created = true;
+    return true;
 }
 
 // 0x47d760 control gate.

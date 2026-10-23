@@ -7243,6 +7243,24 @@ double sim_time(Vm &vm) { return sched(vm).sim_seconds; }
 // 0x569730 clock, passed in by the host frame loop.
 void set_clock(Vm &vm, double now_ms) { sched(vm).now_ms = now_ms; }
 
+std::vector<ThreadInfo> thread_report(Vm &vm)
+{
+    std::vector<ThreadInfo> out;
+    for (const auto &t : sched(vm).threads) {
+        ThreadInfo info;
+        info.name = t->name;
+        info.started = t->started;
+        info.done = t->done;
+        info.sleeping = t->sleeping;
+        info.waiting = t->waiting;
+        info.suspended = t->suspended;
+        if (t->runner && t->runner->status() == Thread::Failed)
+            info.error = t->runner->error();
+        out.push_back(std::move(info));
+    }
+    return out;
+}
+
 // 0x5612f0 Thread::Thread(vm, prio, flags, name): append at the tail of the VM
 // run list. 0x562d70 Thread::run(0): budget 0 means no time check, so drain
 // slices until the frames finish or a mask-0xfa flag stops the thread. A

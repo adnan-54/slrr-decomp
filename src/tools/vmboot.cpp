@@ -115,6 +115,63 @@ void vector3_check(Boot &boot, Checker &c)
                 (ok ? std::string() : ": " + err));
 }
 
+// 0x47d760 init step: Config.init -> type record "Init" (sl.rpk, type 8) ->
+// scripted GameInit instance; its Init(int) constructor runs in THRD-CREATE.
+// A failing constructor is an expected finding here (missing engine services):
+// it is printed, not asserted.
+void game_init_check(Boot &boot, Checker &c)
+{
+    std::string err;
+    bool ok = boot.game_init(&err);
+    c.check(ok, "Config.init creates the GameInit instance" +
+                    (ok ? std::string() : ": " + err));
+
+    // Same stored field, looked up straight in the open rpk: the shipped
+    // sl:0x40 is the type-8 record "Init" (resman check, notes/16).
+    Value v;
+    std::string e;
+    const RpkRecord *rec = nullptr;
+    if (boot.vm()->get_static_field("java.util.Config", "init", &v, &e) &&
+        v.kind == Value::Int && v.i) {
+        uint32_t id = (uint32_t)v.i;
+        const Package *pkg = boot.resources()->registry_package(id >> 16);
+        if (pkg) rec = pkg->rpk.find(id & 0xffffu);
+    }
+    c.check(rec && rec->name == "Init" && rec->type == 8,
+            "Config.init resolves to type-8 record \"Init\" in sl.rpk" +
+                (rec ? " (got \"" + rec->name + "\" type " +
+                           std::to_string(rec->type) + ")"
+                     : std::string()));
+    const BootResult &r = boot.result();
+    c.check(r.game_init_created && r.game_init_class == "java.game.Init",
+            "GameInit instance uses script class java.game.Init (got " +
+                r.game_init_class + ")");
+
+    bool found = false;
+    natives::ThreadInfo create;
+    for (const natives::ThreadInfo &t : natives::thread_report(*boot.vm()))
+        if (t.name == "THRD-CREATE") {
+            create = t;
+            found = true;
+        }
+    c.check(found, "Init(int) runs in a THRD-CREATE thread");
+    if (!found) return;
+    std::string state;
+    if (!create.error.empty())
+        state = "failed: " + create.error;
+    else if (create.done)
+        state = "done";
+    else if (create.sleeping)
+        state = "stopped (sleeping)";
+    else if (create.waiting)
+        state = "stopped (waiting)";
+    else if (create.suspended)
+        state = "stopped (suspended)";
+    else
+        state = "running (yielded)";
+    std::printf("  THRD-CREATE: %s\n", state.c_str());
+}
+
 // 0x55ccc0 roots: dir on the install -> package root. The package tree maps a
 // fully-qualified class name back to the directory that holds the class.
 struct PackageRoot {
@@ -334,6 +391,7 @@ int selfcheck()
 
     package_tree_check(c);
     vector3_check(boot, c);
+    game_init_check(boot, c);
 
     std::printf("selfcheck: %s (%d checks, %d failure(s))\n",
                 c.failures ? "FAILED" : "PASSED", c.checks, c.failures);

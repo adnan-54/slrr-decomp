@@ -1,7 +1,7 @@
 ---
 id: 107
-status: todo
-branch:
+status: implemented
+branch: card/107
 depends: [106]
 ---
 # app: boot GameInit like Game__mainLoop's init (0x47d760 -> 0x47c110 "init" -> 0x523c80)
@@ -61,6 +61,21 @@ far the shipped `java.game.Init` constructor gets.
 ## Files
 - edit: src/app/boot.h, src/app/boot.cpp, src/script/natives.h, src/script/natives.cpp,
   src/tools/vmboot.cpp
+
+## Outcome
+`make -C src clean check` green (vmboot 27 checks, 0 failures). New vmboot lines:
+
+```
+  ok   Config.init creates the GameInit instance
+  ok   Config.init resolves to type-8 record "Init" in sl.rpk (got "Init" type 8)
+  ok   GameInit instance uses script class java.game.Init (got java.game.Init)
+  ok   Init(int) runs in a THRD-CREATE thread
+  THRD-CREATE: failed: line 76: method not found: java.render.LoadingScreen.length()I
+```
+
+The constructor fails on a call to `java.render.LoadingScreen.length()I` at its
+line 76 (class resolution/VM call site not traced here; outside this card's
+scope). Expected at this stage, printed not asserted.
 
 ## Done when
 - `// 0x47d760`, `// 0x47c110`, `// 0x523c80` comments; INVENTED parts marked
