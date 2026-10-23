@@ -105,12 +105,9 @@ void *obj(const Value &v) { return v.kind == Value::Obj ? (void *)v.obj : nullpt
 // ---- java.lang.Thread cooperative scheduler --------------------------------
 
 // The exe binds every script Thread to an engine Thread (0x38 bytes: frame,
-// state, priority, flags) and runs it in 256-token VM slices. A NativeFn here
-// only receives Vm&, never the executing Thread, so sleep cannot suspend its
-// caller; it advances the scheduler's simulation clock and gives every started
-// thread one slice instead.
-// shortcut: sleep yields one slice per registered thread and cannot block the
-// caller. Upgrade when Vm exposes the current Thread to native methods.
+// state, priority, flags) and runs it in 256-token VM slices. Natives address
+// the calling engine Thread through Scheduler::current and set its +0x2c flags;
+// any flag in mask 0xfa stops the thread at the next instruction (0x563290).
 struct ScriptThreadState {
     Object *script = nullptr;  // java.lang.Thread instance (identity)
     Object *target = nullptr;  // Runnable whose run() this thread executes
@@ -118,16 +115,23 @@ struct ScriptThreadState {
     std::string name;
     int32_t priority = 0;      // engine Thread ctor (0x5612f0) starts at 0
     bool daemon = false;
-    bool suspended = false;
+    bool suspended = false;    // +0x2c bit 0x20
     bool started = false;
     bool done = false;
     bool in_slice = false;  // its run_slice is on the stack (do not re-enter)
     bool waiting = false;   // engine thread+0x2c bit 0x10: on the monitor wait list
+    bool sleeping = false;  // +0x2c bit 0x08; runnable again once wake_ms passes
+    double wake_ms = 0;     // +0x30
+    Object *wait_on = nullptr;  // +0x34 wait object (Thread__stop notifies it)
 };
 
 struct Scheduler {
     std::vector<std::unique_ptr<ScriptThreadState>> threads;
-    double sim_seconds = 0.0;  // level-2 time; sleep advances it
+    // Level-2 sim clock; advanced by the sim step 0x47e050 (card 102).
+    double sim_seconds = 0.0;
+    // 0x569730 QueryPerformanceCounter milliseconds, read by Thread__sleep.
+    // INVENTED: src has no QPC clock here; the host passes its frame clock.
+    double now_ms = 0.0;
     // 0x4e5880 stores the scale through 0x47dfd0 into the global at 0x5fde90
     // (+0x27c); normal speed is 1.0 (playVideo saves and restores it).
     float warp = 1.0f;
@@ -178,6 +182,8 @@ ScriptThreadState *thread_state_for(Vm &vm, Object *o)
     return t;
 }
 
+void monitor_notify_thread(ScriptThreadState *t);  // 0x5629a0, defined below
+
 // vm.h keeps ClassState opaque. vm.cpp defines it with `unit` as its first
 // member, so the declaring unit can be recovered via memcpy without widening
 // the VM interface.
@@ -200,8 +206,10 @@ void pump_threads(Vm &vm)
     s.pumping = true;
     for (size_t i = 0; i < s.threads.size(); i++) {
         ScriptThreadState *t = s.threads[i].get();
-        if (!t->runner || t->suspended || t->done || t->waiting || !t->started ||
-            t->in_slice)
+        // 0x55caf0: sleep expires when wake(+0x30) < now (strict).
+        if (t->sleeping && t->wake_ms < s.now_ms) t->sleeping = false;
+        if (!t->runner || t->suspended || t->done || t->waiting || t->sleeping ||
+            !t->started || t->in_slice)
             continue;
         t->in_slice = true;
         s.current = t;  // ctx+4
@@ -266,9 +274,31 @@ bool thread_stop(Vm &vm, const Args &a, Value *out, std::string *err)
     if (!want("Thread.stop", a, 1, err) || !get_o("Thread.stop", a[0], &o, err))
         return false;
     if (ScriptThreadState *t = thread_state(vm, o)) {
+        Scheduler &s = sched(vm);
+        // 0x5648f0/0x54d290: a waiting thread leaves its monitor wait list.
+        if (t->waiting) {
+            bool found = false;
+            auto it = s.monitors.find(t->wait_on);
+            if (it != s.monitors.end()) {
+                std::vector<ScriptThreadState *> &list = it->second;
+                for (size_t i = list.size(); i-- > 0;) {
+                    if (list[i] != t) continue;
+                    list.erase(list.begin() + i);  // exe nulls the slot
+                    monitor_notify_thread(t);
+                    found = true;
+                    break;
+                }
+                if (list.empty()) s.monitors.erase(it);
+            }
+            if (!found)
+                std::fprintf(stderr,
+                             "Instance::notify(Thread*): inconsistency\n");
+        }
         t->started = false;
         t->done = true;
         t->target = nullptr;  // exe clears +0x18 and detaches the handle
+        // 0x4e6200: the 0xfa flag test stops the caller at the next instruction.
+        if (t == s.current && t->runner) t->runner->request_stop();
     }
     *out = Value::make_null();
     return true;
@@ -279,10 +309,9 @@ bool thread_is_alive(Vm &vm, const Args &a, Value *out, std::string *err)
     Object *o;
     if (!want("Thread.isAlive", a, 1, err) || !get_o("Thread.isAlive", a[0], &o, err))
         return false;
-    // The exe stub 0x4e6040 always returns 0 (assembly ends in XOR EAX,EAX);
-    // report the real cooperative state so script logic can observe completion.
-    ScriptThreadState *t = thread_state(vm, o);
-    *out = Value::make_int(t && t->started && !t->done ? 1 : 0);
+    // 0x4e6040: the exe stub always returns 0 (assembly ends in xor eax,eax).
+    (void)o;
+    *out = Value::make_int(0);
     return true;
 }
 
@@ -316,11 +345,15 @@ bool thread_sleep(Vm &vm, const Args &a, Value *out, std::string *err)
     // Receiver is prepended by the VM, so the declared float is a[1].
     if (!want("Thread.sleep", a, 2, err) || !get_f("Thread.sleep", a[1], &ms, err))
         return false;
-    Scheduler &s = sched(vm);
-    if (ms > 0.0f && s.warp > 0.0f)
-        s.sim_seconds += (double)ms * 0.001 * (double)s.warp;
-    pump_threads(vm);
     *out = Value::make_null();
+    Scheduler &s = sched(vm);
+    ScriptThreadState *t = s.current;  // 0x4e6130: ctx+4, the calling thread
+    // shortcut: a native invoked synchronously (Vm::invoke / run_field_init) has
+    // no executing script thread in src; the exe always has ctx+4. No-op.
+    if (!t) return true;
+    t->sleeping = true;                  // 0x564860: flags |= 0x08
+    t->wake_ms = s.now_ms + (double)ms;  // +0x30 = now + ms
+    t->runner->request_stop();           // 0x563290: leave the slice
     return true;
 }
 
@@ -329,7 +362,13 @@ bool thread_suspend(Vm &vm, const Args &a, Value *out, std::string *err)
     Object *o;
     if (!want("Thread.suspend", a, 1, err) || !get_o("Thread.suspend", a[0], &o, err))
         return false;
-    if (ScriptThreadState *t = thread_state(vm, o)) t->suspended = true;
+    // 0x564890: set 0x20; the 0xfa test (0x563290) then stops the caller.
+    if (ScriptThreadState *t = thread_state(vm, o)) {
+        if (!t->suspended) {
+            t->suspended = true;
+            if (t == sched(vm).current) t->runner->request_stop();
+        }
+    }
     *out = Value::make_null();
     return true;
 }
@@ -339,6 +378,7 @@ bool thread_resume(Vm &vm, const Args &a, Value *out, std::string *err)
     Object *o;
     if (!want("Thread.resume", a, 1, err) || !get_o("Thread.resume", a[0], &o, err))
         return false;
+    // 0x562d10: only clear 0x20; the run-list relink is the pump's job.
     if (ScriptThreadState *t = thread_state(vm, o)) t->suspended = false;
     *out = Value::make_null();
     return true;
@@ -1386,6 +1426,7 @@ bool object_wait(Vm &vm, const Args &a, Value *out, std::string *err)
     if (t->waiting) std::fprintf(stderr, "Thread::wait: already waiting\n");
     s.monitors[o].push_back(t);  // monitor+0x14 tail append
     t->waiting = true;           // thread+0x2c |= 0x10, off the run list
+    t->wait_on = o;              // +0x34: Thread__stop notifies this monitor
     t->runner->request_stop();   // 0x563290: leave the slice after this instruction
     return true;
 }

@@ -1,7 +1,7 @@
 ---
 id: 101
-status: todo
-branch:
+status: implemented
+branch: card/101
 depends: [080]
 ---
 # script VM: Thread.sleep / suspend / resume / stop / isAlive use the exe thread flags
