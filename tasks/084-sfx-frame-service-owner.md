@@ -1,7 +1,7 @@
 ---
 id: 084
-status: todo
-branch:
+status: implemented
+branch: card/084
 depends: [083]
 ---
 # app/audio: per-frame listener + voice service in FrameLoop; SfxItem owner = resource id

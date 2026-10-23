@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <set>
 
+#include "audio/sound.h"
 #include "input/controller.h"
 #include "game/runtime.h"
 #include "script/natives.h"
@@ -126,4 +127,14 @@ void FrameLoop::frame(int now_ms)
         }
         last_control_ms_ = now_ms;
     }
+
+    // 0x47d760: per-frame deferred flush, then listener + voice service,
+    // both outside the 15 ms control gate.
+    if (Runtime *rt = Runtime::active()) rt->flush_deferred();  // 0x47d070
+    // No camera in src = the exe's DAT_005f1e44 <= 0 branch: listener at the origin.
+    audio::SfxService &sfx = audio::sfx_service();
+    const float listener[3] = {0.0f, 0.0f, 0.0f};
+    for (int i = 0; i < 3; i++) sfx.pool.listener[i] = listener[i];  // 0x568bb0
+    sfx.mixer.set_listener(listener);                                 // 0x546cd0
+    sfx.pool.service(*sfx.backend);                                   // 0x5690a0
 }

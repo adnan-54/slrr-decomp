@@ -10,11 +10,12 @@
 namespace audio {
 
 // Entry: intrusive list node (next/prev are table indices here, -1 = none),
-// owner word = resource + 0x80, resource, 1/pitch and pitch/volume ranges.
+// owner word = resource id (0x40cac0: *(RI+0x80)), resource, 1/pitch and
+// pitch/volume ranges.
 struct SfxItem {
     int32_t next;     // +0x00
     int32_t prev;     // +0x04
-    int32_t owner;    // +0x08 = resource + 0x80
+    int32_t owner;    // +0x08 = resource id (0x40cac0: *(RI+0x80))
     int32_t resource; // +0x0c
     float inv_pitch;  // +0x10 = 1.0 / pitch
     float pmin;       // +0x14

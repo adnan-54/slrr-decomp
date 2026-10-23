@@ -32,7 +32,7 @@ bool SfxTable::add_item(int32_t resource, float pitch, float pmin, float pmax,
     item.next = -1;
     if (count > 0)
         items[count - 1].next = count;
-    item.owner = resource + 0x80;
+    item.owner = resource;  // 0x40cac0: node+8 = *(RI+0x80), the id word
     item.resource = resource;
     item.inv_pitch = 1.0f / pitch;
     item.pmin = pmin;
@@ -169,7 +169,7 @@ void EngineSfx::emit_node(int32_t resource, float pitch, float volume,
 {
     SfxEmit out;
     out.resource = resource;
-    out.owner = resource + 0x80;
+    out.owner = resource;  // 0x40cac0: node+8 = *(RI+0x80), the id word
     out.pitch = pitch;
     out.volume = volume;
     out.flags = flags;
