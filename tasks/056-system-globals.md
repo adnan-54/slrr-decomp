@@ -1,7 +1,7 @@
 ---
 id: 056
-status: todo
-branch:
+status: implemented
+branch: card/056
 depends: []
 ---
 # script: System.exit/setMeasure/syncGameTime/setLdPriority globals

@@ -676,8 +676,8 @@ static void vm_corpus_tests(int argc, char **argv, Checker &c)
                          (ran ? std::string() : ": " + err));
         err.clear();
         ran = call_static(vm, *sys, "exit", "()V", {}, &r, &err);
-        c.check(!ran && err == "native not implemented (stub): java.lang.System.exit()V",
-                "engine shutdown flag is an explicit stub");
+        c.check(ran, "System.exit()V sets the quit flag" +
+                         (ran ? std::string() : ": " + err));
 
         float t1 = 0.0f, t2 = 0.0f;
         ran = call_static(vm, *sys, "currentTime", "()F", {}, &r, &err);
@@ -726,11 +726,6 @@ static void vm_corpus_tests(int argc, char **argv, Checker &c)
         err.clear();
         ran = call_static(vm, *sys, "gc", "()I", {}, &r, &err);
         expect_int(c, ran, r, 0, "System.gc", err);
-
-        err.clear();
-        ran = call_static(vm, *sys, "exit", "()V", {}, &r, &err);
-        c.check(!ran && err == "native not implemented (stub): java.lang.System.exit()V",
-                "engine native is an explicit stub");
     }
 
     if (itg) {

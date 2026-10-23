@@ -128,6 +128,16 @@ struct Scheduler {
     // 0x4e5880 stores the scale through 0x47dfd0 into the global at 0x5fde90
     // (+0x27c); normal speed is 1.0 (playVideo saves and restores it).
     float warp = 1.0f;
+    // Engine globals written by the java.lang.System natives below.
+    int quit_request = 0;        // 0x5f0c74 quit request flag
+    // INVENTED: the exe's initial measure was not traced; 0 until setMeasure.
+    float measure = 0.0f;        // 0x5da524
+    float measure_per_hour = 0.0f;  // 0x5fe378
+    float measure_inv10 = 0.0f;  // 0x5fe374
+    int day_seconds = 0;         // 0x6024c0
+    int time_flag_5da080 = 0;    // 0x5da080
+    float load_slice = 0.0f;     // 0x5da464
+    int load_priority = 0;       // 0x5fe3bc
     bool pumping = false;
 };
 
@@ -536,6 +546,61 @@ bool system_time_warp(Vm &vm, const Args &a, Value *out, std::string *err)
     float previous = s.warp;
     if (warp >= 0.0f) s.warp = warp;
     *out = Value::make_float(previous);
+    return true;
+}
+
+// 0x4e5550: raises the engine quit request flag.
+bool system_exit(Vm &vm, const Args &, Value *out, std::string *)
+{
+    sched(vm).quit_request = 1;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e57b0: metre scale and its per-hour / inverse-10 derivatives.
+bool system_set_measure(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    const char *who = "System.setMeasure";
+    float m = 1000.0f;  // exe default when the argument is missing
+    if (!a.empty() && !get_f(who, a[0], &m, err)) return false;
+    Scheduler &s = sched(vm);
+    s.measure = m;                            // 0x5da524
+    s.measure_per_hour = m * 0.00027777778f;  // 0x5fe378 (m / 3600)
+    s.measure_inv10 = 10.0f / m;              // 0x5fe374
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e5820: seconds within the day and the night flag at 0x5da080.
+bool system_sync_game_time(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    const char *who = "System.syncGameTime";
+    float t;
+    if (!want(who, a, 1, err) || !get_f(who, a[0], &t, err)) return false;
+    Scheduler &s = sched(vm);
+    int32_t sec = (int32_t)t % 86400;  // C truncation and remainder
+    s.day_seconds = sec;               // 0x6024c0
+    uint32_t u = (uint32_t)sec;
+    s.time_flag_5da080 = (u - 3600u) > 0x10b2fu || (u - 18000u) < 0x1c20u;
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e56b0: priority 0 loads in 10% slices, anything else runs unthrottled.
+bool system_set_ld_priority(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    const char *who = "System.setLdPriority";
+    int32_t p;
+    if (!want(who, a, 1, err) || !get_i(who, a[0], &p, err)) return false;
+    Scheduler &s = sched(vm);
+    if (p == 0) {
+        s.load_slice = 0.1f;   // 0x5da464
+        s.load_priority = 0;   // 0x5fe3bc
+    } else {
+        s.load_slice = -1.0f;  // 0x5da464
+        s.load_priority = 1;   // 0x5fe3bc
+    }
+    *out = Value::make_null();
     return true;
 }
 
@@ -4508,7 +4573,7 @@ const std::vector<Entry> &table()
     {"java.io.Controller", "user_GetAxisVal", "(I)F", ctl_user_get_axis_val, false},
     {"java.io.Controller", "user_SetAxisForce", "(IFF)V", ctl_user_set_axis_force, false},
     {"java.game.GameLogic", "kismajomCheck", "([Ljava.lang.String;)I", nullptr, true},
-    {"java.lang.System", "exit", "()V", nullptr, true},
+    {"java.lang.System", "exit", "()V", system_exit, false},
     {"java.lang.System", "exit", "(Ljava.lang.String;)V", noop_void, false},
     {"java.lang.System", "log", "(Ljava.lang.String;)V", system_log, false},
     {"java.lang.System", "gc", "()I", system_gc, false},
@@ -4524,9 +4589,9 @@ const std::vector<Entry> &table()
     {"java.lang.System", "compileAll", "(Ljava.lang.String;)I", nullptr, true},
     {"java.lang.System", "info", "(I)Ljava.lang.String;", nullptr, true},
     {"java.lang.System", "buildNumber", "()I", system_build_number, false},
-    {"java.lang.System", "setLdPriority", "(I)V", nullptr, true},
-    {"java.lang.System", "syncGameTime", "(F)V", nullptr, true},
-    {"java.lang.System", "setMeasure", "(F)V", nullptr, true},
+    {"java.lang.System", "setLdPriority", "(I)V", system_set_ld_priority, false},
+    {"java.lang.System", "syncGameTime", "(F)V", system_sync_game_time, false},
+    {"java.lang.System", "setMeasure", "(F)V", system_set_measure, false},
     {"java.lang.System", "getConfigOptions", "()V", nullptr, true},
     {"java.lang.System", "isLoadingReset", "()V", nullptr, true},
     {"java.lang.System", "isLoading", "()I", nullptr, true},
