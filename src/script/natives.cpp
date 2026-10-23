@@ -5158,6 +5158,97 @@ Runtime::Handle *text_renderinst(Vm &vm, Object *self)
     return value_handle(v);
 }
 
+// MSVC _stricmp in the C locale (0x57c11e): ASCII tolower, unsigned chars,
+// difference at the first mismatch or at the terminating NUL.
+int bone_stricmp(const std::string &a, const std::string &b)
+{
+    size_t i = 0;
+    for (;; i++) {
+        int ca = i < a.size() ? (unsigned char)a[i] : 0;
+        int cb = i < b.size() ? (unsigned char)b[i] : 0;
+        if (ca >= 'A' && ca <= 'Z') ca += 32;
+        if (cb >= 'A' && cb <= 'Z') cb += 32;
+        if (ca != cb) return ca - cb;
+        if (ca == 0) return 0;
+    }
+}
+
+// 0x51b940 RenderInstData__boneId: find the bone by name or create one at the
+// midpoint of the neighbouring ids. First bone of an instance = 0x8000.
+uint32_t bone_id(Runtime::Resource *t, const std::string &name)
+{
+    uint32_t lo = 1, hi = 0xffff;
+    std::vector<Runtime::Resource::Bone> &bones = t->bones;
+    size_t at = bones.size();  // append unless an insert-before is found
+    for (size_t i = 0; i < bones.size(); i++) {
+        int c = bone_stricmp(bones[i].name, name);
+        if (c == 0) return bones[i].id;
+        if (c > 0) {
+            hi = bones[i].id;
+            at = i;
+            break;
+        }
+        lo = bones[i].id;
+    }
+    uint32_t id = (lo + hi) >> 1;
+    Runtime::Resource::Bone b;
+    b.id = id;
+    b.name = name.substr(0, 31);
+    bones.insert(bones.begin() + at, b);
+    t->text_flags |= 0x1800;  // T+0x16c
+    return id;
+}
+
+// 0x51c450 RenderInstData__findBone: ids ascend in list order.
+Runtime::Resource::Bone *find_bone(Runtime::Resource *t, uint32_t id)
+{
+    for (auto &b : t->bones) {
+        if (b.id == id) return &b;
+        if (b.id > id) return nullptr;
+    }
+    return nullptr;
+}
+
+// 0x4e77f0 RenderInst__getBoneId: no handle id (+8) check in the exe.
+// INVENTED: null-handle safety; the exe dereferences it.
+uint32_t ri_get_bone_id(Runtime::Handle *h, const std::string &name)
+{
+    return (h && h->target) ? bone_id(h->target, name) : 0;
+}
+
+// 0x4ec470 RenderInst__setBoneMatrix with an identity 3x3 rotation: the local
+// matrix is identity plus translation pos*10 (Matrix4__fromRotPosX10 0x567570).
+void ri_set_bone_pos(Runtime::Handle *h, uint32_t id, const float pos[3])
+{
+    if (!h || h->id == 0 || !h->target) return;
+    if (auto *b = find_bone(h->target, id)) {
+        float *m = b->local;
+        m[0] = 1; m[1] = 0; m[2] = 0; m[3] = 0;
+        m[4] = 0; m[5] = 1; m[6] = 0; m[7] = 0;
+        m[8] = 0; m[9] = 0; m[10] = 1; m[11] = 0;
+        m[12] = pos[0] * 10.0f;
+        m[13] = pos[1] * 10.0f;
+        m[14] = pos[2] * 10.0f;
+        m[15] = 1;
+    }
+    // shortcut: bone_ref (0x4e84c0, always 0 from these callers), the dirty
+    // list, n+0x4c (identity bit), n+0x100 and T+0x1c0 = DAT_005dadbc are not
+    // modelled.
+}
+
+// 0x4ea7f0 RenderInst__getBoneMatrix.
+bool ri_get_bone_matrix(Runtime::Handle *h, uint32_t id, float out[16])
+{
+    if (!h || h->id == 0) return false;
+    // INVENTED: the exe returns 1 with out untouched when the typed object is
+    // missing; the rebuild reports the failure instead.
+    if (!h->target) return false;
+    Runtime::Resource::Bone *b = find_bone(h->target, id);
+    if (!b) return false;
+    for (int i = 0; i < 16; i++) out[i] = b->local[i];
+    return true;
+}
+
 // 0x4e5cd0 java.render.Text.setDefaultColor: DAT_005dadac = color. The exe does
 // not read the receiver (FUN_004b1af0(ctx, 0, &color)).
 bool tx_set_default_color(Vm &, const Args &a, Value *out, std::string *err)
@@ -5271,10 +5362,9 @@ bool gfx_is_playing_video(Vm &, const Args &, Value *out, std::string *)
 // 0x4e5b30 java.render.Text.create(ResourceRef parent, ResourceRef charset, float x, float y)
 // INVENTED: the text state lives on the bound Runtime::Resource; the exe keeps it
 // in the render instance's typed data block.
-// shortcut: the bounds reset (+0xb0/+0xb4..+0xc8) and the bone00 write are not
-// modelled; x/y are stored raw in text_pos.
+// shortcut: the bounds reset (+0xb0/+0xb4..+0xc8) is not modelled.
 // UNRESOLVED: FUN_004e8f40's createInstance internals (0x5188e0/0x518880),
-// FUN_004e77f0/FUN_004ec470 (bone00), FUN_0051f4f0 (typed-data mask).
+// FUN_0051f4f0 (typed-data mask).
 bool tx_create(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     if (!need_rt("Text.create", err)) return false;
@@ -5308,9 +5398,8 @@ bool tx_create(Vm &vm, const Args &a, Value *out, std::string *err)
     r->text_align = 2;
     r->text_scale = 1.0f;
     r->text_color = g_default_text_color;
-    r->text_pos[0] = x;
-    r->text_pos[1] = y;
-    r->text_pos[2] = 0.0f;
+    const float p[3] = {x, y, 0.0f};
+    ri_set_bone_pos(h, ri_get_bone_id(h, "bone00"), p);  // 0x4e8f40 bone00
     *out = Value::make_null();
     return true;
 }
@@ -5335,6 +5424,88 @@ bool tx_update(Vm &vm, const Args &a, Value *out, std::string *err)
             r->text_data.clear();
     }
     *out = Value::make_null();
+    return true;
+}
+
+// 0x4e5d00 java.render.Text.setPos(FF)V: bone00 translation, stored x10.
+bool tx_set_pos(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Text.setPos", err)) return false;
+    Object *o;
+    if (!receiver_object("Text.setPos", a, &o, err)) return false;
+    float x, y;
+    if (!want("Text.setPos", a, 3, err) ||
+        !get_f("Text.setPos", a[1], &x, err) ||
+        !get_f("Text.setPos", a[2], &y, err))
+        return false;
+    Runtime::Handle *h = text_renderinst(vm, o);
+    float p[3] = {x, y, 0.0f};
+    ri_set_bone_pos(h, ri_get_bone_id(h, "bone00"), p);
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4e58e0 java.render.Text.getPos()Ljava.lang.Vector3;
+bool tx_get_pos(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Text.getPos", err)) return false;
+    Object *o;
+    if (!receiver_object("Text.getPos", a, &o, err)) return false;
+    Runtime::Handle *h = text_renderinst(vm, o);
+    float m[16];
+    if (!ri_get_bone_matrix(h, ri_get_bone_id(h, "bone00"), m)) {
+        *out = Value::make_null();
+        return true;
+    }
+    float v[3] = {m[12] * 0.1f, m[13] * 0.1f, m[14] * 0.1f};
+    Object *p = new_point(vm, "java.lang.Vector3", v, false, err);
+    if (!p) return false;
+    *out = Value::make_obj(p);
+    return true;
+}
+
+// 0x4e5a20 java.render.Text.getPos(Ljava.lang.Vector3;)Ljava.lang.Vector3;
+bool tx_get_pos_into(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Text.getPos", err)) return false;
+    Object *o;
+    if (!receiver_object("Text.getPos", a, &o, err) || !want("Text.getPos", a, 2, err))
+        return false;
+    Runtime::Handle *h = text_renderinst(vm, o);
+    float m[16];
+    if (!ri_get_bone_matrix(h, ri_get_bone_id(h, "bone00"), m)) {
+        *out = Value::make_null();
+        return true;
+    }
+    float v[3] = {m[12] * 0.1f, m[13] * 0.1f, m[14] * 0.1f};
+    // INVENTED: the exe writes the fields of a null Java object (faults).
+    if (a[1].kind != Value::Obj || !a[1].obj) {
+        *out = Value::make_null();
+        return true;
+    }
+    if (!vec_write(vm, a[1].obj, v, err)) return false;
+    *out = a[1];
+    return true;
+}
+
+// 0x4e2290 RenderRef.getBoneId(Ljava.lang.String;)I
+bool rr_get_bone_id(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("RenderRef.getBoneId", err)) return false;
+    Object *o;
+    const std::string *name;
+    if (!want("RenderRef.getBoneId", a, 2, err) ||
+        !get_o("RenderRef.getBoneId", a[0], &o, err) ||
+        !get_s("RenderRef.getBoneId", a[1], &name, err))
+        return false;
+    Runtime::Handle *h = game_rt()->handle(o);  // 0x4ecc70
+    if (!h) {
+        // INVENTED: the exe appends the handle, file and line; a NativeFn has no frame.
+        std::fprintf(stderr, "vm_renderref_getboneid: scripted resource not found\n");
+        *out = Value::make_int(0);
+        return true;
+    }
+    *out = Value::make_int((int32_t)ri_get_bone_id(h, *name));
     return true;
 }
 
@@ -5930,11 +6101,11 @@ const std::vector<Entry> &table()
     {"java.render.Text", "create", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;FF)V", tx_create, false},
     {"java.render.Text", "changeColor", "(I)V", nullptr, true},
     {"java.render.Text", "changeAlign", "(I)V", nullptr, true},
-    {"java.render.Text", "setPos", "(FF)V", nullptr, true},
-    {"java.render.Text", "getPos", "()Ljava.lang.Vector3;", nullptr, true},
+    {"java.render.Text", "setPos", "(FF)V", tx_set_pos, false},
+    {"java.render.Text", "getPos", "()Ljava.lang.Vector3;", tx_get_pos, false},
     {"java.render.Text", "update", "()V", tx_update, false},
     {"java.render.Text", "getWidthPixels", "(Ljava.lang.String;Ljava.util.resource.ResourceRef;)F", nullptr, true},
-    {"java.render.Text", "getPos", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", nullptr, true},
+    {"java.render.Text", "getPos", "(Ljava.lang.Vector3;)Ljava.lang.Vector3;", tx_get_pos_into, false},
     {"java.util.resource.Animation", "<init>", "(Ljava.util.resource.RenderRef;Ljava.util.resource.ResourceRef;)", anim_ctor, false},
     {"java.util.resource.Animation", "finalize", "()V", anim_finalize, false},
     {"java.util.resource.Animation", "setSpeed", "(F)V", anim_set_speed, false},
@@ -6038,7 +6209,7 @@ const std::vector<Entry> &table()
     {"java.util.resource.GroundRef", "getTrafficCarPos", "(ILjava.lang.Vector3;)V", nullptr, true},
     {"java.util.resource.GroundRef", "getPedestrianPos", "(Ljava.lang.Vector3;Ljava.lang.Vector3;I)V", nullptr, true},
     {"java.util.resource.RenderRef", "create", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.RenderRef;Ljava.lang.String;)V", nullptr, true},
-    {"java.util.resource.RenderRef", "getBoneId", "(Ljava.lang.String;)I", nullptr, true},
+    {"java.util.resource.RenderRef", "getBoneId", "(Ljava.lang.String;)I", rr_get_bone_id, false},
     {"java.util.resource.RenderRef", "setMatrix", "(ILjava.util.resource.ResourceRef;Ljava.lang.Vector3;Ljava.lang.Ypr;)V", nullptr, true},
     {"java.util.resource.RenderRef", "setMatrix", "(Ljava.lang.Vector3;Ljava.lang.Ypr;)V", nullptr, true},
     {"java.util.resource.RenderRef", "changeResource", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;)V", nullptr, true},

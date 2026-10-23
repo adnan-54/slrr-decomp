@@ -71,7 +71,14 @@ class Runtime {
         int32_t text_align = 2;            // +0x174 (2 = left)
         float text_scale = 1.0f;           // +0x178
         uint32_t text_color = 0xffffffffu; // +0x17c (DAT_005dadac)
-        float text_pos[3] = {};            // INVENTED: bone00 matrix translation, raw (x,y,0)
+        // Render-instance bone (RenderController, 0x51b050): typed-data bone list at
+        // T+0x1f4, kept sorted by name (_stricmp). INVENTED: lives on the bound Resource.
+        struct Bone {
+            uint32_t id = 0;        // +0x44
+            std::string name;       // +0x24, at most 31 chars
+            float local[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};  // +0x64..+0xa0
+        };
+        std::vector<Bone> bones;    // list order = name order
         // res_viewport typed data (0x525120, notes/12 §9): +0xc depth/order,
         // +0x10..+0x1c relative x,y,w,h.
         // INVENTED: the exe keeps these in the typed data block, not on the RI.

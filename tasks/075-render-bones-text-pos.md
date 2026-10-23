@@ -1,7 +1,7 @@
 ---
 id: 075
-status: todo
-branch:
+status: implemented
+branch: card/075
 depends: []
 ---
 # render/script: render-instance bone table; Text.setPos/getPos + RenderRef.getBoneId
