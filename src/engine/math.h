@@ -122,7 +122,8 @@ static inline void mat_inverse(Mat34 *o, const Mat34 *s)
 }
 
 // 0x5666d0 FUN_005666d0: Euler angles {a0,a1,a2} -> rotation matrix.
-// 0x570fcb is sin and 0x570e7e is cos (inferred from the -sin(a1) entry at m[6]); verify against the exe's CRT helpers.
+// Verified sin/cos mapping: 0x570fcb calls 0x57e440 (fsin) and 0x570e7e calls
+// 0x57e3f0 (fcos), so a0/a1/a2 are each read as sin then cos, in order.
 static inline void euler_to_mat(Mat34 *o, const float ang[3])
 {
     float sa = sinf(ang[0]), ca = cosf(ang[0]);

@@ -5290,6 +5290,41 @@ bool ri_get_bone_matrix(Runtime::Handle *h, uint32_t id, float out[16])
     return true;
 }
 
+// 0x4ec980 over a Vector3 {x,y,z} or Ypr {y,p,r}: a missing argument or field
+// yields 0.0f; read through dd_get_f, which never fails.
+static void get3(Vm &vm, const Value &v, const char *a, const char *b,
+                 const char *c, float out[3])
+{
+    Object *o = v.kind == Value::Obj ? v.obj : nullptr;  // INVENTED: non-object -> null
+    out[0] = o ? dd_get_f(vm, o, a) : 0.0f;
+    out[1] = o ? dd_get_f(vm, o, b) : 0.0f;
+    out[2] = o ? dd_get_f(vm, o, c) : 0.0f;
+}
+
+// 0x4ec540 RenderInst__setBoneMatrixYpr: bone `id`'s local matrix from ypr
+// (y,p,r, same order as the exe's stack vector 0x569b40) and pos (x10).
+// INVENTED: the typed data T is the bound Runtime::Resource.
+void ri_set_bone_matrix_ypr(Runtime::Handle *h, uint32_t id,
+                            const float pos[3], const float ypr[3])
+{
+    if (!h || h->id == 0 || !h->target) return;   // exe: handle+8 == 0 -> 0
+    Runtime::Resource *t = h->target;
+    Runtime::Resource::Bone *b = find_bone(t, id);
+    if (!b) return;
+    Mat34 rot = {};                    // 0x5666d0 (euler_to_mat)
+    euler_to_mat(&rot, ypr);
+    float *m = b->local;               // 0x567570: transpose 3x3, pos*10, w=1
+    m[0] = rot.m[0];  m[1] = rot.m[4];  m[2]  = rot.m[8];  m[3]  = 0.0f;
+    m[4] = rot.m[1];  m[5] = rot.m[5];  m[6]  = rot.m[9];  m[7]  = 0.0f;
+    m[8] = rot.m[2];  m[9] = rot.m[6];  m[10] = rot.m[10]; m[11] = 0.0f;
+    m[12] = pos[0] * 10.0f; m[13] = pos[1] * 10.0f; m[14] = pos[2] * 10.0f;
+    m[15] = 1.0f;
+    t->text_flags |= 0x1800;           // 0x4ec0f0, typed data +0x16c
+    // shortcut: 0x4ec0f0's dirty-list move (T+0x260/T+0x270), n+0x4c
+    // identity bit, n+0x100, the T+0x1c0 frame counter and the 0x4e84c0
+    // bone_ref attach are unmodelled; src has no render side reading them.
+}
+
 // 0x4e5cd0 java.render.Text.setDefaultColor: DAT_005dadac = color. The exe does
 // not read the receiver (FUN_004b1af0(ctx, 0, &color)).
 bool tx_set_default_color(Vm &, const Args &a, Value *out, std::string *err)
@@ -5602,6 +5637,84 @@ bool rr_get_bone_id(Vm &, const Args &a, Value *out, std::string *err)
         return true;
     }
     *out = Value::make_int((int32_t)ri_get_bone_id(h, *name));
+    return true;
+}
+
+// 0x4e2140 RenderRef.create(ResourceRef parent, RenderRef type, String name)V
+bool rr_create(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("RenderRef.create", err)) return false;
+    Object *o;
+    if (!receiver_object("RenderRef.create", a, &o, err) ||
+        !want("RenderRef.create", a, 4, err))
+        return false;
+    Runtime::Handle *h = game_rt()->handle(o);
+    Runtime::Handle *parent = value_handle(a[1]);
+    Runtime::Handle *type = value_handle(a[2]);
+    *out = Value::make_null();
+    if (!h || !parent || !type) {
+        // INVENTED: the exe appends the id, file and line (no frame here).
+        std::fprintf(stderr, "vm_renderref_create: scripted resource not found\n");
+        return true;
+    }
+    // parent handle unbound: the exe returns silently (no log). Type unbound
+    // would fault in 0x51e090; INVENTED safety treats it the same as unbound.
+    if (!parent->target || !type->target) return true;
+    std::string name = a[3].kind == Value::Str ? a[3].s : std::string("_renderinst");
+    Runtime::Resource *r = game_rt()->instantiate(type->target, parent->target,
+                                                  name, "", false, err);
+    if (!r) return false;
+    r->type = 3;        // 0x524840 descriptor kind 3 (ins_render)
+    r->flags |= 0x200;  // RI+0x84
+    game_rt()->bind(h, r);           // 0x40cac0 (ECX = self handle)
+    ri_get_bone_id(h, "bone00");     // 0x4e77f0 -> 0x51b940, id 0x8000
+    return true;
+}
+
+// 0x4e2c80 RenderRef.setMatrix(Vector3 pos, Ypr ori)V
+bool rr_set_matrix(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("RenderRef.setMatrix", err)) return false;
+    Object *o;
+    if (!receiver_object("RenderRef.setMatrix", a, &o, err) ||
+        !want("RenderRef.setMatrix", a, 3, err))
+        return false;
+    Runtime::Handle *h = game_rt()->handle(o);
+    *out = Value::make_null();
+    if (!h) {
+        // INVENTED: the exe appends the id, file and line.
+        std::fprintf(stderr, "vm_renderref_setmatrix_d: scripted resource not found\n");
+        return true;
+    }
+    float pos[3], ypr[3];
+    get3(vm, a[1], "x", "y", "z", pos);
+    get3(vm, a[2], "y", "p", "r", ypr);
+    ri_set_bone_matrix_ypr(h, ri_get_bone_id(h, "bone00"), pos, ypr);
+    return true;
+}
+
+// 0x4e2a50 RenderRef.setMatrix(int bone, ResourceRef boneRef, Vector3 pos, Ypr ori)V
+bool rr_set_matrix_bone(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("RenderRef.setMatrix", err)) return false;
+    Object *o;
+    int32_t bone;
+    if (!receiver_object("RenderRef.setMatrix", a, &o, err) ||
+        !want("RenderRef.setMatrix", a, 5, err) ||
+        !get_i("RenderRef.setMatrix", a[1], &bone, err))
+        return false;
+    Runtime::Handle *h = game_rt()->handle(o);
+    *out = Value::make_null();
+    if (!h) {
+        // INVENTED: the exe appends the id, file and line.
+        std::fprintf(stderr, "vm_renderref_setmatrix: scripted resource not found\n");
+        return true;
+    }
+    float pos[3], ypr[3];
+    get3(vm, a[3], "x", "y", "z", pos);
+    get3(vm, a[4], "y", "p", "r", ypr);
+    // a[2] (boneRef) only feeds 0x4e84c0, whose effects are unmodelled.
+    ri_set_bone_matrix_ypr(h, (uint32_t)bone, pos, ypr);
     return true;
 }
 
@@ -6428,10 +6541,10 @@ const std::vector<Entry> &table()
     {"java.util.resource.GroundRef", "pedestrianDistance", "(Ljava.lang.Vector3;I)F", nullptr, true},
     {"java.util.resource.GroundRef", "getTrafficCarPos", "(ILjava.lang.Vector3;)V", nullptr, true},
     {"java.util.resource.GroundRef", "getPedestrianPos", "(Ljava.lang.Vector3;Ljava.lang.Vector3;I)V", nullptr, true},
-    {"java.util.resource.RenderRef", "create", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.RenderRef;Ljava.lang.String;)V", nullptr, true},
+    {"java.util.resource.RenderRef", "create", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.RenderRef;Ljava.lang.String;)V", rr_create, false},
     {"java.util.resource.RenderRef", "getBoneId", "(Ljava.lang.String;)I", rr_get_bone_id, false},
-    {"java.util.resource.RenderRef", "setMatrix", "(ILjava.util.resource.ResourceRef;Ljava.lang.Vector3;Ljava.lang.Ypr;)V", nullptr, true},
-    {"java.util.resource.RenderRef", "setMatrix", "(Ljava.lang.Vector3;Ljava.lang.Ypr;)V", nullptr, true},
+    {"java.util.resource.RenderRef", "setMatrix", "(ILjava.util.resource.ResourceRef;Ljava.lang.Vector3;Ljava.lang.Ypr;)V", rr_set_matrix_bone, false},
+    {"java.util.resource.RenderRef", "setMatrix", "(Ljava.lang.Vector3;Ljava.lang.Ypr;)V", rr_set_matrix, false},
     {"java.util.resource.RenderRef", "changeResource", "(Ljava.util.resource.ResourceRef;Ljava.util.resource.ResourceRef;)V", nullptr, true},
     {"java.util.resource.RenderRef", "setColor", "(I)V", rr_set_color, false},
     {"java.util.resource.RenderRef", "setLight", "(III)V", nullptr, true},
