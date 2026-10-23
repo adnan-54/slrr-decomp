@@ -1,7 +1,7 @@
 ---
 id: 064
-status: todo
-branch:
+status: implemented
+branch: card/064-sfxref-nplay-stop
 depends: []
 ---
 # audio: SfxRef.nplay / SfxRef.stop

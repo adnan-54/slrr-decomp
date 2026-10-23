@@ -4247,6 +4247,58 @@ bool sfx_add_item(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// ---- java.util.resource.SfxRef ---------------------------------------------
+
+// 0x4e4610 SfxRef.nplay(Vector3,float radius,float pitch,float volume,int flags,
+// int instance)I
+bool sfxref_nplay(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float radius, pitch, volume;
+    int32_t flags, instance;
+    if (!want("SfxRef.nplay", a, 7, err) ||
+        !get_f("SfxRef.nplay", a[2], &radius, err) ||
+        !get_f("SfxRef.nplay", a[3], &pitch, err) ||
+        !get_f("SfxRef.nplay", a[4], &volume, err) ||
+        !get_i("SfxRef.nplay", a[5], &flags, err) ||
+        !get_i("SfxRef.nplay", a[6], &instance, err))
+        return false;
+    (void)radius;
+    (void)pitch;
+    (void)volume;
+    (void)flags;
+    (void)instance;
+    Runtime::Handle *h = value_handle(a[0]);  // 0x4ecc70
+    if (!h) {
+        std::fprintf(stderr, "vm_sfxref_play: scripted resource not found\n");
+        *out = Value::make_int(-1);
+        return true;
+    }
+    // shortcut: src has no process-wide VoicePool/AudioAssets instance and no
+    // sound-resource parser, so Game__postEvent 0x4eb5c0's typed-asset lookup
+    // (*(A+0x60) id, *(A+0x6c) base volume) cannot run; every one of its failure
+    // branches returns -1, so that is the exe value on this path. Upgrade when
+    // the SFX service exists (card 064 UNRESOLVED).
+    *out = Value::make_int(-1);
+    return true;
+}
+
+// 0x4e47d0 SfxRef.stop(int instance)V
+bool sfxref_stop(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t instance;
+    if (!want("SfxRef.stop", a, 2, err) ||
+        !get_i("SfxRef.stop", a[1], &instance, err))
+        return false;
+    (void)instance;
+    Runtime::Handle *h = value_handle(a[0]);  // 0x4ecc70
+    if (!h) std::fprintf(stderr, "vm_sfxref_stop: scripted resource not found\n");
+    // shortcut: no voice pool/backend instance; 0x4eba90 returns before its
+    // Sound__stopInstance(0x569020) call whenever the typed sound asset is
+    // absent, so the reachable stop path is a no-op. Upgrade with the service.
+    *out = Value::make_null();
+    return true;
+}
+
 // ---- java.io.Controller ----------------------------------------------------
 
 // INVENTED: the exe allocates the block with the typed "controller" object; we
@@ -5429,8 +5481,8 @@ const std::vector<Entry> &table()
     {"java.util.resource.PhysicsRef", "setMatrix", "(Ljava.lang.Vector3;Ljava.lang.Ypr;)V", nullptr, true},
     {"java.util.resource.PhysicsRef", "getPos", "()Ljava.lang.Vector3;", nullptr, true},
     {"java.util.resource.PhysicsRef", "getOri", "()Ljava.lang.Ypr;", nullptr, true},
-    {"java.util.resource.SfxRef", "nplay", "(Ljava.lang.Vector3;FFFII)I", nullptr, true},
-    {"java.util.resource.SfxRef", "stop", "(I)V", nullptr, true},
+    {"java.util.resource.SfxRef", "nplay", "(Ljava.lang.Vector3;FFFII)I", sfxref_nplay, false},
+    {"java.util.resource.SfxRef", "stop", "(I)V", sfxref_stop, false},
     {"java.game.Painter", "paintPart", "(Ljava.util.resource.GameRef;I)V", nullptr, true},
     {"java.game.Painter", "doPaint", "(Ljava.util.resource.GameRef;IIIFFI)V", nullptr, true},
     {"java.game.Painter", "xPaint", "(Ljava.util.resource.GameRef;)V", nullptr, true},
