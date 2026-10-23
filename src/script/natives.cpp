@@ -2185,6 +2185,26 @@ bool gr_queue_event(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4daa80 GameRef.getInfo(II)I / getInfo(ILjava.lang.String;)I
+bool gr_get_info(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameRef.getInfo", err)) return false;
+    if (!want("GameRef.getInfo", a, 3, err)) return false;
+    *out = Value::make_int(0);
+    Runtime::Handle *h = value_handle(a[0]);              // 0x4ecc70
+    if (!h) {
+        std::fprintf(stderr, "vm_gameref_getinfo: scripted resource not found\n");
+        return true;
+    }
+    if (h->id == 0 || !h->target) return true;            // exe +8 / +0xc guards
+    // shortcut: 0x4daa80 then makes the RI resident, requires typed data with a
+    // native instance (typed+0x4c), resolves the type-registry entry 0x468b00
+    // and calls its manager vtbl+0x3c(instance, query, sub). src has no typed-
+    // data / native-type-manager layer (see the `shortcut:` in Runtime::queue_event);
+    // exe failure value 0.
+    return true;
+}
+
 // ---- java.lang.GameType events -------------------------------------------
 
 // 0x4da3c0: GameType.addTimer(float deadline, int timerid). One-shot at
@@ -2225,6 +2245,44 @@ bool gt_remove_all_timers(Vm &, const Args &a, Value *out, std::string *err)
         return true;
     }
     game_rt()->remove_timers(h);
+    return true;
+}
+
+// 0x4dc740: GameType.registerCallback(I)V.
+bool gt_register_callback(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameType.registerCallback", err)) return false;
+    int32_t mode;
+    if (!want("GameType.registerCallback", a, 2, err) ||
+        !get_i("GameType.registerCallback", a[1], &mode, err))
+        return false;
+    *out = Value::make_null();
+    Runtime::Handle *h = value_handle(a[0]);  // 0x4ecc70
+    game_rt()->register_callback(h, mode);
+    return true;
+}
+
+// 0x4dc7c0: GameType.unregisterCallback(I)V.
+bool gt_unregister_callback(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameType.unregisterCallback", err)) return false;
+    int32_t mode;
+    if (!want("GameType.unregisterCallback", a, 2, err) ||
+        !get_i("GameType.unregisterCallback", a[1], &mode, err))
+        return false;
+    *out = Value::make_null();
+    Runtime::Handle *h = value_handle(a[0]);  // 0x4ecc70
+    game_rt()->unregister_callback(h, mode);
+    return true;
+}
+
+// 0x4dc800: GameType.unregisterCallbacks()V.
+bool gt_unregister_callbacks(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("GameType.unregisterCallbacks", err)) return false;
+    if (!want("GameType.unregisterCallbacks", a, 1, err)) return false;
+    *out = Value::make_null();
+    // 0x477320 is an empty function (bytes c2 04 00 = ret 4): no-op.
     return true;
 }
 
@@ -6520,9 +6578,9 @@ const std::vector<Entry> &table()
     {"java.lang.GameType", "removeAllTimers", "()V", gt_remove_all_timers, false},
     {"java.lang.GameType", "setEventMask", "(I)V", gt_set_event_mask, false},
     {"java.lang.GameType", "clearEventMask", "(I)V", gt_clear_event_mask, false},
-    {"java.lang.GameType", "registerCallback", "(I)V", nullptr, true},
-    {"java.lang.GameType", "unregisterCallback", "(I)V", nullptr, true},
-    {"java.lang.GameType", "unregisterCallbacks", "()V", nullptr, true},
+    {"java.lang.GameType", "registerCallback", "(I)V", gt_register_callback, false},
+    {"java.lang.GameType", "unregisterCallback", "(I)V", gt_unregister_callback, false},
+    {"java.lang.GameType", "unregisterCallbacks", "()V", gt_unregister_callbacks, false},
     {"java.lang.GameType", "createNativeInstance", "(Ljava.util.resource.GameRef;ILjava.lang.String;Ljava.lang.String;)V", gt_create_native_instance, true},
     {"java.util.resource.ResourceRef", "deleteNative", "()V", rr_delete_native, true},
     {"java.util.resource.ResourceRef", "newNative", "()V", rr_new_native, true},
@@ -6552,8 +6610,8 @@ const std::vector<Entry> &table()
     {"java.util.resource.GameRef", "getPos", "()Ljava.lang.Vector3;", gr_get_pos, true},
     {"java.util.resource.GameRef", "getOri", "()Ljava.lang.Ypr;", gr_get_ori, true},
     {"java.util.resource.GameRef", "getVel", "()Ljava.lang.Vector3;", gr_get_vel, true},
-    {"java.util.resource.GameRef", "getInfo", "(II)I", nullptr, true},
-    {"java.util.resource.GameRef", "getInfo", "(ILjava.lang.String;)I", nullptr, true},
+    {"java.util.resource.GameRef", "getInfo", "(II)I", gr_get_info, false},
+    {"java.util.resource.GameRef", "getInfo", "(ILjava.lang.String;)I", gr_get_info, false},
     {"java.util.resource.GameRef", "queueEvent", "(Ljava.util.resource.ResourceRef;ILjava.lang.String;)V", gr_queue_event, false},
     {"java.util.resource.GameRef", "setParent", "(Ljava.util.resource.ResourceRef;)V", gr_set_parent, true},
     {"java.util.resource.GameRef", "setPos", "(Ljava.lang.Vector3;)V", gr_set_pos, true},

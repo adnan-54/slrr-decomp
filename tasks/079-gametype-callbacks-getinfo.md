@@ -1,7 +1,7 @@
 ---
 id: 079
-status: todo
-branch:
+status: implemented
+branch: card/079
 depends: []
 ---
 # script: GameType callback registration + GameRef.getInfo

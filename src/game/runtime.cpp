@@ -65,6 +65,9 @@ Runtime::~Runtime()
     // the resources' ref lists do not outlive them.
     for (auto &t : timers_) unlink(&t->handle);
     timers_.clear();
+    // INVENTED: Game dtor not traced; unbind callback handles like the timers.
+    for (auto &c : callbacks_) unlink(&c->handle);
+    callbacks_.clear();
     // INVENTED: same cleanup for the deferred queues (dtor not traced).
     for (auto &h : unload_q_) unlink(h.get());
     for (auto &h : delete_q_) unlink(h.get());
@@ -542,6 +545,35 @@ void Runtime::run_timers(float now)
         }
         if (last) break;
         it = nx;
+    }
+}
+
+// 0x47d670 Game__registerCallback (ECX = Game; ret 8): append a
+// ResourceRefDLNode bound to h->target to the mode's list.
+void Runtime::register_callback(Handle *h, int mode)
+{
+    // INVENTED: 0x47b090 dereferences h (+0xc); a null handle crashes the exe.
+    if (!h) return;
+    if (mode != 8 && mode != 9 && mode != 0x1c) return;   // exe default
+    auto cb = std::make_unique<Callback>();
+    cb->mode = mode;
+    bind(&cb->handle, h->target);                          // 0x47b090 -> 0x40cac0
+    callbacks_.push_back(std::move(cb));                   // append at the tail
+}
+
+// 0x47e390 Game__unregisterCallback (ECX = Game; ret 8): first node of that
+// mode whose handle id equals h->id; 0x488080 unlinks its handle only.
+void Runtime::unregister_callback(Handle *h, int mode)
+{
+    if (!h) return;                                        // INVENTED (exe reads h+8)
+    for (auto it = callbacks_.begin(); it != callbacks_.end(); ++it) {
+        Callback *cb = it->get();
+        if (cb->mode != mode || cb->handle.id != h->id) continue;
+        unlink(&cb->handle);                               // 0x488080
+        // shortcut: the consumers 0x47ba10/0x47bc20/0x47be30 that reap id-0
+        // nodes are not ported; drop the dead node here to bound the list.
+        callbacks_.erase(it);
+        return;
     }
 }
 

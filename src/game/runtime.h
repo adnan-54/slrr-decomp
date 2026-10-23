@@ -194,6 +194,17 @@ class Runtime {
     void remove_timers(Handle *h);
     // 0x47b700: fire due timers at sim time now.
     void run_timers(float now);
+    // Game callback lists (0x47d670): one 0x34-byte ResourceRefDLNode per
+    // registerCallback, whose handle is bound to the receiver's resource
+    // (0x47b090). Modes 8 = GII_CONTROL, 9 = GII_DRIVE, 0x1c = GII_ANIMATE.
+    struct Callback {
+        Handle handle;   // node+0x24
+        int mode = 0;    // the exe keeps three lists; one mode-tagged list is equivalent
+    };
+    // 0x47d670: append; other modes are a no-op. Null handle: INVENTED guard.
+    void register_callback(Handle *h, int mode);
+    // 0x47e390: unlink the handle of the first node of `mode` with id == h->id.
+    void unregister_callback(Handle *h, int mode);
     // Wrapper object selected like FUN_004e7320 (GameRef/RenderRef/ResourceRef).
     Object *wrap(Resource *r, std::string *err);
     // Script class chain lookup used by GameRef.isScripted.
@@ -213,6 +224,7 @@ class Runtime {
     std::vector<std::unique_ptr<Resource>> instances_;
     std::map<Object *, Handle *> handles_;
     std::list<std::unique_ptr<Timer>> timers_;
+    std::list<std::unique_ptr<Callback>> callbacks_;
     std::list<std::unique_ptr<Handle>> unload_q_, delete_q_;   // Game+0xe8 / +0x134
     uint32_t next_instance_id_ = 0x80000000u;
     static Runtime *active_;
