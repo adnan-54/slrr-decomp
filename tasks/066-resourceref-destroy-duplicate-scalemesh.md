@@ -1,7 +1,7 @@
 ---
 id: 066
-status: todo
-branch:
+status: implemented
+branch: card/066
 depends: []
 ---
 # resource: ResourceRef.destroy / duplicate / scaleMesh

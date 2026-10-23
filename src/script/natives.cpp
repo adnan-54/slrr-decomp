@@ -1653,6 +1653,64 @@ bool rr_precache(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4e32b0 ResourceRef.destroy()V
+bool rr_destroy(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("ResourceRef.destroy", a, 1, err)) return false;
+    *out = Value::make_null();
+    Runtime::Handle *h = value_handle(a[0]);
+    // 0x4e9450 (ECX = h) requires both id (+0x8) and RI (+0xc); only then
+    // 0x47b970 queues the deferred delete on global 0x5fde90.
+    // shortcut: no frame-end delete queue in src; detach removes the ref node
+    // now (card 063's mapping for the same helper). The Resource node stays.
+    if (h && h->id != 0 && h->target) game_rt()->detach(a[0].obj);
+    return true;
+}
+
+// 0x4e32e0 ResourceRef.duplicate(ResourceRef source)V
+bool rr_duplicate(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("ResourceRef.duplicate", a, 2, err)) return false;
+    *out = Value::make_null();
+    Runtime::Handle *h = value_handle(a[0]);
+    if (!h || a[1].kind != Value::Obj || !a[1].obj) return true;
+    Runtime::Resource *src = value_resource(a[1]);
+    if (src) {
+        uint32_t t = src->type;  // RI+0x7c
+        if (t == 0xe || t == 0xd || t == 5 || t == 7) {
+            // shortcut: 0x4e9470 clones these types through FUN_0051ee30;
+            // src/ has no resource-clone service, so the receiver is unchanged.
+            return true;
+        }
+    }
+    // 0x4e9470 else branch -> 0x40cac0(src): null src clears the receiver.
+    game_rt()->bind(h, src);
+    return true;
+}
+
+// 0x4e4210 ResourceRef.scaleMesh(float x, float y, float z)V
+bool rr_scale_mesh(Vm &, const Args &a, Value *out, std::string *err)
+{
+    float x, y, z;
+    if (!want("ResourceRef.scaleMesh", a, 4, err) ||
+        !get_f("ResourceRef.scaleMesh", a[1], &x, err) ||
+        !get_f("ResourceRef.scaleMesh", a[2], &y, err) ||
+        !get_f("ResourceRef.scaleMesh", a[3], &z, err))
+        return false;
+    (void)x;
+    (void)y;
+    (void)z;
+    *out = Value::make_null();
+    if (!value_handle(a[0])) {
+        std::fprintf(stderr, "vm_resourceref_scalemesh: scripted resource not found\n");
+        return true;
+    }
+    // shortcut: 0x4ebbf0 needs the instance typed data (vtbl +0xc / 0x51f4f0
+    // mask 0x80000000) and applies the scale to render nodes via FUN_004d8710
+    // (T+0x18, node vf +0x4c); no typed-data or node-list service in src/.
+    return true;
+}
+
 // ---- java.util.resource.GameRef -------------------------------------------
 
 // 0x4daa40: RI+0x84. No missing-handle error in the exe; returns 0.
@@ -5444,7 +5502,7 @@ const std::vector<Entry> &table()
     {"java.util.resource.ResourceRef", "set", "(Ljava.util.resource.ResourceRef;)V", rr_set_ref, true},
     {"java.util.resource.ResourceRef", "load", "()V", rr_load, false},
     {"java.util.resource.ResourceRef", "unload", "()V", rr_unload, false},
-    {"java.util.resource.ResourceRef", "destroy", "()V", nullptr, true},
+    {"java.util.resource.ResourceRef", "destroy", "()V", rr_destroy, false},
     {"java.util.resource.ResourceRef", "type", "()I", rr_type, true},
     {"java.util.resource.ResourceRef", "id", "()I", rr_id, true},
     {"java.util.resource.ResourceRef", "getParentID", "()I", rr_get_parent_id, true},
@@ -5456,8 +5514,8 @@ const std::vector<Entry> &table()
     {"java.util.resource.ResourceRef", "makeSound", "(Ljava.util.resource.ResourceRef;Ljava.lang.String;)V", nullptr, true},
     {"java.util.resource.ResourceRef", "cache", "()V", rr_cache, false},
     {"java.util.resource.ResourceRef", "precache", "()V", rr_precache, false},
-    {"java.util.resource.ResourceRef", "duplicate", "(Ljava.util.resource.ResourceRef;)V", nullptr, true},
-    {"java.util.resource.ResourceRef", "scaleMesh", "(FFF)V", nullptr, true},
+    {"java.util.resource.ResourceRef", "duplicate", "(Ljava.util.resource.ResourceRef;)V", rr_duplicate, false},
+    {"java.util.resource.ResourceRef", "scaleMesh", "(FFF)V", rr_scale_mesh, false},
     {"java.util.resource.GameRef", "create", "(Ljava.util.resource.GameRef;Ljava.util.resource.GameRef;Ljava.lang.String;Ljava.lang.String;)Ljava.lang.GameType;", gr_create, true},
     {"java.util.resource.GameRef", "create_native", "(Ljava.util.resource.GameRef;Ljava.util.resource.GameRef;Ljava.lang.String;Ljava.lang.String;)V", gr_create_native, true},
     {"java.util.resource.GameRef", "getFlags", "()I", gr_get_flags, true},
