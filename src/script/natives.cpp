@@ -4925,6 +4925,103 @@ bool vp_destroy(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// ---- java.render.Viewport accessors (0x4e6db0 / 0x4e6ee0 / 0x4e6df0 /
+// 0x4e6e90 / 0x4e6e40 / 0x4e6f30)
+
+// Returns the bound type-0x12 resource's rect, or nullptr; the exe's typed-data
+// guard (FUN_00421610) yields no block for any other resource type.
+static Runtime::Resource *viewport_resource(const Value &receiver)
+{
+    Runtime::Resource *r = value_resource(receiver);
+    return r && r->type == 0x12 ? r : nullptr;
+}
+
+// 0x4e6db0 Viewport.getAspect: exe = backbuffer w / backbuffer h (FUN_004210f0,
+// C3DLow vtable+0x64). shortcut: no backbuffer-size service in src/; 1.0f is the
+// exe's own no-handle / no-typed-data value (0x4e6de9 / 0x4e9ab0 FLD1). INVENTED:
+// the ratio is not computed even when a resource is bound.
+bool vp_get_aspect(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Viewport.getAspect", err)) return false;
+    Object *o;
+    if (!receiver_object("Viewport.getAspect", a, &o, err)) return false;
+    Runtime::Resource *r = viewport_resource(a[0]);
+    (void)r;
+    *out = Value::make_float(1.0f);
+    return true;
+}
+
+// 0x4e6ee0 Viewport.getWidth: exe returns typed viewport data +0x18.
+// INVENTED: missing handle/typed data returns 0.0f; the exe's fallback is the raw
+// receiver slot (0x4e6f1f FLD [EBP-4]), which has no rebuild equivalent.
+bool vp_get_width(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Viewport.getWidth", err)) return false;
+    Object *o;
+    if (!receiver_object("Viewport.getWidth", a, &o, err)) return false;
+    Runtime::Resource *r = viewport_resource(a[0]);
+    *out = Value::make_float(r ? r->viewport_rect[2] : 0.0f);
+    return true;
+}
+
+// 0x4e6df0 Viewport.getHeight: exe returns typed viewport data +0x1c.
+// INVENTED: missing handle/typed data returns 0.0f; the exe's fallback is the raw
+// receiver slot, which has no rebuild equivalent.
+bool vp_get_height(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Viewport.getHeight", err)) return false;
+    Object *o;
+    if (!receiver_object("Viewport.getHeight", a, &o, err)) return false;
+    Runtime::Resource *r = viewport_resource(a[0]);
+    *out = Value::make_float(r ? r->viewport_rect[3] : 0.0f);
+    return true;
+}
+
+// 0x4e6e90 Viewport.getTop: exe returns typed viewport data +0x14.
+// INVENTED: missing handle/typed data returns 0.0f; the exe's fallback is the raw
+// receiver slot, which has no rebuild equivalent.
+bool vp_get_top(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Viewport.getTop", err)) return false;
+    Object *o;
+    if (!receiver_object("Viewport.getTop", a, &o, err)) return false;
+    Runtime::Resource *r = viewport_resource(a[0]);
+    *out = Value::make_float(r ? r->viewport_rect[1] : 0.0f);
+    return true;
+}
+
+// 0x4e6e40 Viewport.getLeft: exe returns typed viewport data +0x10.
+// INVENTED: missing handle/typed data returns 0.0f; the exe's fallback is the raw
+// receiver slot, which has no rebuild equivalent.
+bool vp_get_left(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Viewport.getLeft", err)) return false;
+    Object *o;
+    if (!receiver_object("Viewport.getLeft", a, &o, err)) return false;
+    Runtime::Resource *r = viewport_resource(a[0]);
+    *out = Value::make_float(r ? r->viewport_rect[0] : 0.0f);
+    return true;
+}
+
+// 0x4e6f30 Viewport.resize: writes typed viewport data +0x10..+0x1c; no-op without a handle.
+bool vp_resize(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!need_rt("Viewport.resize", err)) return false;
+    Object *o;
+    if (!receiver_object("Viewport.resize", a, &o, err)) return false;
+    float v[4];
+    if (!want("Viewport.resize", a, 5, err) ||
+        !get_f("Viewport.resize", a[1], &v[0], err) ||
+        !get_f("Viewport.resize", a[2], &v[1], err) ||
+        !get_f("Viewport.resize", a[3], &v[2], err) ||
+        !get_f("Viewport.resize", a[4], &v[3], err))
+        return false;
+    if (Runtime::Resource *r = viewport_resource(a[0]))
+        for (int i = 0; i < 4; ++i) r->viewport_rect[i] = v[i];
+    *out = Value::make_null();
+    return true;
+}
+
 }  // namespace
 
 namespace natives {
@@ -5192,13 +5289,13 @@ const std::vector<Entry> &table()
     {"java.render.Viewport", "destroy", "()V", vp_destroy, false},
     {"java.render.Viewport", "activate", "(I)V", vp_activate, false},
     {"java.render.Viewport", "deactivate", "()V", vp_deactivate, false},
-    {"java.render.Viewport", "getAspect", "()F", nullptr, true},
-    {"java.render.Viewport", "getWidth", "()F", nullptr, true},
-    {"java.render.Viewport", "getHeight", "()F", nullptr, true},
-    {"java.render.Viewport", "getTop", "()F", nullptr, true},
-    {"java.render.Viewport", "getLeft", "()F", nullptr, true},
+    {"java.render.Viewport", "getAspect", "()F", vp_get_aspect, false},
+    {"java.render.Viewport", "getWidth", "()F", vp_get_width, false},
+    {"java.render.Viewport", "getHeight", "()F", vp_get_height, false},
+    {"java.render.Viewport", "getTop", "()F", vp_get_top, false},
+    {"java.render.Viewport", "getLeft", "()F", vp_get_left, false},
     {"java.render.Viewport", "unproject", "(Ljava.lang.Vector3;I)Ljava.lang.Vector3;", nullptr, true},
-    {"java.render.Viewport", "resize", "(FFFF)V", nullptr, true},
+    {"java.render.Viewport", "resize", "(FFFF)V", vp_resize, false},
     {"java.render.Text", "setScale", "(FF)V", nullptr, true},
     {"java.render.Text", "setDefaultColor", "(I)V", tx_set_default_color, false},
     {"java.render.Text", "getDefaultColor", "()I", tx_get_default_color, false},
