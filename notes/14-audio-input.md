@@ -539,7 +539,7 @@ Entry (also used as an intrusive list node):
 |---|---|
 | 0x00 | next pointer |
 | 0x04 | prev pointer |
-| 0x08 | owner word = resource + 0x80 |
+| 0x08 | id = `*(resource+0x80)` (the RI id word; see 2.6) |
 | 0x0c | SfxRef/resource pointer |
 | 0x10 | inverse pitch (1.0 / pitch) |
 | 0x14 | pitch min |
@@ -549,7 +549,7 @@ Entry (also used as an intrusive list node):
 
 Linking is done by `FUN_0040cac0` (`thiscall`, ECX = node, argument = resource):
 unlink the node's old resource, then insert into the resource's +0x78 list and
-set node+0x08 = resource+0x80, node+0x0c = resource. [V]
+set node+0x08 = *(resource+0x80), node+0x0c = resource. [V]
 
 #### Natives
 
@@ -672,6 +672,250 @@ Engine sound path:
 
 ---
 
+### 2.6 Process-wide SFX service: owners, sound resources, buses (traced 2026-10-23) [V]
+
+Names below are in `analysis/names.json`. All addresses checked by decompile;
+ECX values marked "asm" were read from `procedure_assembly`.
+
+#### Who owns what
+
+There is no service object: everything is static storage.
+
+| exe storage | what | src |
+|---|---|---|
+| `0x7a5b98` 64 x 0x5c | voice/event pool (2.2) | `audio::VoicePool::slots` |
+| `0x7a7298` int[64] | qsort index array | `VoicePool::service` local `order` |
+| `0x7a5b90` / `0x7a5b94` | pool counter (0) / listener id from `Sound__allocListener` 0x546c50 | - |
+| `0x7a7598..0x7a75d0` | listener block (pos, vel, -fwd, -up; 3 floats each, 16-byte stride) | `VoicePool::listener` (pos only) |
+| `0x79a180 + bus*0x20` | `IDirectSoundBuffer*[8]` per bus (buffer 0 = original, 1..7 duplicates) | `SoftwareMixer::samples_[bus]` |
+| `0x79b180 + bus*0x20` | `IDirectSound3DBuffer*[8]` (null for 2D bus or no 3D HW) | Ds8Backend |
+| `0x79d180[bus]` | base frequency (GetFrequency of buffer 0) | `MixSample::rate` |
+| `0x79d380[bus]` | voice limit = min(instances, 8) | `SoftwareMixer::bus_limit` (today constant 8) |
+| `0x79d580[bus]` (byte) | 3D flag = `~flags & 1` | not modelled yet |
+| `0x79d600[bus]` / `0x79d800[bus]` | min dist (floored 0.001) / max dist | `min_distance_` / `max_distance_` |
+| `0x7a8400[bus]` | source file name pointer (CompatibleSound+0x28) | - |
+| `0x79da00[bus]` | cleared on release (other writer not traced) | - |
+| `0x79a0be` (byte) | "sound initialised"; every back-end entry returns -1/0 when 0 | - |
+
+Pool init `SfxPool__init` 0x568b60: `0x7a5b90 = 0; 0x7a5b94 = 0x546c50();`
+then for i in 0..63 `slot.state = 0; slot.bus = 0; slot.attenuation = 0x501502f9
+(1e10f); order[i] = i`. It is called only from 0x56946e, inside an
+un-analysed function at **0x569420** that Ghidra did not define: the only
+reference to 0x569420 is the data word at 0x593364 (a CRT static-initialiser
+table). The bytes are `push 0; call [0x59332c]` followed by `call` to
+0x52f990, 0x548a50, 0x545730, 0x543040, 0x527e50, 0x5679a0, 0x565530,
+0x5697a0, 0x461910, **0x568b60**, then `push 0x5b6429; mov ecx,0x7a75e8;
+call ...; ret`. So the pool is set up by C++ static init before WinMain,
+independent of DirectSound init (`0x546da0` sets 0x79a0be). The import at
+0x59332c was not resolved by name [UNRESOLVED raw: `6a00 ff152c335900`].
+
+Per frame (`Game__mainLoop` 0x47d760; every loop iteration, *outside* the
+15 ms control gate, after `0x47ba10(dt)` and `Game__flushDeferred`):
+
+    listener = {0}; fwd = (0,0,1); up = (0,1,0)          // defaults
+    if (DAT_005f1e44 > 0) {                               // a camera exists
+        0x566800(2, &fwd) (reset to (0,0,1) if |v| < 0.1)
+        0x566800(1, &up)  (reset to (0,1,0) if |v| < 0.1)
+        pos = DAT_005fe130/134/138, vel = DAT_005fe13c/140/144
+    }
+    SfxPool__setListener 0x568bb0({pos, vel, -fwd, -up})  // copies to 0x7a7598.., then 0x546cd0
+    SfxPool__service 0x5690a0()
+
+With no camera the listener position is (0,0,0) (exe value, not invented).
+
+#### Sound resource = `Resource_Sound` (RTTI), record type 6 (`res_sound`)
+
+Shipped data: the record data of a type-6 record is the `.rsd` text, e.g.
+`parts/engines/Baiern_Emer.rpk` record 0xa0 "0900":
+`sourcefile parts\engines\Baiern_Emer\sounds\engine_IDL\0900RPM.wav\r\nvolume 1.000\r\ninstances 2.000\r\nmindist 2.000\r\nmaxdist 20.000\r\n`.
+Records with size 0 are folders/definitions (`system.rpk` 0x9 `res_sound`,
+Axis.rpk 0x2 "Axis"). The rprop schema in system.rdb lists exactly
+sourcefile/volume/instances/mindist/maxdist/flags.
+
+Layout: `RI+0x8c` data size, `+0x94` bit0 loaded, `+0x98` loaded level,
+`+0x9c` requested level (1000.0 while a synchronous load runs), embedded
+`Resource_Sound_Data` at **RI+0xb0** (vtable `Resource_Sound_Data`), whose
+`+0x8` (RI+0xb8) is the owner id and `+0xc` (RI+0xbc) the `CompatibleSound*`.
+
+`Resource_Sound__vf10` 0x525cf0 (load, asm):
+
+    DAT_005db3e0 = (this+0x9c != 1000.0f /*0x59746c*/);   // 1 = async file read
+    if (this+0x94 & 1) { this+0x98 = 1.0; return 1.0; }   // already loaded
+    r = Resource_Sound_Data__parse(ECX = this+0xb0, data, this+0x8c);
+    ResourceNode__setLoaded(1); this+0x98 = r; return r;
+
+`Resource_Sound_Data__parse` 0x525d90 (ECX = data block D):
+
+    if (data == 0) return 0.0;
+    volume = 1.0; mindist = 5.0; maxdist = 1000.0; instances = 4; flags = 0;
+    src[0] = 0; p = data;
+    do {
+        p += Str__readLine(p, line);      // 0x5281b0: copies through '\n' (kept) or NUL
+        if (line[0]) {
+            sscanf(line, "%s", key);      // fmt 0x5a9020; key NOT reset when this fails
+            if      (!stricmp(key,"sourcefile")) sscanf(line,"%*s %s", src);
+            else if (!stricmp(key,"volume"))     sscanf(line,"%*s %f",&volume);
+            else if (!stricmp(key,"mindist"))    sscanf(line,"%*s %f",&mindist);
+            else if (!stricmp(key,"maxdist"))    sscanf(line,"%*s %f",&maxdist);
+            else if (!stricmp(key,"instances"))  sscanf(line,"%*s %d",&instances);
+            else if (!stricmp(key,"flags"))      sscanf(line,"%*s %d",&flags);
+        }
+    } while (p - data < size);
+    if (src[0] == 0) return 0.0;
+    C = Compatible__create(5, DAT_005db3e0, src, 0, D+8, 0);    // 0x455e80
+    D+0xc = C;
+    if (C) { C+0x6c = volume; C+0x70 = mindist; C+0x74 = maxdist;
+             C+0x64 = instances; C+0x68 = flags;
+             if (DAT_005db3e0 == 0) Compatible__decodeSync(ECX = C); }  // 0x526030
+    return 1.0;                // also when C == 0 (missing file): loaded but silent
+
+`%d` on "2.000" gives 2, on "0.500" gives 0 (one shipped record: a bus with
+voice limit 0 never plays). "flags 1.000" gives 1 → 2D bus.
+
+`Compatible__create` 0x455e80 (type 5 = sound; types 0..4 are other
+"Compatible" kinds incl. `CompatibleMesh_static`): `C = new 0x7c`
+`CompatibleSound__ctor` 0x525b00 (defaults +0x6c 1.0, +0x70 5.0, +0x74 1000.0,
++0x64 4, +0x68 0, +0x60 bus = -1, +0x78 0), then `C+0x54 = type, +0x58 =
+owner, +0x5c = 0, +0x38 flags = 0, +0x3c = 0`, `C+0x28 = strdup(sprintf("%s",
+path))` (fmt 0x598fa0). No name cache: every Resource_Sound gets its own
+CompatibleSound and bus.
+- sync (`param_2 == 0`): `flags |= 0x20000000; C+0x44 = File__readAll(path,
+  &C+0x40)` (0x565610: '/'→'\\', open/size/read whole file, returns size or
+  -1/-2); size < 1 → delete C, return 0. (For type 5 the decode is left to
+  0x526030.)
+- async: `0x564d70(path, 0, Compatible__onAsyncRead 0x455db0, C, 0)`; on
+  completion the callback stores data/size and queues C on the decode list
+  0x5f00c8 (flags `|2`), or marks it failed (`|0x80000004`).
+
+`Compatible__decodeSync` 0x526030: `flags |= 2; while (!(flags & 4)) {
+DAT_005eff58 = C; C->vf1(); }` then frees the file bytes (C+0x40 = 0, C+0x44 = 0).
+`CompatibleSound__vf1` 0x525fa0 calls `vf3` once (timed with 0x56a230/0x56a260
+slot 0xb, `C+0x34 = ms*100`), unlinks C from its list and relinks it on 0x5f00c8
+if bit 2 is still set.
+
+`CompatibleSound__vf3` 0x5260b0 (upload):
+
+    if (C+0x44 /*file size*/ > 0) {
+        C+0x60 = Sound__createBus(C+0x40 data, C+0x44 size, C+0x64 instances,
+                                  ~C+0x68 & 1 /*3D*/, C+0x70 min, C+0x74 max, C+0x28 name);
+        C+0x78 = C+0x44; DAT_00773f18 += C+0x44;      // sound memory counter
+    }
+    C+0x38 = (C+0x38 & ~2) | 0xc; return 1;
+
+`CompatibleSound__vf0` 0x525c40 (dtor): `if (bus >= 0) { Sound__releaseBus(bus);
+DAT_00773f18 -= C+0x78; bus = -1; }`. Unload `Resource_Sound__vf7` 0x526070
+(reached by ResourceRef.unload → 0x51a1b0 vf[+0x1c]): if loaded, delete
+RI+0xbc, RI+0x98 = 0, setLoaded(0). Pool slots still holding that bus are not
+touched.
+
+#### Bus = one sound sample with up to 8 playback buffers
+
+`Sound__createBus` 0x546860(data, size, instances, is3d, min, max, name):
+
+    if (!0x79a0be) return -1;
+    bus = first b in 0..127 with buffers[b][0] == 0; none → return -1;
+    b0 = DSBuffer__createFromWav(data, is3d);        // 0x5463a0
+    buffers[bus][0] = b0; if (!b0) return -2;
+    b3d[bus][0] = (is3d && 0x79a0c0) ? QI(b0, IID 0x5b6be4) + SetMinDistance(min) + SetMaxDistance(max) : 0;
+    if (min <= 0.001) min = 0.001;
+    n = instances < 9 ? instances : 8;
+    limit[bus] = n; mind[bus] = min; flag3d[bus] = is3d; maxd[bus] = max; name[bus] = name;
+    for i in 1..n-1: buffers[bus][i] = DuplicateSoundBuffer(b0) (0 on failure; 3D iface as above);
+    b0->GetFrequency(&freq[bus]);
+    return bus;
+
+`DSBuffer__createFromWav` 0x5463a0: `Wav__parse(data, &bytes, &wfx, &pcm)`; desc
+`{0x24, flags, bytes, 0, wfx}`, flags `0xe8` (2D or no 3D HW) / `0x200b8`
+(3D), replaced by `0x400e0` / `0x600b0` when `0x79a0c4` (mix HW) is set;
+`CreateSoundBuffer`; `DSBuffer__fill` 0x5461e0 (Lock 0..bytes, memcpy both
+parts, Unlock; fails when pcm/bytes is 0) else Release and return 0.
+
+`Wav__parse` 0x5462a0 (no bounds checks in the exe):
+
+    if (!p || p[0] != 'RIFF' || p[2] != 'WAVE') return -1;
+    if (p[3] != 'fmt ') return -2;                  // fmt must be the first chunk (offset 12)
+    *wfx = p + 20;                                  // WAVEFORMATEX as stored
+    q = p + 20 + p[4];                              // skip fmt body
+    while (q[0] != 'data') q += 8 + q[1];           // PAD/fact/LIST/smpl/DISP/JUNK seen
+    *bytes = q[1]; *pcm = q + 8; return 0;
+
+`Sound__releaseBus` 0x546b40 → `0x5474f0(bus)`: for each of the 8 buffers:
+Stop, release the 3D iface when flag3d, Release, null; `0x79da00[bus] = 0`.
+`Sound__busVoiceLimit` 0x546a70 = `limit[bus]`; `Sound__busAvailable` 0x546b80
+= `buffers[bus][0] != 0`; `Sound__availableVoices` 0x546c00 = max(4,
+(0x79a0c4 ? DSCAPS+0x24 : 0) + (0x79a0c0 ? DSCAPS+0x3c : 0)).
+
+Shipped-data check (Python over the install, 2026-10-23): 157 `.rpk`, 1,765
+type-6 records (174 empty, 1 without sourcefile); 623 referenced `.wav` files
+exist, 967 are missing (896 from `EngineSoundPack.rpk`, partially installed).
+All 623 pass the `Wav__parse` rule: PCM tag 1, 617 x 16-bit, 5 x 8-bit,
+1 x 32-bit (`sound/wav/ambient/Madarak.wav`), mono/stereo, 7.2-48 kHz; chunk
+sequences before `data`: none (546), PAD (43), fact (16), LIST (11), smpl (5),
+DISP+LIST+PAD (1), JUNK (1).
+
+#### Typed lookup from a script SfxRef
+
+`Game__postEvent` 0x4eb5c0 and `Handle__stopSfx` 0x4eba90 run with ECX = a
+0x10-byte ref node (`ResRefLink`): node+0x8 = id, node+0xc = RI.
+`ResRefLink__set` 0x40cac0 writes node+8 = `*(RI+0x80)` (the RI's id word),
+so the **owner passed to the pool is the resource id**, not `RI+0x80`
+(src `audio/sfx.cpp` stores `resource + 0x80`: arithmetic on the id, a misread).
+
+    RI = node+0xc; if (!RI) return -1;
+    if (RI+0x7c != 1) RI->vf5(1.0);                    // not traced
+    if (Resource__getTyped(ECX = RI, mask, a, b) < 0) return -1;   // 0 when loaded, 0x80000001 otherwise
+    T = RI->vf3(1.0);  C = T+0xc;                      // T = Resource_Sound_Data (RI+0xb0)
+    if (!T || !C || C+0x60 /*bus*/ < 0) return -1;
+    vol = C+0x6c * volume; if (!(vol > 0.01)) return -1;
+    ... event at 0x6024c8 (2.2) ...; SfxPool__post(bus, instance, node+8, &event); return instance;
+
+(nplay: range cull `SfxPool__inRange` 0x568940 first, mask `0xa0000000`,
+args `(0, 1.0)`; stop: mask `0x80000000`, args `(0, 0)`, then
+`SfxPool__stop(instance, node+8)`.)
+
+`Resource__getTyped` 0x51f4f0 → `ResourceNode__requestLoad` 0x518a80 when not
+loaded (mask bit 0x40000000 clear in both callers):
+- `(a, b) == (0, 0)` or `RI+0x82 == -1` → **synchronous**: read the record
+  data (0x517b80/0x51e500), set `+0x9c = 1000.0`, call vf10 (+0x28), restore
+  `+0x9c = 1.0` → the sound is parsed and decoded now. So `SfxRef.stop`
+  loads an unloaded sound synchronously.
+- otherwise (nplay's `(0, 1.0)` for a package record) → queues a streaming
+  request (node from `+0x1664`, `0x51e5c0`, flag `RI+0x84 |= 0x2000000`) and
+  returns; getTyped then returns 0x80000001, so **the first nplay of a sound
+  that is not yet loaded returns -1 and plays nothing**. When the queue runs,
+  vf10 sees `+0x9c == 1.0` → `DAT_005db3e0 = 1` → async file read too.
+  [UNRESOLVED: when the streaming queue (0x51e5c0, drained via 0x517f60/
+  0x518f80 in the main loop) completes relative to the next frame was not traced.]
+- `ResourceRef.precache` → `Handle__precache` 0x4e9830 → `0x468b00(0xa0000001,
+  1.0, 0, 1.0)` [0x468b00 not traced].
+
+#### Engine SFX bridge (resolves Part 3 item 11)
+
+`SfxTable__evaluate` 0x4eb7a0 calls the public `Game__postEvent` with
+`ECX = entry` (asm 0x4eb96e `LEA ECX,[ESI-0x14]` with ESI = entry+0x14;
+fallback 0x4eba39 `LEA ECX,[EBX+idx*0x24]`): an SfxTable entry *is* a
+ResRefLink (+0 next, +4 prev, +8 id, +0xc RI). Arguments: pitch =
+`entry+0x10 * value`, volume = `fade * scale * lerp(vmin, vmax, t)`, flags,
+pos, instance, radius, vec1, vec2 passed through. The table scan stops at the
+first entry whose +8 is 0.
+
+#### src mapping
+
+| exe | src |
+|---|---|
+| CompatibleSound +0x60 bus, +0x6c volume | `AudioAssets::Asset::bus/volume` |
+| +0x70/+0x74 | `SoftwareMixer::set_bus_distances` |
+| +0x64 instances | `bus_limit` (needs min(instances,8)) |
+| +0x68 flags bit0 | bus 3D flag (missing) |
+| node+8 owner | `Voice::owner`, `SfxItem::owner` (should equal resource id) |
+| pool 0x7a5b98 / 0x568b60 | `VoicePool` ctor |
+| 0x5690a0 per frame | `VoicePool::service` (not called by `FrameLoop` yet) |
+
+Cards: tasks/081 (resource parser + WAV), 082 (bus allocation), 083 (service +
+SfxRef natives), 084 (frame hook + owner fix).
+
+---
+
 ## Part 3 — Open questions / uncertain items
 
 1. `FUN_00543f70` (device refresh + negative-id reset) and the exact mouse
@@ -699,8 +943,7 @@ Engine sound path:
 10. Music-track Java signatures for the 2.3.1-only natives (playTrack,
     firstTrack, getNowPlaying, ...) are inferred from native argument decoding;
     the 2.2.1 source does not declare them.
-11. The exact bridge between `FUN_004eb7a0` and `Game__postEvent` (whether it
-    calls the public postEvent or an internal variant) was not traced.
+11. (resolved, 2.6) `FUN_004eb7a0` calls the public `Game__postEvent` with ECX = the entry.
 
 Also note for future work: notes/00-overview.md still says `FUN_005449f0` is
 sound teardown. The correct mapping is `FUN_004ed680` init → `FUN_00565fc0`
