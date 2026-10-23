@@ -6286,11 +6286,17 @@ bool gr_clear_halts(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
-// 0x4dd7f0 GroundRef.setTrafficCrossStopOffset(F)V: if (t = getInfo) t+0x3140 = f.
-// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+// 0x4dd7f0 GroundRef.setTrafficCrossStopOffset(F)V: if (t = getInfo(h, 0x39))
+// t+0x3140 = f.
+// INVENTED: a null handle yields null; the exe dereferences it.
 bool gr_set_traffic_cross_stop_offset(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!want("GroundRef.setTrafficCrossStopOffset", a, 2, err)) return false;
+    float f;
+    if (!get_f("GroundRef.setTrafficCrossStopOffset", a[1], &f, err)) return false;
+    Runtime *rt = game_rt();
+    traffic::Graph *t = rt ? rt->ground_traffic(value_handle(a[0])) : nullptr;
+    if (t) t->cross_stop_offset = f;
     *out = Value::make_null();
     return true;
 }

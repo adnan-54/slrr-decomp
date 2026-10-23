@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "game/traffic.h"
 #include "resource/manager.h"
 
 class Vm;
@@ -104,6 +105,11 @@ class Runtime {
         float fog_end = 0.0f;            // +0x20
         bool fog_enabled = false;        // +0x24 (exe stores 1.0f); INVENTED bool
         int32_t fog_color = 0;           // +0x28
+        // type_ground (vtable 0x59e464) typed data +0x88: the Traffic graph.
+        // INVENTED: kept on the record node and created on first lookup; the exe
+        // creates it in type_ground vf3 0x4bade0 when the instance is made resident.
+        bool ground_checked = false;
+        std::shared_ptr<traffic::Graph> traffic;
         bool instance = false;
         Object *script = nullptr;          // script instance (typed +0x50)
         int refs = 0;                      // handles attached (RI+0x78 list)
@@ -209,6 +215,8 @@ class Runtime {
     Object *wrap(Resource *r, std::string *err);
     // Script class chain lookup used by GameRef.isScripted.
     bool class_is_a(const std::string &cls, const std::string &base);
+    // 0x47c640 Game__getInfo(h, 0x39) -> 0x4bb570: the ground's traffic graph or null.
+    traffic::Graph *ground_traffic(Handle *h);
 
   private:
     const Package *target_package(const Package &base, uint32_t id,

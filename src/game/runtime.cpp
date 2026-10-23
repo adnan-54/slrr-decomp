@@ -3,8 +3,11 @@
 // natives in classdump --selfcheck exercise both layers.
 #include "game/runtime.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "platform/fs.h"
 #include "script/vm.h"
 
 Runtime *Runtime::active_ = nullptr;
@@ -51,6 +54,154 @@ static void dispatch_script(Runtime &rt, Runtime::Resource *target,
     // contact record into a String (no caller of those codes exists yet).
     rt.call_method(script, method, {ref, Value::make_int((int32_t)ev), param},
                    nullptr, &err);
+}
+
+// 0x527140 Str__vscan rules for type_ground's params format
+// "%x,%f,%f,%f,%f,%f,%f,%s,%s": %x skips whitespace and reads hex (0x prefix
+// accepted), %f skips whitespace and reads a float, %s skips whitespace then
+// copies until whitespace, NUL or the next format character (','); a literal
+// must match and the scan stops at the first mismatch.
+// INVENTED: strtof stands in for the untraced 0x527530 float reader.
+static bool scan_ws(char c)
+{
+    return c == ' ' || (c >= 9 && c <= 13);
+}
+
+static void scan_skip_ws(const std::string &s, size_t *i)
+{
+    while (*i < s.size() && scan_ws(s[*i])) (*i)++;
+}
+
+static bool scan_hex(const std::string &s, size_t *i, uint32_t *out)
+{
+    scan_skip_ws(s, i);
+    size_t p = *i;
+    if (p + 1 < s.size() && s[p] == '0' && (s[p + 1] == 'x' || s[p + 1] == 'X'))
+        p += 2;
+    size_t start = p;
+    uint32_t v = 0;
+    for (; p < s.size(); p++) {
+        char c = s[p];
+        if (c >= '0' && c <= '9') v = v * 16 + (uint32_t)(c - '0');
+        else if (c >= 'a' && c <= 'f') v = v * 16 + (uint32_t)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') v = v * 16 + (uint32_t)(c - 'A' + 10);
+        else break;
+    }
+    if (p == start) return false;
+    *i = p;
+    *out = v;
+    return true;
+}
+
+static bool scan_float(const std::string &s, size_t *i, float *out)
+{
+    scan_skip_ws(s, i);
+    const char *p = s.c_str() + *i;
+    char *end = nullptr;
+    float v = std::strtof(p, &end);
+    if (end == p) return false;
+    *out = v;
+    *i += (size_t)(end - p);
+    return true;
+}
+
+static bool scan_str(const std::string &s, size_t *i, char stop, std::string *out)
+{
+    scan_skip_ws(s, i);
+    size_t start = *i;
+    while (*i < s.size() && *i - start < 0x400) {
+        char c = s[*i];
+        if (scan_ws(c) || c == '\0' || c == stop) break;
+        (*i)++;
+    }
+    if (*i == start) return false;
+    *out = s.substr(start, *i - start);
+    return true;
+}
+
+static bool scan_char(const std::string &s, size_t *i, char c)
+{
+    if (*i >= s.size() || s[*i] != c) return false;
+    (*i)++;
+    return true;
+}
+
+// 0x4bade0 type_ground vf3 create: same format; only the last %s (the .trc
+// path) is kept. A failed conversion returns early and leaves trc empty.
+static bool scan_ground_params(const std::string &s, std::string *trc)
+{
+    size_t i = 0;
+    uint32_t id = 0;
+    float f = 0;
+    if (!scan_hex(s, &i, &id)) return false;
+    for (int k = 0; k < 6; k++)
+        if (!scan_char(s, &i, ',') || !scan_float(s, &i, &f)) return false;
+    std::string scm;
+    if (!scan_char(s, &i, ',') || !scan_str(s, &i, ',', &scm)) return false;
+    if (!scan_char(s, &i, ',') || !scan_str(s, &i, '\0', trc)) return false;
+    return true;
+}
+
+// 0x4bade0 type_ground vf3 create: read the record's `gametype` and `params`
+// lines, check the type is a native ground, then load the named .trc
+// (File__readAll 0x565610, Traffic__load 0x41a000).
+// INVENTED: lazy creation at the first lookup and the failure log; the exe
+// creates the graph when the instance is made resident and has no failure log.
+static void load_ground(Runtime &rt, Runtime::Resource *r)
+{
+    if (!r->package || !r->record) return;
+    const char *data = (const char *)r->package->rpk.data(*r->record);
+    size_t size = r->record->data_size;
+    uint32_t gametype = 0;
+    std::string params;
+    bool has_type = false;
+    size_t pos = 0;
+    while (pos < size) {
+        size_t end = pos;
+        while (end < size && data[end] != '\n') end++;
+        std::string line(data + pos, end - pos);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        size_t k = 0;
+        while (k < line.size() && !scan_ws(line[k])) k++;
+        std::string key = line.substr(0, k);
+        while (k < line.size() && scan_ws(line[k])) k++;
+        if (key == "gametype") {
+            gametype = (uint32_t)std::strtoul(line.c_str() + k, nullptr, 16);
+            has_type = true;
+        } else if (key == "params") {
+            params = line.substr(k);
+        }
+        pos = end + 1;
+    }
+    if (!has_type) return;
+
+    Runtime::Resource *ty = rt.resolve(gametype, r->package);
+    if (!ty || !ty->package || !ty->record) return;
+    bool native_ground = false;
+    for (const DataRef &ref : rt.resources().refs(*ty->package, *ty->record))
+        if (ref.kind == DataRef::Native && ref.native == "ground") {
+            native_ground = true;
+            break;
+        }
+    // shortcut: a scripted type's getInfo (0x47dd50) is not modelled.
+    if (!native_ground) return;
+
+    std::string trc;
+    if (!scan_ground_params(params, &trc) || trc.empty()) return;
+    std::string path = rt.resources().resolve_path(trc);
+    if (path.empty()) return;
+    std::vector<uint8_t> buf;
+    std::string err;
+    if (!fs::read_file(path, &buf, &err)) return;   // File__readAll < 0
+    auto g = std::make_shared<traffic::Graph>();
+    size_t used = 0;
+    if (!g->load(buf.data(), buf.size(), &used, &err)) {
+        std::fprintf(stderr, "ground: %s: %s\n", trc.c_str(), err.c_str());
+        return;
+    }
+    // shortcut: Traffic__init 0x419da0 and the 0x47d670 registration are not
+    // ported.
+    r->traffic = g;
 }
 
 Runtime::Runtime(ResourceManager &resources, Vm *vm, ClassPath *classes)
@@ -154,6 +305,22 @@ Runtime::Resource *Runtime::resolve(uint32_t id, const Package *base)
     if (!r->parent_id && r->db) r->parent_id = r->db->super_id;
     if (r->parent_id) r->parent = resolve(r->parent_id, target);
     return r;
+}
+
+// 0x47c640 Game__getInfo(h, 0x39) -> 0x47e450 -> 0x4bb570 vf15: the traffic
+// graph (+0x88) of the ground's typed data; null when it has none.
+// shortcut: the typeof-8 branch of 0x47c640 is not recovered; the graph is built
+// lazily at the first lookup instead of at instance create (see load_ground).
+traffic::Graph *Runtime::ground_traffic(Handle *h)
+{
+    if (!h || h->id == 0 || !h->target) return nullptr;
+    Resource *r = h->target;
+    if (r->type != 1) return nullptr;
+    if (!r->ground_checked) {
+        r->ground_checked = true;
+        load_ground(*this, r);
+    }
+    return r->traffic.get();
 }
 
 bool Runtime::chain(Resource *r, std::vector<ChainLink> *out, std::string *err) const
