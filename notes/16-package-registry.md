@@ -97,3 +97,20 @@ Self-check over `bin/the game/system.rpk+.rdb` + `cars/racers/Axis.rpk+.rdb`:
   compiles missing/stale sources at runtime): a loader must fall back to source
   compilation for such parts instead of failing the package load. Not verified
   against the exe's loader path here.
+
+## Runtime ids are GLOBAL in the exe (verified 2026-10-23) — src diverges
+- Name registry (ResourceManager singleton [0x5db008]): `0x518940(name)` find-or-append returns the
+  registry index (count at +0x166740, package slots at +0x1667b4 + idx*0x70); packages load lazily
+  (0x517b80 -> Package::load 0x51e310 on first reference; a missing file leaves state 0 and is retried).
+- `Package::load` registers every sub-package name of the .rpk in the registry and stores that index in
+  its sub-package table (entry+2), and registers records via 0x518880 with ids remapped by 0x51e860.
+- 0x51e860(id) in package P: hi = 0 -> `P.registryIndex << 16 | local`; 0 < hi <= nSub -> `sub[hi].
+  registryIndex << 16 | local`; out of range -> 0; local 0 -> 0. So every runtime id is
+  `registryIndex << 16 | local`, independent of who reads it.
+- Script resource constants (`frontend:0x3EBr`, CONST type 3 = {+8 local, +0xc name entry}): at class
+  load 0x54b310 walks the code and rewrites each 0x100e instruction into an int constant
+  `0x55cad0(name, local)` = 0x5189e0: idx = registry(name) (loads it), then P.0x51e860(local). Static
+  initialisers read them through 0x54b900 the same way. Scripts therefore only ever hold global ints.
+- src today: the VM pushes `Value::Resource{name, local}` for opcode 0x400e (int natives reject it),
+  `Runtime::resolve(id, base)` reads hi as a sub-package index of `base` (or of every open package when
+  base is null), and `package_key` only finds already-open packages. Card 106 (design) fixes this.
