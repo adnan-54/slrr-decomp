@@ -271,6 +271,36 @@ std::string Runtime::script_class_of(const Package &pkg, const RpkRecord &rec) c
     return std::string();
 }
 
+// 0x51e310 Package::load / 0x518410 Resource__createInstance at mount: the
+// exe mounts every record of a package in file order and tail-inserts each
+// node into its parent's child list.
+void Runtime::mount_package(const Package *p)
+{
+    if (!p) return;
+    for (const Package *m : mounted_) if (m == p) return;
+    mounted_.push_back(p);   // mark first: parent resolution re-enters resolve
+    std::fprintf(stderr, "DBG mount %s records=%zu\n", p->mount.c_str(),
+                 p->rpk.records.size());
+    // 0x518410: every record of a package is mounted at load.
+    // INVENTED: create all nodes first. The exe resolves the super id only
+    // against already-registered nodes and logs "Unregistrable node" when it
+    // is missing; src's resolve() creates a forward-referenced parent on
+    // demand. Shipped packages list parents before children, so the result
+    // is the same; only a malformed forward reference would differ.
+    for (const RpkRecord &rec : p->rpk.records) resolve(rec.id, p);
+    // 0x518410 tail insert: child order = record order in the .rpk.
+    // shortcut: order across packages is mount-completion order, not the
+    // exe's per-record interleaving inside 0x51e6b0 (not fully traced).
+    for (const RpkRecord &rec : p->rpk.records) {
+        Resource *r = resolve(rec.id, p);    // cached by the loop above
+        if (!r || !r->parent) continue;
+        std::vector<Resource *> &ch = r->parent->children;
+        if (!ch.empty()) ch.back()->next_sibling = r;
+        r->next_sibling = nullptr;
+        ch.push_back(r);
+    }
+}
+
 Runtime::Resource *Runtime::resolve(uint32_t id, const Package *base)
 {
     if (!id) return nullptr;
@@ -279,7 +309,9 @@ Runtime::Resource *Runtime::resolve(uint32_t id, const Package *base)
         if (!id) return nullptr;
     }
     // 0x517b80: the high word is a registry slot, mounted on first reference.
+    // 0x51e310: the mount links the package's records into their parents.
     const Package *target = resources_->registry_package(id >> 16);
+    if (target) mount_package(target);
     const RpkRecord *rec = target ? target->rpk.find(id & 0xffffu) : nullptr;
     if (!target || !rec) return nullptr;
 

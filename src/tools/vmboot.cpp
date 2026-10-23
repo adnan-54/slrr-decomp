@@ -7,6 +7,7 @@
 // VM with native dispatch.
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cmath>
@@ -274,7 +275,7 @@ void walk_classes(const std::string &disk_dir, const std::string &pkg,
 
 void package_tree_check(Checker &c)
 {
-    jvm::PackageTree tree(kGameDir);
+    jvm::PackageTree tree(".");   // DBG TEMP: cwd is the game dir
     tree.add_default_roots();
 
     TreeTally t;
@@ -300,7 +301,11 @@ void package_tree_check(Checker &c)
 int selfcheck()
 {
     Checker c;
-    const std::string rpk = std::string(kGameDir) + "/system.rpk";
+    // DBG TEMP: absolute game dir as cwd so rpkScan's FindFile finds the rpks.
+    char cwd[4096];
+    std::string abs = std::string(getcwd(cwd, sizeof cwd)) + "/" + kGameDir;
+    if (chdir(abs.c_str()) != 0) std::fprintf(stderr, "DBG chdir failed\n");
+    const std::string rpk = abs + "/system.rpk";
     std::printf("vmboot selfcheck: %s (rpk only)\n", rpk.c_str());
 
     Boot boot;

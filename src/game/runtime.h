@@ -163,6 +163,9 @@ class Runtime {
     // is then the registry slot of the owning package (0x517b80). Null when the
     // package cannot be mounted or has no such local record.
     Resource *resolve(uint32_t id, const Package *base = nullptr);
+    // 0x51e310 Package::load / 0x518410: link every record of a loaded package
+    // into its super record's child list, in record order. Idempotent.
+    void mount_package(const Package *p);
     // Super-id chain of a record-backed resource (first link is itself).
     bool chain(Resource *r, std::vector<ChainLink> *out, std::string *err) const;
     std::string type_name(uint32_t type) const;
@@ -246,6 +249,7 @@ class Runtime {
     Vm *vm_ = nullptr;
     ClassPath *classes_ = nullptr;
     std::map<std::pair<const Package *, uint32_t>, std::unique_ptr<Resource>> records_;
+    std::vector<const Package *> mounted_;   // packages whose records are linked
     std::vector<std::unique_ptr<Resource>> instances_;
     std::map<Object *, Handle *> handles_;
     std::list<std::unique_ptr<Timer>> timers_;

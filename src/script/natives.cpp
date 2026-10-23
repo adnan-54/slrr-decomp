@@ -1807,6 +1807,9 @@ bool rr_get_first_child(Vm &, const Args &a, Value *out, std::string *err)
     Object *o;
     if (!receiver_object("ResourceRef.getFirstChild", a, &o, err)) return false;
     Runtime::Resource *r = value_resource(a[0]);
+    std::fprintf(stderr, "DBG firstChild receiver=%s id=%08X children=%zu\n",
+                 r ? r->name.c_str() : "(null)", r ? r->id : 0,
+                 r ? r->children.size() : 0);
     Runtime::Resource *c = r && !r->children.empty() ? r->children[0] : nullptr;
     return wrap_resource(c, out, err);
 }
@@ -2828,11 +2831,17 @@ bool system_open_lib(Vm &, const Args &a, Value *out, std::string *err)
     Runtime *rt = game_rt();
     ResourceManager &rm = rt->resources();
     uint32_t idx = rm.registry_index(path);          // 0x518940
-    if (!rm.registry_package(idx)) {                 // 0x517b80 -> 0x51e310
+    const Package *pkg = rm.registry_package(idx);   // 0x517b80 -> 0x51e310
+    std::fprintf(stderr, "DBG openLib %s idx=%u %s\n", path.c_str(), idx,
+                 pkg ? pkg->mount.c_str() : "FAIL");
+    if (!pkg) {
         // The failed registry entry stays, so a later openLib reuses its slot.
         *out = Value::make_int(-1);
         return true;
     }
+    // 0x51e310: the load links every record into its super record's child list
+    // (system.rpk and the rpkScan packages are opened here, not by resolve).
+    rt->mount_package(pkg);
     *out = Value::make_int((int32_t)idx);
     return true;
 }
