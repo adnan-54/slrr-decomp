@@ -486,6 +486,11 @@ Thread::Status Thread::run_slice(size_t max_instructions)
             status_ = Failed;
             return status_;
         }
+        if (stop_) {
+            stop_ = false;
+            status_ = frames_.empty() ? Done : Yielded;
+            return status_;
+        }
     }
     status_ = Done;
     return status_;

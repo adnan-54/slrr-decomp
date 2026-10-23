@@ -116,6 +116,8 @@ class Thread {
 
     Status run_slice(size_t max_instructions);
     Status run();
+    // 0x563290: thread+0x2c & 0xfa checked after every instruction
+    void request_stop() { stop_ = true; }
     const Value &result() const { return result_; }
     const std::string &error() const { return error_; }
     Status status() const { return status_; }
@@ -145,6 +147,7 @@ class Thread {
     Value result_;
     std::string error_;
     Status status_ = Yielded;
+    bool stop_ = false;
     uint16_t line_ = 0;
 };
 

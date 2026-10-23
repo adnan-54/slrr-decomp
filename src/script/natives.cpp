@@ -122,6 +122,7 @@ struct ScriptThreadState {
     bool started = false;
     bool done = false;
     bool in_slice = false;  // its run_slice is on the stack (do not re-enter)
+    bool waiting = false;   // engine thread+0x2c bit 0x10: on the monitor wait list
 };
 
 struct Scheduler {
@@ -141,6 +142,12 @@ struct Scheduler {
     float load_slice = 0.0f;     // 0x5da464
     int load_priority = 0;       // 0x5fe3bc
     bool pumping = false;
+    // 0x54d430 gets the executing engine Thread as ctx+4; the equivalent here is the
+    // ScriptThreadState whose slice is running (set by pump_threads).
+    ScriptThreadState *current = nullptr;
+    // Receiver's wait list: the exe keeps a T_Container* at object+0x14. Object
+    // identity is the key; entries are appended and popped at the tail (LIFO).
+    std::map<Object *, std::vector<ScriptThreadState *>> monitors;
 };
 
 // shortcut: scheduler state is never pruned (Vm has no teardown hook); the game
@@ -193,10 +200,13 @@ void pump_threads(Vm &vm)
     s.pumping = true;
     for (size_t i = 0; i < s.threads.size(); i++) {
         ScriptThreadState *t = s.threads[i].get();
-        if (!t->runner || t->suspended || t->done || !t->started || t->in_slice)
+        if (!t->runner || t->suspended || t->done || t->waiting || !t->started ||
+            t->in_slice)
             continue;
         t->in_slice = true;
+        s.current = t;  // ctx+4
         Thread::Status st = t->runner->run_slice(256);
+        s.current = nullptr;
         t->in_slice = false;
         if (st == Thread::Yielded) continue;
         if (st == Thread::Failed)
@@ -1342,6 +1352,76 @@ bool object_hashcode(Vm &, const Args &a, Value *out, std::string *err)
         !get_o("Object.hashCode", a[0], &o, err))
         return false;
     *out = Value::make_int((int32_t)(intptr_t)o);  // 0x4dfc50 returns the handle
+    return true;
+}
+
+// 0x5629a0 Thread__notify (ECX = thread): clear the waiting flag and make the
+// thread runnable again.
+void monitor_notify_thread(ScriptThreadState *t)
+{
+    // INVENTED: exe flag 0x80 (dead) is modelled by our `done`.
+    if (t->done) std::fprintf(stderr, "Thread::notify: thread already died\n");
+    if (!t->waiting) std::fprintf(stderr, "Thread::notify: not waiting\n");
+    t->waiting = false;
+    // shortcut: exe skips the run-list relink when thread+0x2c bit 0x20 is set
+    // (meaning UNRESOLVED); pump_threads already gates suspended/done threads.
+}
+
+// 0x4e0440 Object.wait()V -> 0x54d430(monitor, ctx+4 thread) -> 0x564950.
+bool object_wait(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("Object.wait", a, 1, err) ||
+        !get_o("Object.wait", a[0], &o, err))
+        return false;
+    *out = Value::make_null();
+    Scheduler &s = sched(vm);
+    ScriptThreadState *t = s.current;
+    // shortcut: a native invoked synchronously (Vm::invoke / run_field_init,
+    // e.g. a static initializer or an engine callback) has no executing script
+    // thread in src; the exe always has ctx+4. No-op, out stays null (V).
+    if (!t) return true;
+    // INVENTED: 0x80 (dead) maps to our `done`.
+    if (t->done) std::fprintf(stderr, "Thread::wait: thread already died\n");
+    if (t->waiting) std::fprintf(stderr, "Thread::wait: already waiting\n");
+    s.monitors[o].push_back(t);  // monitor+0x14 tail append
+    t->waiting = true;           // thread+0x2c |= 0x10, off the run list
+    t->runner->request_stop();   // 0x563290: leave the slice after this instruction
+    return true;
+}
+
+// 0x5629a0 0x54d320 Object.notify()V: wake the last waiter of this object.
+bool object_notify(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("Object.notify", a, 1, err) ||
+        !get_o("Object.notify", a[0], &o, err))
+        return false;
+    *out = Value::make_null();
+    Scheduler &s = sched(vm);
+    auto it = s.monitors.find(o);
+    if (it == s.monitors.end() || it->second.empty()) return true;
+    ScriptThreadState *t = it->second.back();  // tail pop, LIFO
+    it->second.pop_back();
+    monitor_notify_thread(t);
+    if (it->second.empty()) s.monitors.erase(it);
+    return true;
+}
+
+// 0x54d3a0 Object.notifyAll()V: drain the object's wait list, tail to head.
+bool object_notify_all(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    Object *o;
+    if (!want("Object.notifyAll", a, 1, err) ||
+        !get_o("Object.notifyAll", a[0], &o, err))
+        return false;
+    *out = Value::make_null();
+    Scheduler &s = sched(vm);
+    auto it = s.monitors.find(o);
+    if (it == s.monitors.end()) return true;
+    for (size_t i = it->second.size(); i-- > 0;)  // exe pops tail first
+        monitor_notify_thread(it->second[i]);
+    s.monitors.erase(it);
     return true;
 }
 
@@ -7340,12 +7420,12 @@ const std::vector<Entry> &table()
     {"java.lang.Thread", "suspend", "()V", thread_suspend, false},
     {"java.lang.Thread", "resume", "()V", thread_resume, false},
     {"java.lang.Thread", "setDaemon", "(I)V", thread_set_daemon, false},
-    // 0x4e0440/0x4dfc70/0x4dfc90 need the engine thread monitor and wait list
-    // (0x54d430..): a native cannot suspend its caller here, so these stay
-    // explicit stubs instead of non-blocking no-ops.
-    {"java.lang.Object", "wait", "()V", nullptr, true},
-    {"java.lang.Object", "notify", "()V", nullptr, true},
-    {"java.lang.Object", "notifyAll", "()V", nullptr, true},
+    // 0x4e0440/0x4dfc70/0x4dfc90: monitor natives over Scheduler::monitors; wait
+    // appends the pumped thread and marks it waiting (0x54d430/0x564950), notify
+    // wakes the last waiter, notifyAll drains the list (0x54d320/0x54d3a0/0x5629a0).
+    {"java.lang.Object", "wait", "()V", object_wait, false},
+    {"java.lang.Object", "notify", "()V", object_notify, false},
+    {"java.lang.Object", "notifyAll", "()V", object_notify_all, false},
     {"java.lang.Object", "toString", "()Ljava.lang.String;", object_tostring, false},
     {"java.lang.Object", "disableGC", "()V", object_gc_toggle, false},
     {"java.lang.Object", "enableGC", "()V", object_gc_toggle, false},
