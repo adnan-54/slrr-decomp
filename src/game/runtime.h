@@ -40,7 +40,6 @@ class Runtime {
         const Package *package = nullptr;
         const RpkRecord *record = nullptr; // null for created instances
         std::string data;                  // 0x518410 descriptor data (created nodes)
-        const RdbResource *db = nullptr;
         Resource *parent = nullptr;        // super record or instance parent
         uint32_t parent_id = 0;            // raw super id / parent instance id
         Resource *world_root = nullptr;

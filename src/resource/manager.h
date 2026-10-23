@@ -1,4 +1,4 @@
-// Resource/class registry: mount .rpk + .rdb pairs, resolve ids and super-id
+// Resource/class registry: mount .rpk packages (optional .rdb for tool cross-checks), resolve ids and super-id
 // chains across packages (id = sub-package index << 16 | local, 0 = the
 // referring package), parse the `script`/`native` references in a record's
 // data, and load the referenced TUFA class units and car-part configs.
@@ -104,10 +104,10 @@ struct LoadReport {
 
 class ResourceManager {
   public:
-    // Opens a pair. The .rdb is required: it carries aliases and type names.
+    // Opens an .rpk. The game needs only the .rpk: aliases (record names), super
+    // ids, type names and .rsd text all live in it. rdb_path (may be null) loads
+    // the modding text DB alongside, for tool cross-checks only.
     bool open(const char *rpk_path, const char *rdb_path, std::string *err);
-    // Runtime mount: the exe's package loader reads only the .rpk (notes/01).
-    bool open_rpk(const char *rpk_path, std::string *err);
 
     size_t package_count() const { return packages_.size(); }
     const Package &package(size_t i) const { return packages_[i]; }

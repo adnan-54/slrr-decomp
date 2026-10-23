@@ -16,7 +16,7 @@
 struct BootResult {
     bool ok = false;
     std::string entry_class;              // FQN the boot looked for
-    size_t packages = 0;                  // opened .rpk/.rdb pairs
+    size_t packages = 0;                  // opened .rpk packages
     bool entry_found = false;             // class loaded and registered in the VM
     bool clinit_ran = false;              // every static initializer completed
     int clinit_runs = 0;                  // 1 per fresh runtime (exactly once)
@@ -30,7 +30,7 @@ class Boot {
   public:
     // Runs the sequence once per runtime. A second call without reset() returns
     // the cached result and does not re-run static initializers.
-    const BootResult &run(const std::string &rpk, const std::string &rdb);
+    const BootResult &run(const std::string &rpk);
     // Destroys the runtime so the next run() starts from scratch.
     void reset();
 

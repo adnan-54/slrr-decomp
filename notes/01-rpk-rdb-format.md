@@ -74,7 +74,7 @@ lod_amp 1.000
 - `external_links` lists the sub-package paths in order, as directories with a trailing `\\` (e.g. `cars\\racers\\`) = the rpk sub-package names without `.rpk`. Sub-package index = line number (1-based). Axis.rdb's list equals Axis.rpk's 15 entries.
 - `.res` fields: `typeof` = rpk type byte, `superid` = rpk record +0x00, `typeid` = rpk id, `alias` = rpk name.
 - `rprop` type codes seen: 0, 1, 5, 82, 114 … (meaning not decoded; 114 is used for `texture`/`shd_texture`, 82 for `mesh`).
-- This explains why the exe has no ".rdb" string: it is probably the editor/source form that gets compiled into the .rpk, and the game only opens `.rpk` (**inferred**; I did not find the exe reading .rdb).
+- The exe has no ".rdb" string and never reads it: `.rdb` is the modding text form (made from an .rpk, edited, converted back). A stock install ships only `.rpk` (user, 2026-10-23). Everything src needs is in the .rpk: alias = record name, super id = record +0x00, type names = the `typ_`/`ins_`/`res_` record names (identical to the .rdb aliases on system.rpk), .rsd text = record data. src opens `.rpk` only; `.rdb` is an optional tool cross-check (31 of the 111 shipped .rdb files don't parse with our reader: hand edits).
 
 ## Resource-type names (from the sample)
 `typ_game_object`(8) `typ_physics_body`(9) `typ_render_object`(14) `typ_render_light`(13) `typ_render_camera`(12) `typ_physics_constraint`(10) `typ_physics_particle`(11)

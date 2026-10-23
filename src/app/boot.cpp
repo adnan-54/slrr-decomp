@@ -28,7 +28,7 @@ void Boot::reset()
     attempted_ = false;
 }
 
-const BootResult &Boot::run(const std::string &rpk, const std::string &rdb)
+const BootResult &Boot::run(const std::string &rpk)
 {
     if (attempted_) return result_;
     attempted_ = true;
@@ -36,7 +36,7 @@ const BootResult &Boot::run(const std::string &rpk, const std::string &rdb)
 
     resources_ = std::make_unique<ResourceManager>();
     std::string err;
-    if (!resources_->open(rpk.c_str(), rdb.c_str(), &err)) {
+    if (!resources_->open(rpk.c_str(), nullptr, &err)) {
         result_.errors.push_back("open " + rpk + ": " + err);
         return result_;
     }

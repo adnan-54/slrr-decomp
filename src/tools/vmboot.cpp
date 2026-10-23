@@ -116,11 +116,10 @@ int selfcheck()
 {
     Checker c;
     const std::string rpk = std::string(kGameDir) + "/system.rpk";
-    const std::string rdb = std::string(kGameDir) + "/system.rdb";
-    std::printf("vmboot selfcheck: %s + system.rdb\n", rpk.c_str());
+    std::printf("vmboot selfcheck: %s (rpk only)\n", rpk.c_str());
 
     Boot boot;
-    BootResult first = boot.run(rpk, rdb);
+    BootResult first = boot.run(rpk);
     for (const std::string &e : first.errors) std::printf("  error: %s\n", e.c_str());
     c.check(first.packages > 0,
             "packages open (" + std::to_string(first.packages) + ")");
@@ -136,13 +135,13 @@ int selfcheck()
             "native registry has 422 entries (" +
                 std::to_string(natives::table().size()) + ")");
 
-    const BootResult &again = boot.run(rpk, rdb);
+    const BootResult &again = boot.run(rpk);
     c.check(again.clinit_runs == 1,
             "second run in the same runtime does not rerun the initializer (runs=" +
                 std::to_string(again.clinit_runs) + ")");
 
     boot.reset();
-    BootResult fresh = boot.run(rpk, rdb);
+    BootResult fresh = boot.run(rpk);
     for (const std::string &e : fresh.errors) std::printf("  error: %s\n", e.c_str());
     c.check(fresh.ok && fresh.clinit_runs == 1 && fresh.clinit_value.kind == Value::Int &&
                 fresh.clinit_value.i == first.clinit_value.i,

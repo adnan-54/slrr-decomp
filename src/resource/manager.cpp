@@ -218,25 +218,13 @@ ClassEntry *ClassPath::find(const std::string &name)
 
 bool ResourceManager::open(const char *rpk_path, const char *rdb_path, std::string *err)
 {
-    if (!rpk_path || !rdb_path)
-        return fail(err, "open needs an .rpk and an .rdb path");
+    if (!rpk_path) return fail(err, "open needs an .rpk path");
     Package pkg;
     if (!pkg.rpk.load(rpk_path, err)) return false;
-    if (!pkg.rdb.load(rdb_path, err)) return false;
-    pkg.rpk_path = rpk_path;
-    pkg.rdb_path = rdb_path;
-    pkg.mount = canonical_package(rpk_path);
-    packages_.push_back(std::move(pkg));
-    return true;
-}
-
-// 0x51e310 Package::load: the runtime mount parses the .rpk only; the exe never
-// opens an .rdb here (notes/01).
-bool ResourceManager::open_rpk(const char *rpk_path, std::string *err)
-{
-    if (!rpk_path) return fail(err, "open_rpk needs an .rpk path");
-    Package pkg;
-    if (!pkg.rpk.load(rpk_path, err)) return false;
+    if (rdb_path && *rdb_path) {
+        if (!pkg.rdb.load(rdb_path, err)) return false;
+        pkg.rdb_path = rdb_path;
+    }
     pkg.rpk_path = rpk_path;
     pkg.mount = canonical_package(rpk_path);
     packages_.push_back(std::move(pkg));
@@ -284,10 +272,15 @@ std::vector<ResourceHit> ResourceManager::lookup(uint32_t id) const
 
 std::string ResourceManager::type_name(uint32_t type) const
 {
-    for (const Package &pkg : packages_) {
-        std::string name = pkg.rdb.type_name(type);
-        if (!name.empty()) return name;
-    }
+    // The type records' own names (typ_/ins_/res_ prefix), as in the .rpk.
+    for (const Package &pkg : packages_)
+        for (const RpkRecord &r : pkg.rpk.records) {
+            if (r.type != type) continue;
+            const std::string &n = r.name;
+            if (n.compare(0, 4, "typ_") == 0 || n.compare(0, 4, "ins_") == 0 ||
+                n.compare(0, 4, "res_") == 0)
+                return n;
+        }
     return std::string();
 }
 

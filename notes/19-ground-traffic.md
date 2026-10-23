@@ -19,7 +19,7 @@ Scripts do `map = new GroundRef(maps.city:0x00000001r)` (City.java:179, Track.ja
 `0x00010035` resolves through the first external link (`system\`) to system record
 `0x35`, whose rsd is `native ground`. The other native types in `system.rdb` are
 `camera` (0x33), `player` (0x32), `trigger` (0x34); `maps/city.rdb` itself defines
-`native road` (0x15) and `native walk` (0x352) but no instance uses either id.
+`native road` (0x15) and `native walk` (0x352); city.rpk instances both (§3.1).
 `city2.rdb` has a ground with only the `.scm` (no traffic file); ROC_track/test_track
 have no `.trc`. Only `maps/city/ai/city.trc` exists in the install.
 
@@ -168,9 +168,39 @@ id, +0xc4 pos). Types: up to 32 handles at +0x33c0 + 16·i, count +0x33bc (add
 0x4de580 -> 0x41e690(d, d·1.1) which only writes globals `0x5da008`/`0x5da00c`.
 Walk areas come from `_type_walk` (vtable 0x5a0254) create 0x4d5600: params `"<%d>;<data>"`
 -> `0x41dd70(n, data, obj)` on the ground's ped manager (getInfo 0x3d of the
-owner). UNRESOLVED: no shipped rdb instances a walk type and the exe has no
-`.walk`/`.rest` string; who consumes `maps/city/ai/city.walk` (1,799 lines
-`bbox kind;data`) and `city.rest` (755 lines) is unknown — possibly editor exports only.
+owner). See §3.1 for where the data comes from.
+
+### 3.1 Walk areas and road objects come from the map RPK (correction)
+Earlier text said no shipped data instances the walk/road types. Wrong: `maps/city.rpk`
+places 1,799 objects with `gametype 0x00000352` (`native walk`, `_type_walk`) and 755 with
+`gametype 0x00000015` (`native road`, `_type_road`) inside its spatial records
+(city2.rpk has none). `maps/city/ai/city.walk` (1,799 lines) and `city.rest` (755 lines) are
+editor exports of exactly these `bbox params` pairs; the exe has no `.walk`/`.rest` string
+and never opens them. The user-provided editors (`bin/tools/SCXWalkMarker`, `SCXTRCMarker`,
+both on SlrrLib `Model/TrcAccess`) read and write the RPK objects, not those files.
+
+Walk params `"<index>;<text>"` (0x4d5600, fmt `"%d;"` at 0x5a024c):
+- text = 8-char length prefix (skipped by the exe, 0x41b480) + byte pairs, letters `A`..`P`
+  = nibbles, byte = ((c0-1)<<4 | (c1-0x41)) & 0xff.
+- 0x41dc10: areas are keyed by index in a 0x400-bucket hash at Pedestrians+0x240; an existing
+  index returns the existing area (no re-parse). New area: +0x10 index, parse 0x41d8c0, size
+  0x41cb20 (+0x44), head-insert into list +0x3398, spawn walkers 0x41e350.
+- 0x41d8c0 layout: f32 x5 (+0x14..+0x24; SlrrLib: x, z, slope1, slope2, y); i32 n; n x
+  { i32 type; type 0x17 -> `cWAreaSpline`: i32 k, (pos f32[3], nrm f32[3]) x (k+1)
+  (0x412000 first, 0x412210(.., 0, 1.0, 1, 10000, 10000, 0) rest); else `cWAreaWall`;
+  f32 x1, z1, x2, z2; i32 link (other area index, 1-based, -1 none) }. Edges with
+  length < 0.0001 are deleted; others head-inserted at area+4 with normal
+  (+0x20, +0x24) = (-dz, dx)/len. Then i32 m; m x i32 related index, head-inserted at +8.
+  Matches SlrrLib `TrcWalk(string)` field for field.
+
+Road params `"%d;%d,%d"` = kind; graph; index (0x41a3e0, via ground getInfo 0x39 =
+Traffic). graph must equal Traffic+0xc = the .trc header u32 (city.trc: 1). kind 1 ->
+roads[index] (0x40ed30), 2 -> cross_eq[index]+0x10, 3 -> cross_light[index]+0x10 (0x40ebb0);
+no bounds check. city.rpk: kinds 484/53/218 = the city.trc pool sizes. 0x40ed30/0x40ebb0
+re-parent the traffic cars on that road/cross under the road object; the returned pointer is
+kept at obj+0x1c and drives the LOD callback vf5 0x4d44d0. Card 100 ports the walk decoder
+and checks both param kinds against city.rpk.
+
 
 ## 4. Water (physics world, no traffic)
 - `setWater(FFF)` 0x4dc400: `getArgs(self, &level?, &density, &viscosity)` — the first

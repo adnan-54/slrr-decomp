@@ -362,7 +362,9 @@ static int selfcheck(const char *game_dir)
                                         std::to_string(report.unresolved) + ")");
     c.check(report.empty == 0, "no zero-byte placeholders among these refs");
 
-    // The four source-only scripts are compiled by the game at runtime.
+    // Install data: these 4 refs ship only as .java. The exe never compiles on
+    // demand (compiler 0x5598f0 is reached only from System.compileAll 0x555510,
+    // called by GameLogic in DEBUG_MODE), so the game fails to load them too.
     size_t java_backed = 0;
     for (size_t i = 0; i < mgr.package_count(); i++) {
         const Package &p = mgr.package(i);
@@ -560,7 +562,7 @@ static int sounds(const char *game_dir)
     std::vector<std::string> rpks;
     find_rpks(game_dir, &rpks);
 
-    size_t paired = 0, opened = 0, open_failures = 0;
+    size_t paired = 0, opened = 0, open_failures = 0, rdb_failures = 0;
     size_t records = 0, without_source = 0;
     size_t compared = 0, no_rsd = 0, mismatches = 0;
     size_t missing_files = 0, read_failures = 0;
@@ -569,13 +571,18 @@ static int sounds(const char *game_dir)
     std::string first_mismatch, first_wav_failure;
 
     for (const std::string &rpk_path : rpks) {
+        // The game reads only the .rpk; a sibling .rdb (modding text DB) is an
+        // optional cross-check and may be hand-edited beyond our parser.
         std::string rdb_path = sibling_rdb(rpk_path);
-        if (rdb_path.empty()) continue;
-        paired++;
+        if (!rdb_path.empty()) paired++;
 
         ResourceManager mgr;
         std::string err;
-        if (!mgr.open(rpk_path.c_str(), rdb_path.c_str(), &err)) {
+        if (!rdb_path.empty() && !mgr.open(rpk_path.c_str(), rdb_path.c_str(), &err)) {
+            rdb_failures++;
+            err.clear();
+        }
+        if (mgr.package_count() == 0 && !mgr.open(rpk_path.c_str(), nullptr, &err)) {
             open_failures++;
             std::printf("  open FAILED %s: %s\n", rpk_path.c_str(), err.c_str());
             continue;
@@ -654,8 +661,10 @@ static int sounds(const char *game_dir)
             "0 WAV parse failures over " + std::to_string(wav_ok + wav_failures) +
                 " WAV(s)" + (first_wav_failure.empty() ? "" : ", first " + first_wav_failure));
 
-    std::printf("packages: %zu .rpk, %zu paired, %zu opened, %zu open failure(s)\n",
-                rpks.size(), paired, opened, open_failures);
+    c.check(open_failures == 0, "every .rpk opens without its .rdb (" +
+                                    std::to_string(open_failures) + " failure(s))");
+    std::printf("packages: %zu .rpk, %zu with .rdb (%zu .rdb unparsable), %zu opened, %zu open failure(s)\n",
+                rpks.size(), paired, rdb_failures, opened, open_failures);
     std::printf("sounds: %zu type-6 record(s) with data, %zu without sourcefile\n",
                 records, without_source);
     std::printf("rsd: %zu compared with .rdb, %zu without .rdb .rsd, %zu mismatch(es)\n",

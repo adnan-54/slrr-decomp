@@ -2027,8 +2027,7 @@ bool gr_is_empty(Vm &, const Args &a, Value *out, std::string *err)
     Runtime::Resource *r = value_resource(a[0]);
     int32_t empty = 1;
     if (r && r->type == 8) {
-        bool has_data = r->record &&
-                        (r->record->data_size > 0 || (r->db && !r->db->rsd.empty()));
+        bool has_data = r->record && r->record->data_size > 0;
         empty = has_data ? 0 : 1;
     }
     *out = Value::make_int(empty);
@@ -2578,7 +2577,7 @@ bool system_open_lib(Vm &, const Args &a, Value *out, std::string *err)
     const Package *pkg = rm.find_open_package(path);
     if (!pkg) {
         std::string load_err;
-        if (!rm.open_rpk(path.c_str(), &load_err)) {
+        if (!rm.open(path.c_str(), nullptr, &load_err)) {   // 0x51e310: .rpk only
             // shortcut: the exe keeps the failed registry entry, so a later
             // openLib reuses its slot; src leaves no entry.
             *out = Value::make_int(-1);

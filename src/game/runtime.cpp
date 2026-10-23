@@ -299,10 +299,8 @@ Runtime::Resource *Runtime::resolve(uint32_t id, const Package *base)
     r->name = rec->name;
     r->package = target;
     r->record = rec;
-    r->db = target->rdb.find(rec->id);
     r->script_class = script_class_of(*target, *rec);
     r->parent_id = rec->super_id;
-    if (!r->parent_id && r->db) r->parent_id = r->db->super_id;
     if (r->parent_id) r->parent = resolve(r->parent_id, target);
     return r;
 }
