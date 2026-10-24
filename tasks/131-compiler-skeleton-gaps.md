@@ -1,7 +1,7 @@
 ---
 id: 131
-status: todo
-branch:
+status: implemented
+branch: card/131
 depends: [130]
 ---
 # compiler stage 3b: close the skeleton gaps (stamp, MTHD locals/body index, FILD init)

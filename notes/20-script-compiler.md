@@ -19,3 +19,25 @@ Stages (one card each, src/script/compiler/):
 4+. TREE codegen per node family (literals/locals/fields, calls, operators, control flow,
    new/arrays/casts, switch/try...). Corpus: count of byte-identical bodies, rising.
 Then: hook into packages.cpp load_class_at where the .class is missing (0x5598f0 rules).
+
+## Stage 3b results (card 131, `classdump --compile-check "bin/the game"`)
+
+`skeleton: 2769 pairs, 2809 units, identical: header 2806, FILD 2809, MTHD 2809,
+CLSS 2809, CONS-set 1213; old-stamp 152`
+
+- TREE body indices follow source declaration order, field initializers and methods
+  interleaved (Gamemode: instance fields declared before the statics get 0..10, the
+  statics 11..25, fields declared later 26..30, then methods in source order).
+- MTHD locals = max simultaneous local slots: `this` slot 0, parameters and block
+  locals at declaration, freed at block exit. A method whose body has no statements
+  gets 0 (Set.build, TrackData.setTrafficLight); a constructor does not, because the
+  implicit ctor chain still needs its slots (TrackData.<init> = 1, Part.<init>(I) = 2).
+  Each `switch` case body is its own slot scope (Gates.osdCommand redeclares the same
+  names per case; shipped locals = the largest case).
+- FILD flags: `abstract` = 0x10 (Track.posStart/oriStart are `abstract` fields).
+- Header stamp: compiler writes 0x24F9D. 152 pairs carry the older compiler's 0x24F5C
+  and are reported as `old-stamp` instead of mismatches. 3 paired files
+  (parts/neons/scripts/neontube_{L_Aqua,L_Blue,R_Aqua}.class) carry 0x11AE1 and stay
+  reported; INVENTED: which source-comparison in 0x5557c0 selects 0x11AE1 was not
+  traced (the exe default path writes 0x24F9D).
+- Remaining CONS-set differences are codegen order (stage 4), not skeleton.

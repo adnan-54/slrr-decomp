@@ -24,6 +24,7 @@ struct FieldDecl {
     std::vector<std::string> modifiers;
     std::string type; // as written, `[]` included (e.g. "int[]")
     std::vector<Declarator> decls;
+    int pos = 0; // token index of the declaration, source order
 };
 
 struct ParamDecl {
@@ -40,6 +41,7 @@ struct MethodDecl {
     std::vector<std::string> throws;
     bool has_body = false;
     TokenRange body; // tokens inside the braces, [begin, end)
+    int pos = 0;     // token index of the declaration, source order
 };
 
 struct ClassDecl {

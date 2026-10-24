@@ -25,14 +25,15 @@ bool has_mod(const std::vector<std::string> &mods, const char *m)
 }
 
 // FILD/MTHD flag bits observed in the shipped pairs: public 0x01, private 0x04,
-// static 0x08, final 0x20, native 0x40. Other modifiers do not occur in the
-// pair corpus.
+// static 0x08, abstract 0x10 (Track.posStart/oriStart are declared `abstract`),
+// final 0x20, native 0x40. Other modifiers do not occur in the pair corpus.
 uint32_t modifier_flags(const std::vector<std::string> &mods)
 {
     uint32_t f = 0;
     if (has_mod(mods, "public")) f |= 0x01;
     if (has_mod(mods, "private")) f |= 0x04;
     if (has_mod(mods, "static")) f |= 0x08;
+    if (has_mod(mods, "abstract")) f |= 0x10;
     if (has_mod(mods, "final")) f |= 0x20;
     if (has_mod(mods, "native")) f |= 0x40;
     return f;
@@ -185,7 +186,8 @@ private:
     ClassSym self_;
     std::map<std::string, int> intern_;
     std::vector<std::vector<std::pair<std::string, std::string>>> scopes_;
-    int locals_ = 0;
+    std::vector<int> scope_next_; // next free local slot per open scope
+    int max_slots_ = 0;
 
     // ---- constants -----------------------------------------------------
 
@@ -339,9 +341,23 @@ private:
     }
     void declare_local(const std::string &name, const std::string &desc)
     {
-        if (scopes_.empty()) scopes_.push_back({});
+        if (scopes_.empty()) {
+            scopes_.push_back({});
+            scope_next_.push_back(0);
+        }
         scopes_.back().push_back({name, desc});
-        locals_++;
+        int slot = scope_next_.back()++;
+        if (slot + 1 > max_slots_) max_slots_ = slot + 1;
+    }
+    void push_scope()
+    {
+        scopes_.push_back({});
+        scope_next_.push_back(scope_next_.empty() ? 0 : scope_next_.back());
+    }
+    void pop_scope()
+    {
+        scopes_.pop_back();
+        if (!scope_next_.empty()) scope_next_.pop_back();
     }
 
     bool class_receiver(const Expr &e, std::string *cls) const;
@@ -685,9 +701,9 @@ void Emitter::scan_stmt(const Stmt &s)
 {
     switch (s.kind) {
     case StmtKind::Block:
-        scopes_.push_back({});
+        push_scope();
         for (const auto &child : s.stmts) scan_stmt(*child);
-        scopes_.pop_back();
+        pop_scope();
         break;
     case StmtKind::LocalDecl:
         for (const DeclAst &d : s.decls) {
@@ -706,22 +722,24 @@ void Emitter::scan_stmt(const Stmt &s)
         scan_stmt(*s.body);
         break;
     case StmtKind::For:
-        scopes_.push_back({});
+        push_scope();
         if (s.init_stmt) scan_stmt(*s.init_stmt);
         for (const auto &e : s.init_exprs) expr(*e);
         if (s.expr) expr(*s.expr);
         for (const auto &e : s.update_exprs) expr(*e);
         scan_stmt(*s.body);
-        scopes_.pop_back();
+        pop_scope();
         break;
     case StmtKind::Switch:
-        scopes_.push_back({});
         expr(*s.expr);
+        // Shipped: each case body is its own slot scope (Gates.osdCommand
+        // redeclares the same names in several cases, locals = max case).
         for (const SwitchCase &c : s.cases) {
+            push_scope();
             if (c.label) expr(*c.label);
             for (const auto &child : c.stmts) scan_stmt(*child);
+            pop_scope();
         }
-        scopes_.pop_back();
         break;
     case StmtKind::Expr:
     case StmtKind::Return:
@@ -804,16 +822,48 @@ bool Emitter::run(ClassUnit *out, std::string *err)
             return false;
         }
         scopes_.assign(1, {});
-        locals_ = 0;
-        if (!has_mod(m.modifiers, "static")) locals_++; // `this`
+        scope_next_.assign(1, has_mod(m.modifiers, "static") ? 0 : 1); // `this` slot 0
+        max_slots_ = scope_next_[0];
         for (const ParamDecl &p : m.params) declare_local(p.name, type_desc(p.type));
         scan_stmts(body.stmts);
-        method_locals[mi] = locals_;
+        // Shipped: a method with no statements gets no slots at all, not even
+        // `this`/parameters (FORMAT.md MTHD locals, see Set.build). Constructors
+        // are the exception: the implicit ctor chain still needs its slots.
+        method_locals[mi] =
+            (body.stmts.empty() && !m.is_ctor) ? 0 : max_slots_;
         scopes_.clear();
+        scope_next_.clear();
     }
 
-    // Pass B: FILD static section then instance, declaration order. Bodies are
-    // allocated in this order (field initializers first).
+    // TREE bodies are numbered in source declaration order, with field
+    // initializers and methods interleaved (FORMAT.md "TREE"; Gamemode: the
+    // statics declared after some instance fields get the later indices).
+    struct BodySite {
+        int pos;
+        int fi = -1, di = 0, mi = 0;
+    };
+    std::vector<BodySite> sites;
+    for (size_t fi = 0; fi < cls_.fields.size(); fi++)
+        for (size_t di = 0; di < cls_.fields[fi].decls.size(); di++)
+            if (field_has_init[fi][di]) sites.push_back({cls_.fields[fi].pos, (int)fi, (int)di, 0});
+    for (size_t mi = 0; mi < cls_.methods.size(); mi++)
+        sites.push_back({cls_.methods[mi].pos, -1, 0, (int)mi});
+    std::stable_sort(sites.begin(), sites.end(),
+                     [](const BodySite &a, const BodySite &b) { return a.pos < b.pos; });
+    std::vector<std::vector<int>> field_body(cls_.fields.size());
+    for (size_t fi = 0; fi < cls_.fields.size(); fi++)
+        field_body[fi].assign(cls_.fields[fi].decls.size(), -1);
+    std::vector<int> method_body(cls_.methods.size(), -1);
+    for (const BodySite &s : sites) {
+        int idx = (int)u_.bodies.size();
+        u_.bodies.push_back(Body());
+        if (s.fi >= 0)
+            field_body[(size_t)s.fi][(size_t)s.di] = idx;
+        else
+            method_body[(size_t)s.mi] = idx;
+    }
+
+    // Pass B: FILD static section then instance, declaration order.
     for (int section = 0; section < 2; section++) {
         for (size_t fi = 0; fi < cls_.fields.size(); fi++) {
             const FieldDecl &f = cls_.fields[fi];
@@ -826,11 +876,7 @@ bool Emitter::run(ClassUnit *out, std::string *err)
                 info.flags = modifier_flags(f.modifiers);
                 info.name = add_str(d.name);
                 info.type = add_str(type_desc(f.type + std::string((size_t)d.array_dims * 2, '[')));
-                info.init = -1;
-                if (field_has_init[fi][di]) {
-                    info.init = (int)u_.bodies.size();
-                    u_.bodies.push_back(Body());
-                }
+                info.init = field_body[fi][di];
                 u_.fields.push_back(info);
             }
         }
@@ -852,8 +898,7 @@ bool Emitter::run(ClassUnit *out, std::string *err)
             sig += ")";
             if (!m.is_ctor) sig += type_desc(m.return_type);
             info.sig = add_str(sig);
-            info.body = (int)u_.bodies.size();
-            u_.bodies.push_back(Body());
+            info.body = method_body[mi];
             info.locals = m.has_body ? method_locals[mi] : 0;
             u_.methods.push_back(info);
         }

@@ -207,6 +207,7 @@ struct Parser {
 
     bool member(JavaUnit *unit, ClassDecl *c)
     {
+        int decl_pos = (int)pos;
         std::vector<std::string> mods;
         while (cur().kind == TokKind::Keyword && is_modifier(cur().text)) {
             mods.push_back(cur().text);
@@ -226,6 +227,7 @@ struct Parser {
             MethodDecl m;
             m.modifiers = std::move(mods);
             m.is_ctor = true;
+            m.pos = decl_pos;
             m.name = cur().text;
             advance();
             if (!method_rest(&m)) return false;
@@ -244,6 +246,7 @@ struct Parser {
             m.modifiers = std::move(mods);
             m.return_type = std::move(type);
             m.name = std::move(name);
+            m.pos = decl_pos;
             if (!method_rest(&m)) return false;
             c->methods.push_back(std::move(m));
             return true;
@@ -252,6 +255,7 @@ struct Parser {
         FieldDecl f;
         f.modifiers = std::move(mods);
         f.type = std::move(type);
+        f.pos = decl_pos;
         Declarator d;
         d.name = std::move(name);
         if (!declarator_rest(&d)) return false;

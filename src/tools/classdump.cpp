@@ -1408,8 +1408,9 @@ static int compile_check(int argc, char **argv)
         for (const ClassUnit &u : file.units) index.add(u);
     }
 
-    size_t pairs = 0, units = 0, errs = 0;
+    size_t pairs = 0, units = 0, errs = 0, old_stamp = 0;
     size_t ok_header = 0, ok_fild = 0, ok_mthd = 0, ok_clss = 0, ok_cons = 0;
+    std::map<std::string, size_t> reasons;
     std::vector<std::string> first_mismatches, first_errors;
 
     for (const std::string &class_path : class_paths) {
@@ -1455,30 +1456,56 @@ static int compile_check(int argc, char **argv)
         for (size_t i = 0; i < want.units.size(); i++) {
             units++;
             bool h = false, f = false, m = false, s = false, c = false;
-            std::string why;
+            std::string why, group;
             if (i < ours.units.size()) {
                 const ClassUnit &w = want.units[i], &g = check.units[i];
                 std::string fwhy, mwhy, swhy, cwhy;
-                h = w.version == g.version && w.stamp == g.stamp;
+                // 0x24F5C is the older shipped compiler's stamp: it cannot be
+                // reproduced from source, so it is reported separately instead
+                // of as a header mismatch.
+                bool old = w.stamp == 0x00024F5Cu;
+                if (old) old_stamp++;
+                h = w.version == g.version && (old || w.stamp == g.stamp);
                 f = same_fields(w, g, &fwhy);
                 m = same_methods(w, g, &mwhy);
                 s = same_class(w, g, &swhy);
                 c = same_const_set(w, g, &cwhy);
-                if (!h) why = "header: version/stamp differ";
-                else if (!f) why = "FILD: " + fwhy;
-                else if (!m) why = "MTHD: " + mwhy;
-                else if (!s) why = "CLSS: " + swhy;
-                else if (!c) why = "CONS: " + cwhy;
+                if (!h) {
+                    why = "header: version/stamp differ";
+                    group = "header";
+                } else if (!f) {
+                    why = "FILD: " + fwhy;
+                    group = fwhy.find(" init ") != std::string::npos ? "FILD init"
+                                                                     : "FILD other";
+                } else if (!m) {
+                    why = "MTHD: " + mwhy;
+                    group = mwhy.find(" locals ") != std::string::npos ? "MTHD locals"
+                          : mwhy.find(" body ") != std::string::npos ? "MTHD body"
+                                                                     : "MTHD other";
+                } else if (!s) {
+                    why = "CLSS: " + swhy;
+                    group = "CLSS";
+                } else if (!c) {
+                    why = "CONS: " + cwhy;
+                    group = "CONS";
+                }
             } else {
                 why = "missing compiled unit";
+                group = "missing unit";
             }
             ok_header += h;
             ok_fild += f;
             ok_mthd += m;
             ok_clss += s;
             ok_cons += c;
-            if (!(h && f && m && s && c) && first_mismatches.size() < 5000)
-                first_mismatches.push_back(class_path + ": " + why);
+            if (!group.empty()) {
+                reasons[group]++;
+                if (first_mismatches.size() < 5000)
+                    first_mismatches.push_back(class_path + " [" +
+                                               want.units[i].class_name(
+                                                   want.units[i].self_class) +
+                                               "]: " + why);
+            }
         }
         if (ours.units.size() > want.units.size()) {
             units += ours.units.size() - want.units.size();
@@ -1490,11 +1517,20 @@ static int compile_check(int argc, char **argv)
     }
 
     std::printf("skeleton: %zu pairs, %zu units, identical: header %zu, FILD %zu, MTHD %zu, "
-                "CLSS %zu, CONS-set %zu\n",
-                pairs, units, ok_header, ok_fild, ok_mthd, ok_clss, ok_cons);
+                "CLSS %zu, CONS-set %zu; old-stamp %zu\n",
+                pairs, units, ok_header, ok_fild, ok_mthd, ok_clss, ok_cons, old_stamp);
     if (errs) std::printf("compile errors: %zu\n", errs);
     for (const std::string &e : first_errors) std::printf("  error %s\n", e.c_str());
     for (const std::string &m : first_mismatches) std::printf("  %s\n", m.c_str());
+    std::vector<std::pair<size_t, std::string>> sorted_reasons;
+    for (const auto &r : reasons) sorted_reasons.push_back({r.second, r.first});
+    std::sort(sorted_reasons.begin(), sorted_reasons.end(),
+              [](const std::pair<size_t, std::string> &a,
+                 const std::pair<size_t, std::string> &b) {
+                  return a.first != b.first ? a.first > b.first : a.second < b.second;
+              });
+    for (const auto &r : sorted_reasons)
+        std::printf("mismatch reason: %s %zu\n", r.second.c_str(), r.first);
     return 0; // report only
 }
 
