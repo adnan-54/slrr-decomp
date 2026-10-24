@@ -1585,6 +1585,17 @@ bool Vm::materialize(const Value &in, Value *out, std::string *err) const
     }
 }
 
+// Every assignment converts the value to the target Variable's declared type
+// (JVM::assignmentConversion 0x5552e0, called by assign 0x55e020 for locals,
+// fields alike): `y = 0;` into a float field stores 0.0f (Vector3.to2D).
+// INVENTED: float->int truncates like a C cast (typecast 0x55d1b0 not traced).
+static void convert_to(const char *d, Value *v)
+{
+    char desc = d ? d[0] : 0;
+    if (desc == 'I' && v->kind == Value::Float) *v = Value::make_int((int32_t)v->f);
+    else if (desc == 'F' && v->kind == Value::Int) *v = Value::make_float((float)v->i);
+}
+
 bool Vm::store(const Ref &ref, const Value &value, std::string *err)
 {
     Value v;
@@ -1595,14 +1606,8 @@ bool Vm::store(const Ref &ref, const Value &value, std::string *err)
             *err = "dangling local reference";
             return false;
         }
-        // The exe's locals are typed Variables: an assignment converts to the
-        // declared I/F type (`int t = len * random();` truncates).
-        // INVENTED: truncation like a C cast (the exe's conversion is not traced).
-        if (ref.slot < ref.frame->local_kind.size()) {
-            char k = ref.frame->local_kind[ref.slot];
-            if (k == 'I' && v.kind == Value::Float) v = Value::make_int((int32_t)v.f);
-            else if (k == 'F' && v.kind == Value::Int) v = Value::make_float((float)v.i);
-        }
+        if (ref.slot < ref.frame->local_kind.size())
+            convert_to(&ref.frame->local_kind[ref.slot], &v);
         ref.frame->locals[ref.slot] = v;
         return true;
     case Ref::Static:
@@ -1610,6 +1615,8 @@ bool Vm::store(const Ref &ref, const Value &value, std::string *err)
             *err = "dangling static field reference";
             return false;
         }
+        if (ref.slot < ref.cstate->own_statics.size())
+            convert_to(field_desc(ref.cstate->own_statics[ref.slot]), &v);
         ref.cstate->statics[ref.slot] = v;
         return true;
     case Ref::Instance:
@@ -1617,6 +1624,8 @@ bool Vm::store(const Ref &ref, const Value &value, std::string *err)
             *err = "dangling instance field reference";
             return false;
         }
+        if (ref.obj->cls && ref.slot < ref.obj->cls->ifields.size())
+            convert_to(field_desc(ref.obj->cls->ifields[ref.slot]), &v);
         ref.obj->fields[ref.slot] = v;
         return true;
     case Ref::Element:

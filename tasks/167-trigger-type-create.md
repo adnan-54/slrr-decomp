@@ -1,6 +1,6 @@
 ---
 id: 167
-status: todo
+status: merged
 branch: card/167
 depends: [166]
 ---
@@ -85,3 +85,12 @@ named hull triggers; trigger render/LOD flags on type+0xc; removing vmboot's set
 the car on input 0x498599; vmboot already checks that path).
 
 ## Result
+Triggers: cp 4/4, rp 35/35 (size 40), pit 3/3 = 42 sensor bodies, all mass-0 boxes, flags 0x15040, owner = id.
+cp[0] 48.775 -5.744 -542.434 half 30/30/5; rp[0] 32.472 -4.310 20.036 half 40/40/5; pit[0] 47.951 -3.668
+272.098 half 2/2/5. world body_count 72. vmboot 143 checks PASSED.
+Merge fixes (review): vmboot used the opaque ClassState (object_class() instead). rp[0]/rp[1] failed the pos check
+because CircuitRacing.updatePosition -> Gamemode.getSplineDistance calls Vector3.to2D (`y = 0; return this;`)
+on the live raceposData Vector3s, and the VM stored int 0 into the float field: Vm::store now applies the
+exe's assignment conversion (JVM::assignmentConversion 0x5552e0 via assign 0x55e020) to fields as well as
+locals. The flattening itself is real game behaviour, so rp positions are checked against a fresh
+track_data.getData() raceposData entry (plus the live script x/z).

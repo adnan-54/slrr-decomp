@@ -324,3 +324,9 @@ Sweep `0x4fa900` (only caller PhysicsWorld__step 0x502060), every record:
 Param string (dispatchScript 0x47c960 case 0x20/0x40): `sprintf("%d", other)` where `other = rec.A+0x40` (the
 body's resource id) unless that equals the dispatch object's id (sender ? sender : target), then `rec.B+0x40`.
 A notification forwards with sender = the trigger, so `handleCheckpoint(trigger, 0x20, "<car id>")`.
+
+Script caveat: Trigger.pos for race-position triggers is the shared raceposData Vector3, and
+`Gamemode.getSplineDistance` flattens it in place (`Vector3.to2D`: `y = 0; return this;`), so after the first
+position update rp[k].pos.y is 0.0 while the sensor body keeps the creation y. Every script assignment converts
+to the target's declared type (JVM::assignmentConversion 0x5552e0 from assign 0x55e020), fields included,
+so that 0 is a float.

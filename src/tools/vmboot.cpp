@@ -1147,9 +1147,35 @@ void game_init_check(Boot &boot, Checker &c)
                 rv.kind == Value::Float)
                 rp_size = rv.f;
         }
+        Object *track_data = nullptr;
+        {
+            Value ev, tv;
+            std::string e;
+            if (game_object &&
+                boot.vm()->get_instance_field(game_object, "gmcEvent", &ev, &e) &&
+                ev.kind == Value::Obj && ev.obj &&
+                boot.vm()->get_instance_field(ev.obj, "track", &tv, &e) &&
+                tv.kind == Value::Obj)
+                track_data = tv.obj;
+        }
+        // The race scripts flatten raceposData Vector3s in place (Vector3.to2D
+        // `y = 0;` from CircuitRacing.updatePosition -> Gamemode.getSplineDistance),
+        // so rp positions are checked against a fresh getData() of the same
+        // track_data class (the shipped track_data.java values) plus the live
+        // script x/z.
+        Object *rp_ref = nullptr;
+        {
+            std::string e;
+            Value rv;
+            Object *fresh = track_data ? boot.vm()->new_object(track_data->cls, &e) : nullptr;
+            if (fresh && rt->call_method(fresh, "getData", {}, nullptr, &e) &&
+                boot.vm()->get_instance_field(fresh, "raceposData", &rv, &e) &&
+                rv.kind == Value::Obj)
+                rp_ref = rv.obj;
+        }
         int cp_n = 0, rp_n = 0, pit_n = 0, trig_bad = 0;
         auto check_triggers = [&](const char *field, int *count, Vec3 half,
-                                  const char *label) {
+                                  const char *label, Object *ref_vec) {
             Value av;
             std::string te;
             *count = 0;
@@ -1182,29 +1208,35 @@ void game_init_check(Boot &boot, Checker &c)
                     bad("no sensor body");
                     continue;
                 }
-                Value xv, yv, zv;
+                auto read_vec = [&](Object *o, Vec3 *out) {
+                    Value xv, yv, zv;
+                    if (!o || !boot.vm()->get_instance_field(o, "x", &xv, &te) ||
+                        !boot.vm()->get_instance_field(o, "y", &yv, &te) ||
+                        !boot.vm()->get_instance_field(o, "z", &zv, &te) ||
+                        xv.kind != Value::Float || yv.kind != Value::Float ||
+                        zv.kind != Value::Float)
+                        return false;
+                    *out = Vec3{xv.f, yv.f, zv.f};
+                    return true;
+                };
+                Vec3 tp;
                 if (!boot.vm()->get_instance_field(el.obj, "pos", &pv, &te) ||
-                    pv.kind != Value::Obj || !pv.obj) {
-                    std::printf("    %s[%zu]: pos field kind %d (%s)\n", label, idx,
-                                (int)pv.kind, te.c_str());
+                    pv.kind != Value::Obj || !read_vec(pv.obj, &tp)) {
                     bad("no script pos Vector3");
                     continue;
                 }
-                if (!boot.vm()->get_instance_field(pv.obj, "x", &xv, &te) ||
-                    !boot.vm()->get_instance_field(pv.obj, "y", &yv, &te) ||
-                    !boot.vm()->get_instance_field(pv.obj, "z", &zv, &te) ||
-                    xv.kind != Value::Float || yv.kind != Value::Float ||
-                    zv.kind != Value::Float) {
-                    std::printf("    %s[%zu]: pos xyz kinds %d/%d/%d (%s) y.i %d y.f %.3f "
-                                "cls %s body %.3f %.3f %.3f\n",
-                                label, idx, (int)xv.kind, (int)yv.kind, (int)zv.kind,
-                                te.c_str(), yv.i, (double)yv.f,
-                                pv.obj->cls ? pv.obj->cls->name.c_str() : "?",
-                                (double)tb->pos.x, (double)tb->pos.y, (double)tb->pos.z);
-                    bad("no script pos Vector3");
-                    continue;
+                if (ref_vec) {
+                    Value rv;
+                    Vec3 rp;
+                    if (!rt->call_method(ref_vec, "elementAt", {Value::make_int((int32_t)idx)},
+                                         &rv, &te) ||
+                        rv.kind != Value::Obj || !read_vec(rv.obj, &rp) ||
+                        std::fabs(rp.x - tp.x) > 1e-3f || std::fabs(rp.z - tp.z) > 1e-3f) {
+                        bad("script pos x/z differ from the track_data entry");
+                        continue;
+                    }
+                    tp = rp;
                 }
-                Vec3 tp{xv.f, yv.f, zv.f};
                 const Shape &sh = tb->def.shape;
                 bool body_ok = sh.type == SHAPE_BOX &&
                                std::fabs(sh.half_extents.x - half.x) < 1e-3f &&
@@ -1231,23 +1263,12 @@ void game_init_check(Boot &boot, Checker &c)
             }
         };
         // Gamemode.java:361 (cp 30/30/5), :275 (rp size/size/5), :382 (pit 2/2/5).
-        check_triggers("cpTrigger", &cp_n, Vec3{30.0f, 30.0f, 5.0f}, "cp");
-        check_triggers("rpTrigger", &rp_n, Vec3{rp_size, rp_size, 5.0f}, "rp");
-        check_triggers("pitTrigger", &pit_n, Vec3{2.0f, 2.0f, 5.0f}, "pit");
+        check_triggers("cpTrigger", &cp_n, Vec3{30.0f, 30.0f, 5.0f}, "cp", nullptr);
+        check_triggers("rpTrigger", &rp_n, Vec3{rp_size, rp_size, 5.0f}, "rp", rp_ref);
+        check_triggers("pitTrigger", &pit_n, Vec3{2.0f, 2.0f, 5.0f}, "pit", nullptr);
         // Count source: the shipped track_data Vectors that size the arrays
         // (Norisring data/track_data.java:42 checkpoints, :57 pits, :69
         // raceposData); gamemode rpTriggerSize drives the race-position size.
-        Object *track_data = nullptr;
-        {
-            Value ev, tv;
-            std::string e;
-            if (game_object &&
-                boot.vm()->get_instance_field(game_object, "gmcEvent", &ev, &e) &&
-                ev.kind == Value::Obj && ev.obj &&
-                boot.vm()->get_instance_field(ev.obj, "track", &tv, &e) &&
-                tv.kind == Value::Obj)
-                track_data = tv.obj;
-        }
         auto vector_size = [&](const char *field, int *out) {
             Value ov, sz;
             std::string e;
