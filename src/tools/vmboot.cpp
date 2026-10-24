@@ -528,6 +528,16 @@ void game_init_check(Boot &boot, Checker &c)
                 selected ? "" : (" (invoke failed: " + serr + ")").c_str());
     std::printf("  final actualState: %s\n", class_after.c_str());
 
+    // 0x47e050 sub-steps the process world (0x502060); 0x4e5810 System.simTime
+    // returns that world's time (float at 0x60251c+0), not a separate clock.
+    c.check(process_world().time > 0.0f,
+            "process world time advances over the run (got " +
+                std::to_string((double)process_world().time) + ")");
+    c.check((float)natives::sim_time(*boot.vm()) == process_world().time,
+            "System.simTime equals the process world time");
+    std::printf("  process world time after %d frames: %.3f s\n", kFrames,
+                (double)process_world().time);
+
     // GameLogic.player (GameLogic.java:173); the owned vehicle is Racer.car
     // (Racer.java:31), assigned by buyCar before returning to the Garage
     // (CarMarket.java:1124).

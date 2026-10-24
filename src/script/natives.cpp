@@ -34,6 +34,7 @@
 #include "input/cursor.h"
 #include "input/device.h"
 #include "input/hotkeys.h"
+#include "physics/physics.h"
 #include "platform/fs.h"
 #include "script/vm.h"
 #include "vehicle/dyno.h"
@@ -127,8 +128,6 @@ struct ScriptThreadState {
 
 struct Scheduler {
     std::vector<std::unique_ptr<ScriptThreadState>> threads;
-    // Level-2 sim clock; advanced by the sim step 0x47e050 (card 102).
-    double sim_seconds = 0.0;
     // 0x569730 QueryPerformanceCounter milliseconds, read by Thread__sleep.
     // INVENTED: src has no QPC clock here; the host passes its frame clock.
     double now_ms = 0.0;
@@ -813,10 +812,10 @@ bool system_gc(Vm &, const Args &, Value *out, std::string *)
     return true;
 }
 
-bool system_sim_time(Vm &vm, const Args &, Value *out, std::string *)
+bool system_sim_time(Vm &, const Args &, Value *out, std::string *)
 {
-    // 0x4e5810 returns the world simulation time; sleep advances the same clock.
-    *out = Value::make_float((float)sched(vm).sim_seconds);
+    // 0x4e5810 returns the process world's simulated time (0x60251c +0).
+    *out = Value::make_float(process_world().time);
     return true;
 }
 
@@ -1166,7 +1165,8 @@ void mat_to_ypr(const Mat34 &m, float out[3])
     game::mat_to_ypr(m, out);
 }
 
-bool vec_length(Vm &vm, const Args &a, Value *out, std::string *err)
+// Named vector_* because physics.h declares global vec_length/vec_normalize.
+bool vector_length(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     Object *o;
     float v[3];
@@ -1191,7 +1191,7 @@ bool vec_distance(Vm &vm, const Args &a, Value *out, std::string *err)
     return true;
 }
 
-bool vec_normalize(Vm &vm, const Args &a, Value *out, std::string *err)
+bool vector_normalize(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     Object *o;
     float v[3];
@@ -2502,8 +2502,8 @@ bool gr_get_info(Vm &, const Args &a, Value *out, std::string *err)
 // ---- java.lang.GameType events -------------------------------------------
 
 // 0x4da3c0: GameType.addTimer(float deadline, int timerid). One-shot at
-// g_simTime (0x60251c) + deadline.
-bool gt_add_timer(Vm &vm, const Args &a, Value *out, std::string *err)
+// the process world time (0x60251c) + deadline.
+bool gt_add_timer(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!need_rt("GameType.addTimer", err)) return false;
     Object *o;
@@ -2521,8 +2521,7 @@ bool gt_add_timer(Vm &vm, const Args &a, Value *out, std::string *err)
         return true;
     }
     // asm 0x4da3f1..0x4da412: ECX = h, one-shot flag 0x80000080.
-    game_rt()->add_timer(h, (float)sched(vm).sim_seconds + deadline, 0x80000080u,
-                         timerid);
+    game_rt()->add_timer(h, process_world().time + deadline, 0x80000080u, timerid);
     return true;
 }
 
@@ -7481,7 +7480,7 @@ bool ps_get_counter(Vm &, const Args &a, Value *out, std::string *err)
 namespace natives {
 
 // 0x60251c: the same clock System.simTime (0x4e5810) returns.
-double sim_time(Vm &vm) { return sched(vm).sim_seconds; }
+double sim_time(Vm &) { return process_world().time; }
 
 // 0x569730 clock, passed in by the host frame loop.
 void set_clock(Vm &vm, double now_ms) { sched(vm).now_ms = now_ms; }
@@ -7599,15 +7598,34 @@ void monitor_notify_all(Vm &vm, Object *o)
     s.monitors.erase(it);
 }
 
-// 0x47e050 control step, clock part: step = min(warp * dt, 0.1f).
-// shortcut: the exe advances the physics world's clock in world sub-steps
-// (0x502060); src has no world in the frame loop, so the whole step is added.
+// 0x47e050: sub-step the process world (0x502060), then run timers
+// (0x47b700) and the deferred flush (0x47d070) after every sub-step.
+// shortcut: control/drive callback lists 0x47bc20/0x47be30, the perf average
+// and camera snapshots are not ported.
 void advance_sim(Vm &vm, float dt)
 {
     Scheduler &s = sched(vm);
-    if (s.quit_request) return;  // 0x5f0c74
+    Runtime *rt = game_rt();
+    World &world = process_world();
     float step = std::min(s.warp * dt, 0.1f);  // 0x5da468
-    if (step > 0) s.sim_seconds += step;
+    float done = 0.0f;
+    if (!s.quit_request) {  // 0x5f0c74
+        while (step > 0.0f) {
+            if (s.quit_request) break;
+            float sub = step;
+            if (step >= world.step_size)
+                sub = (step - world.step_size > world.step_size) ? world.step_size
+                                                                 : step * 0.5f;
+            if (!world.step(sub)) break;
+            step -= sub;
+            done += sub;
+            if (rt) {
+                rt->run_timers(world.time);
+                rt->flush_deferred();
+            }
+        }
+    }
+    if (!(done > 0.0f) && rt) rt->flush_deferred();
 }
 
 const std::vector<Entry> &table()
@@ -7768,9 +7786,9 @@ const std::vector<Entry> &table()
     {"java.lang.String", "length", "()I", string_length, false},
     {"java.lang.String", "getASCII", "()[I", string_getascii, false},
     {"java.lang.Vector3", "rotate", "(Ljava.lang.Ypr;)Ljava.lang.Vector3;", vec_rotate_ypr, false},
-    {"java.lang.Vector3", "length", "()F", vec_length, false},
+    {"java.lang.Vector3", "length", "()F", vector_length, false},
     {"java.lang.Vector3", "distance", "(Ljava.lang.Vector3;)F", vec_distance, false},
-    {"java.lang.Vector3", "normalize", "()V", vec_normalize, false},
+    {"java.lang.Vector3", "normalize", "()V", vector_normalize, false},
     {"java.lang.Vector3", "rotate", "(Ljava.lang.Vector3;F)Ljava.lang.Vector3;", vec_rotate_axis, false},
     {"java.lang.Vector3", "<init>", "(Ljava.lang.Ypr;)", vec_ctor_ypr, false},
     {"java.lang.Ypr", "<init>", "(Ljava.lang.Vector3;)", ypr_ctor_vector, false},

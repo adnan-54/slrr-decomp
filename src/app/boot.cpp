@@ -191,13 +191,11 @@ void FrameLoop::frame(int now_ms)
     if (now_ms - last_control_ms_ >= 16) {  // exe: cmp eax,0x10; jl
         float dt = (float)(now_ms - last_control_ms_) * 0.001f;
         input::update(dt);  // 0x566160
-        if (rt) {
-            rt->flush_deferred();  // 0x47d070 (end of sim step 0x47e050)
-            if (rt->vm()) {
-                natives::advance_sim(*rt->vm(), dt);  // 0x47e050 clock part
-                rt->run_timers((float)natives::sim_time(*rt->vm()));  // 0x47b700
-            }
-        }
+        // 0x47e050 sub-steps the world and runs timers + flush per sub-step.
+        if (rt && rt->vm())
+            natives::advance_sim(*rt->vm(), dt);
+        else if (rt)
+            rt->flush_deferred();  // exe's no-step path: exactly one flush
         last_control_ms_ = now_ms;
     }
 
