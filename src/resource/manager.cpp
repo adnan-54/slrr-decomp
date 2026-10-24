@@ -149,10 +149,20 @@ bool ClassPath::add_file(const std::string &path, std::string *err)
 {
     for (const std::string &p : paths_)
         if (p == path) return true;
+    std::vector<uint8_t> bytes;
+    if (!fs::read_file(path, &bytes, err)) return false;
+    return add_data(path, bytes, err);
+}
+
+bool ClassPath::add_data(const std::string &path, const std::vector<uint8_t> &bytes,
+                         std::string *err)
+{
+    for (const std::string &p : paths_)
+        if (p == path) return true;
 
     auto file = std::make_unique<ClassFile>();
     std::string parse_err;
-    if (!classfile_load(path.c_str(), file.get(), &parse_err))
+    if (!classfile_parse(bytes.data(), bytes.size(), file.get(), &parse_err))
         return fail(err, path + ": " + parse_err);
     for (const ClassUnit &u : file->units) {
         if (u.class_name(u.self_class).empty())

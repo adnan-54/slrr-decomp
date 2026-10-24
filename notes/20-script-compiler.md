@@ -278,3 +278,23 @@ Shipped data (bin/the game, case-insensitive pairing `<dir>\src\X.java` <-> `<di
   overwrite all of those here.
 - src today: packages.cpp load_class_at prints "SERVICE MISSING (no compiler)" and fails.
   Card 135 hooks the compiler for the missing-.class case, in memory.
+
+## Compile on load results (card 135, vmboot --selfcheck)
+
+Hook: packages.cpp load_class_at, when `<dir>\Name.class` is missing, parses
+`<dir>\src\Name.java` (case-insensitive SRC/Src; list_names 0x55fd90 resolves the src dir the
+same way), registers the unit's package with dir (0x5557c0), builds a ClassIndex over the loaded
+classes and sets ClassIndex::load -> vm.get_class (0x55aa20 -> 0x55add0) for misses, compiles,
+and adds the TUFA bytes through ClassPath::add_data. INVENTED: the exe writes
+`<dir>\<first class>.class` + copies the source time (0x5557c0/0x5658d0); src keeps the bytes in
+memory, so a run never writes into the game dir. INVENTED: parse errors fail the load (exe quits
+the process, 0x569570) and compile_unit errors fail it (exe logs semantic errors and still
+writes). shortcut: only the missing-.class case, not the stale-time/bad-header recompiles.
+
+- package roots: 16 java-only sources, 16 resolve through get_class
+  (e.g. java.game.parts.enginepart.Driveshaft,
+  java.game.parts.rgearpart.suspension.FLMcPhersonStrut).
+- Axis record scripts: 4 refs, 4 load through load_class_at
+  (Axis_L_taillights_dark, Axis_R_taillights_dark, kit_200XT_body, kit_ZX360_body).
+- whole game dir: 635 java-only sources, ok 635, failed 0 (report only).
+- Nothing is written to `bin/the game` (all compiles stay in memory).

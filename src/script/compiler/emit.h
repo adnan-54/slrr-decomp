@@ -33,10 +33,14 @@ class ClassIndex {
 public:
     void add(const ClassUnit &u);
     const ClassSym *find(const std::string &name) const;
+    // On a miss, loads the class like the exe (0x55aa20: the loaded table, else
+    // JVM::getClass 0x55add0, which loads and recursively compiles it). Null
+    // keeps misses unresolved.
+    std::function<const ClassUnit *(const std::string &)> load;
 
 private:
-    std::vector<ClassSym> classes_;
-    std::map<std::string, size_t> by_name_;
+    mutable std::vector<ClassSym> classes_;
+    mutable std::map<std::string, size_t> by_name_;
 };
 
 // Resource name registry of the running JVM (exe 0x518940): a slot keeps the

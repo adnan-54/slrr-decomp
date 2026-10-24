@@ -7,6 +7,8 @@
 
 #include "platform/fs.h"
 #include "resource/manager.h"
+#include "script/compiler/decl.h"
+#include "script/compiler/emit.h"
 #include "script/vm.h"
 
 namespace jvm {
@@ -165,7 +167,9 @@ void PackageTree::list_names(DirEntry *entry)
     if (disk.empty()) return;
 
     std::vector<fs::FindEntry> files;
-    if (fs::find(disk + "/src/*.java", &files)) {
+    // 0x55fd90: dir\src\*.java, case-insensitive like FindFirstFileA (SRC/Src).
+    std::string src = disk_path(entry->path + "\\src");
+    if (!src.empty() && fs::find(src + "/*.java", &files)) {
         for (const fs::FindEntry &f : files) {
             if (f.is_dir) continue;
             std::string name = stem(f.name, ".java");
@@ -281,23 +285,86 @@ bool load_class_at(PackageTree &tree, ClassPath &classes, Vm &vm, const std::str
 {
     if (fqn_out) fqn_out->clear();
     std::string rel = dir + "\\" + base + ".class";
-
-    // 0x5598f0 compileSource has no src equivalent. The exe only falls back to
-    // the .java when the .class is missing; log and fail like a missing file.
     std::string disk = tree.disk_path(rel);
+    // 0x5598f0 compileSource: the exe compiles <dir>\src\Name.java when the
+    // .class is missing.
+    // shortcut: only the missing-.class case; the stale-time and bad-header
+    // recompiles (1126 + 166 shipped pairs) wait for the remaining body diffs.
+    bool from_source = false;
+    std::vector<uint8_t> compiled;
     if (disk.empty()) {
         std::string java_rel = dir + "\\src\\" + base + ".java";
-        if (!tree.disk_path(java_rel).empty())
-            std::fprintf(stderr, "JVM::compileSource: SERVICE MISSING (no compiler): %s\n",
+        std::string java = tree.disk_path(java_rel);   // case-insensitive: SRC/Src ok
+        if (java.empty()) {
+            std::fprintf(stderr, "JavaMachine::loadClass: failed to load %s\n", rel.c_str());
+            return false;
+        }
+        std::string err;
+        std::vector<uint8_t> src_bytes;
+        if (!fs::read_file(java, &src_bytes, &err)) {
+            std::fprintf(stderr, "JVM::compileSource: file not found: \"%s\"\n",
                          java_rel.c_str());
-        std::fprintf(stderr, "JavaMachine::loadClass: failed to load %s\n", rel.c_str());
-        return false;
+            return false;
+        }
+        std::string src(src_bytes.begin(), src_bytes.end());
+        JavaUnit ju;
+        std::vector<Token> tokens;
+        if (!parse_java(src, &ju, &err, &tokens)) {
+            // INVENTED: the exe quits the process (0x569570 -> _exit(-1)); src fails the load.
+            std::fprintf(stderr, "JVM::compileSource: Syntax error in \"%s\" at line %s\n",
+                         java_rel.c_str(), err.c_str());
+            return false;
+        }
+        // 0x5557c0: the unit's package is registered with dir before codegen.
+        tree.add(dir, ju.package.empty() ? std::string("java.unnamed") : ju.package);
+        ClassIndex index;
+        for (const ClassUnit *u : classes.units()) index.add(*u);
+        // 0x55aa20: loaded classes, else JVM::getClass 0x55add0.
+        index.load = [&](const std::string &name) -> const ClassUnit * {
+            vm.get_class(name);
+            ClassEntry *e = classes.find(name);
+            return e ? e->unit : nullptr;
+        };
+        // shortcut: registry null (package spelling as written; runtime ids
+        // resolve case-insensitively), upgrade when the registry keeps spellings.
+        ClassFile out;
+        if (!compile_unit(ju, tokens, index, &out, &err, nullptr)) {
+            // INVENTED: the exe logs semantic errors and still writes the class.
+            std::fprintf(stderr, "JVM::compileSource: %s: %s\n", java_rel.c_str(),
+                         err.c_str());
+            return false;
+        }
+        classfile_write(out, &compiled);
+        // INVENTED: the exe writes <dir>\<first class>.class and sets its time
+        // to the source's (0x5557c0/0x5658d0); src keeps the bytes in memory so
+        // a run never writes into the game dir.
+        // 0x55bec0 reads <dir>\Name.class; a first class named otherwise would
+        // not be read back.
+        std::string first = out.units.empty()
+                                ? std::string()
+                                : out.units[0].class_name(out.units[0].self_class);
+        size_t fdot = first.rfind('.');
+        if (first.empty() ||
+            first.substr(fdot == std::string::npos ? 0 : fdot + 1) != base) {
+            std::fprintf(stderr, "JavaMachine::loadClass: failed to load %s\n", rel.c_str());
+            return false;
+        }
+        std::string dir_disk = tree.disk_path(dir);
+        disk = dir_disk.empty() ? std::string() : dir_disk + "/" + base + ".class";
+        if (disk.empty()) {
+            std::fprintf(stderr, "JavaMachine::loadClass: failed to load %s\n", rel.c_str());
+            return false;
+        }
+        from_source = true;
     }
 
-    // Parse all units in the file; only the new ones go into the VM.
+    // Parse all units in the file; only the new ones go into the VM. Taken after
+    // the compile: resolving its references may already have loaded classes.
     size_t before = classes.units().size();
     std::string err;
-    if (!classes.add_file(disk, &err)) {
+    bool added = from_source ? classes.add_data(disk, compiled, &err)
+                             : classes.add_file(disk, &err);
+    if (!added) {
         std::fprintf(stderr, "JavaMachine::loadClass: failed to load %s: %s\n", rel.c_str(),
                      err.c_str());
         return false;

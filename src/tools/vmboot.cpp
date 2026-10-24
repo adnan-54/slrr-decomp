@@ -18,7 +18,9 @@
 #include "input/backend.h"
 #include "input/device.h"
 #include "platform/fs.h"
+#include "resource/manager.h"
 #include "script/classfile.h"
+#include "script/compiler/decl.h"
 #include "script/natives.h"
 #include "script/packages.h"
 
@@ -715,6 +717,171 @@ void package_tree_check(Checker &c)
     c.check(!game.empty(), "find_dir(java.game.Init) -> " + game);
 }
 
+bool iequals(const std::string &a, const std::string &b)
+{
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++) {
+        char x = a[i], y = b[i];
+        if (x >= 'A' && x <= 'Z') x = (char)(x + ('a' - 'A'));
+        if (y >= 'A' && y <= 'Z') y = (char)(y + ('a' - 'A'));
+        if (x != y) return false;
+    }
+    return true;
+}
+
+bool ends_with_ci(const std::string &s, const char *suffix)
+{
+    size_t n = strlen(suffix);
+    return s.size() >= n && iequals(s.substr(s.size() - n), suffix);
+}
+
+// One shipped script that exists only as <dir>\src\Name.java (0x5598f0).
+struct JavaSource {
+    std::string java_path;  // actual disk path, for reading the source
+    std::string src_dir;    // actual disk path of the src directory
+    std::string rel_dir;    // exe-style X:\... relative to the game dir
+    std::string base;
+};
+
+// Every <dir>\src\X.java without a sibling <dir>\X.class below disk_dir.
+// Windows path matching is case-insensitive, so `src`, `Src` and `SRC` all
+// count and the class name is compared ignoring case.
+void collect_java_only(const std::string &disk_dir, const std::string &rel_dir,
+                       std::vector<JavaSource> *out)
+{
+    std::vector<fs::FindEntry> entries;
+    if (!fs::find(disk_dir + "/*", &entries)) return;
+    for (const fs::FindEntry &e : entries) {
+        if (e.name == "." || e.name == ".." || !e.is_dir) continue;
+        std::string full = disk_dir + "/" + e.name;
+        std::string rel = rel_dir.empty() ? e.name : rel_dir + "\\" + e.name;
+        if (!iequals(e.name, "src")) {
+            collect_java_only(full, rel, out);
+            continue;
+        }
+        std::vector<fs::FindEntry> javas;
+        if (!fs::find(full + "/*.java", &javas)) continue;
+        for (const fs::FindEntry &j : javas) {
+            if (j.is_dir || !ends_with_ci(j.name, ".java")) continue;
+            std::string base = j.name.substr(0, j.name.size() - 5);
+            std::vector<fs::FindEntry> cls;
+            bool have = fs::find(disk_dir + "/" + base + ".class", &cls) && !cls.empty();
+            if (!have) out->push_back(JavaSource{full + "/" + j.name, full, rel_dir, base});
+        }
+    }
+}
+
+// 0x5598f0's missing-.class case over the 9 package roots: 16 shipped base
+// classes exist only as parts\scripts[..]\src\Name.java. Resolving them by FQN
+// goes through 0x55add0 -> 0x55c0c0 -> 0x55bec0 -> compileSource.
+void package_root_compile_check(Boot &boot, Checker &c)
+{
+    std::vector<JavaSource> sources;
+    for (const PackageRoot &root : kPackageRoots) {
+        std::string disk = boot.tree()->disk_path(root.dir);
+        if (!disk.empty()) collect_java_only(disk, root.dir, &sources);
+    }
+    int resolved = 0;
+    std::vector<std::string> failed;
+    for (const JavaSource &s : sources) {
+        std::vector<uint8_t> bytes;
+        std::string err, src;
+        JavaUnit ju;
+        std::vector<Token> tokens;
+        if (!fs::read_file(s.java_path, &bytes, &err))
+            src.clear();
+        else
+            src.assign(bytes.begin(), bytes.end());
+        if (!bytes.empty() && parse_java(src, &ju, &err, &tokens)) {
+            std::string fqn = ju.package.empty() ? s.base : ju.package + "." + s.base;
+            if (boot.vm()->get_class(fqn)) {
+                resolved++;
+                continue;
+            }
+            failed.push_back(fqn);
+        } else {
+            failed.push_back(s.rel_dir + "\\" + s.base + ".java: " + err);
+        }
+    }
+    std::printf("  package-root compile on load: %zu sources, %d resolved, %zu failed\n",
+                sources.size(), resolved, failed.size());
+    for (size_t i = 0; i < failed.size() && i < 10; i++)
+        std::printf("    failed: %s\n", failed[i].c_str());
+    c.check(sources.size() == 16 && resolved == 16,
+            "the 16 package-root .java-only classes compile and resolve");
+}
+
+// resman --selfcheck finds 4 Axis.rpk `script` refs with only a .java source.
+// The record path (0x51fcc0 -> 0x55aca0 -> 0x55bec0) loads each through
+// load_class_at.
+void axis_record_compile_check(Boot &boot, Checker &c)
+{
+    ResourceManager axis;
+    std::string err;
+    if (!axis.open("cars/racers/Axis.rpk", nullptr, &err)) {
+        c.check(false, "Axis.rpk opens for the record-script check: " + err);
+        return;
+    }
+    int found = 0, loaded = 0;
+    std::vector<std::string> failed;
+    for (size_t i = 0; i < axis.package_count(); i++) {
+        const Package &pkg = axis.package(i);
+        for (const RpkRecord &rec : pkg.rpk.records) {
+            for (const DataRef &ref : axis.refs(pkg, rec)) {
+                if (!ref.file || !ref.is_class || !ref.path.empty()) continue;
+                found++;
+                // The record stores `<dir>\Name.class`; compileSource looks for
+                // `<dir>\src\Name.java` beside it.
+                size_t sep = ref.text.find_last_of("\\/");
+                if (sep == std::string::npos) {
+                    failed.push_back(ref.text);
+                    continue;
+                }
+                std::string dir = ref.text.substr(0, sep);
+                std::string base = ref.text.substr(sep + 1);
+                base.resize(base.size() - 6);   // ".class"
+                std::string fqn;
+                if (jvm::load_class_at(*boot.tree(), *boot.classes(), *boot.vm(), dir, base,
+                                       &fqn))
+                    loaded++;
+                else
+                    failed.push_back(ref.text);
+            }
+        }
+    }
+    std::printf("  Axis record scripts: %d java-only refs, %d load through "
+                "load_class_at\n",
+                found, loaded);
+    for (size_t i = 0; i < failed.size() && i < 10; i++)
+        std::printf("    failed: %s\n", failed[i].c_str());
+    c.check(found == 4 && loaded == 4,
+            "the 4 Axis record scripts missing their .class compile on load");
+}
+
+// Report-only sweep: every <dir>\src\X.java in the game dir without X.class.
+void compile_on_load_sweep(Boot &boot)
+{
+    std::vector<JavaSource> sources;
+    collect_java_only(".", "", &sources);
+    int ok = 0, failed_count = 0;
+    std::vector<std::string> failed;
+    for (const JavaSource &s : sources) {
+        std::string fqn;
+        if (jvm::load_class_at(*boot.tree(), *boot.classes(), *boot.vm(), s.rel_dir, s.base,
+                               &fqn))
+            ok++;
+        else {
+            failed_count++;
+            if (failed.size() < 10)
+                failed.push_back(s.rel_dir + "\\" + s.base);
+        }
+    }
+    std::printf("  compile on load: %zu sources, ok %d, failed %d\n", sources.size(), ok,
+                failed_count);
+    for (const std::string &f : failed) std::printf("    failed: %s\n", f.c_str());
+}
+
+
 int selfcheck()
 {
     Checker c;
@@ -819,6 +986,9 @@ int selfcheck()
     package_tree_check(c);
     vector3_check(boot, c);
     game_init_check(boot, c);
+    package_root_compile_check(boot, c);
+    axis_record_compile_check(boot, c);
+    compile_on_load_sweep(boot);   // report only
 
     boot.reset();
     std::printf("selfcheck: %s (%d checks, %d failure(s))\n",

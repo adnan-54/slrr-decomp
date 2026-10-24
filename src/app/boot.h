@@ -48,6 +48,7 @@ class Boot {
     ResourceManager *resources() { return resources_.get(); }
     ClassPath *classes() { return classes_.get(); }
     Vm *vm() { return vm_.get(); }
+    jvm::PackageTree *tree() { return tree_.get(); }
 
   private:
     std::unique_ptr<ResourceManager> resources_;

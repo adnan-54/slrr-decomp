@@ -1971,6 +1971,11 @@ void ClassIndex::add(const ClassUnit &u)
 const ClassSym *ClassIndex::find(const std::string &name) const
 {
     auto it = by_name_.find(name);
+    if (it == by_name_.end() && load) {
+        // Lazy cache fill: the members are mutable (exe 0x55aa20).
+        if (const ClassUnit *u = load(name)) const_cast<ClassIndex *>(this)->add(*u);
+        it = by_name_.find(name);
+    }
     return it == by_name_.end() ? nullptr : &classes_[it->second];
 }
 

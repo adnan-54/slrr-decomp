@@ -57,6 +57,10 @@ class ClassPath {
     // Parses every unit in the file and registers it by class name. A path is
     // loaded once; a name already present is skipped and counted as a duplicate.
     bool add_file(const std::string &path, std::string *err);
+    // Same registration from memory: the compiler writes a missing .class into
+    // bytes instead of the game dir (0x5598f0), then 0x554ee0 adds it.
+    bool add_data(const std::string &path, const std::vector<uint8_t> &bytes,
+                  std::string *err);
     // Wires superclass/interface names to entries; unmatched names stay null.
     void link();
 
