@@ -94,7 +94,73 @@ CONS order (2542/2809 exact):
 5. the real codegen walk adds the rest: string/resource literals and by-name names
    (12/25/26/1c).
 
-Open (next cards): loops (while/do/for, 0x16), switch (0x17/0x18), break/continue, ternary,
-array init, `this(...)`/`super(...)` details, resource-literal package casing (source
-`cars.racers.baiern` -> shipped `Baiern.rpk`: resolved against the real package path),
-uninitialized local decl shapes (`02` without `2c`), `this.x` receivers, string concatenation.
+Open after 4a (card 133 below): loops, switch, break/continue, ternary, array init,
+resource-literal package casing, uninitialized locals, `this.x` receivers, string concat.
+
+## Stage 4b results (card 133, `classdump --compile-check "bin/the game"`)
+
+`bodies: total 7096, identical 6821; CONS exact 2681 of 2809 units` (4a: 6381 / 2542).
+
+TREE rules derived from the pairs (emit.cpp), each with the pair it came from:
+- while (InventoryItem_Folder.installToCar): `top: [cond] 15(end) body 14(top)`.
+- for (Set.getMass, Catalog line 2566): `[init] top: [cond] 15(end) body upd: [update 08]
+  14(top) end: 03(for-init locals)`; the init declaration lives in its own scope around the
+  loop, its 03 run is at the loop's jump line after the back edge. Update statements end
+  with `08` at the update expression's line.
+- do-while (RaceSetup line 184): `top: body [cond] 16(top)`, 16 at the line of the closing
+  `;`. 0x16 is only the do-while back edge; while/for go back with 0x14.
+- break / continue: 03 run (descending) for the locals declared inside the target
+  construct, then `14` at the statement's line; break -> loop end (after the back edge,
+  before the for 03 run) or switch end; continue -> for update / while top / do-while
+  condition, skipping enclosing switches (Catalog line 2569 `if(!whl) continue;`:
+  `03 10, 14 -> update`).
+- switch (PowerInTheDark, AmateurDriftCup): `[selector]`, per labelled case `[label]
+  17(case body)`, then `18 14(default body or end)`, then the case bodies in source order.
+  17/18/14 carry the closing `}` line. Each case is a local scope whose 03 run comes at the
+  lookahead that ends it: the next label's line, the `}` for the last case (City
+  PoliceDialog line 3645, City.handleMessage CMD_DEBUG line 3342).
+- Jump lines: the 15/14 of an if or loop carry the line where the enclosing *block item*
+  is reduced (code is generated then), not the nested statement's own end:
+  Racer.calcPrestige `if (a) if (b) {..} else {..}` and Chassis.updatevariables
+  `if (x) for (..) {..}` tag the inner jumps with the outer else-less if's lookahead line.
+- Operator lines: a binary node (and the 04/05/14 of && ||, instanceof's 07/06) carries the
+  lookahead line after its right operand (Duhen_D18V_block line 97, Duhen_146er line 45,
+  Gamemode line 1150). `new`: 06 at the `(` after the type, 07(30)/27/21 at the closing
+  `)` (Painter line 875). Return 28/29/2a + runs at the `;` line (Bot.getName 556..560).
+  Computed-receiver by-name call 25 at the `(` line (Track line 2242); simple receivers
+  keep the method name's line (CarMarket line 746).
+- Ternary (EventList line 238): `cond then else 07(0)`, no jumps.
+- Primitive cast: `07(33) 06(type string)` (Catalog line 2486 `(int)`); class casts keep 19.
+- Call binding (0x1a vs by-name 0x12/0x25): array elements are never typed arguments
+  (tyre_195_50_16_7_5_LOD_CATALOG_GARAGE setRenderType(render_types[i]), City
+  alignToRoad(alignedPos[0])). Argument fits: int<->float both ways (AmateurDriftCup
+  checkMass(int field) -> (F), Vehicle addStockParts(float..) -> (IFF)), int -> String
+  (GameLogic dayTxt.changeText(day)), null -> any reference (DebugMenu createButton(..,
+  null, null) picks the (..String;String) overload), subclass/implementor -> class, any
+  reference or array -> Object (Chassis partLists.addElement(int[] field)); an Object
+  local does not fit GameRef (Garage line 1151 goes by name). Overloads: the cheapest
+  fitting signature wins, scan order (last declared first) on ties (City
+  raceBot.createCar(map, 1) with a GroundRef field -> (GameRef;I)). INVENTED: the cost
+  ranking itself, and "class not in the index fits any object parameter".
+- CONS: `this` as a value adds the self type string in the ref walk (CareerGoalsDialog
+  `osd.globalHandler = this;`); after the declaration types, a class that is not the first
+  of its source file adds its own type string, and every class adds its interfaces' type
+  strings (Transit.java Portal, Bot.java botCard, Navigator/CarMarket
+  `Ljava.lang.Runnable;`). INVENTED: which compiler step adds these was not traced; the
+  rule fits every pair.
+- Unchanged: uninitialized locals (`02 06` without `2c`), `this.x` and string
+  concatenation already matched; array initializers do not occur in the paired corpus.
+
+Remaining body differences (275), none a codegen rule:
+- 189 float literals 1 ulp off (kept: exe algorithm, see 4a).
+- 68 resource literal package casing (`cars.racers.baiern` -> shipped `Baiern.rpk`; only
+  the file name is re-cased, dirs stay as written): needs an exe trace of how the compiler
+  resolves the literal's package (likely the open package registry's stored name).
+- Stale shipped classes (compiled from older sources/classes): 7 transmissions with
+  `type = TT_AUTO` compiled to the literal (the 34 other TT_ users and every other final
+  static, e.g. Part.PACKAGE, load the field, so the sources were edited after compiling;
+  not a constant-inlining rule); Center_Differential getBlock ()Part vs shipped Chassis
+  ()Block; 4 edited string literals ("platsic"); 3 neontube line shifts; Garage
+  httpRequestAsync missing from the shipped NetworkEngine.class; ROCTrack/City
+  show(RaceDialog) binding show(LoadingDialog) although RaceDialog is not a LoadingDialog
+  in the shipped classes (CONS only).

@@ -311,7 +311,10 @@ struct BodyParser {
             fail("expected '(' or '[' after new type");
             return nullptr;
         }
-        auto e = mk(ExprKind::New, line, std::move(type));
+        // line: the `(` after the type (0x06 is tagged when the type name
+        // reduces); end_line: the closing `)` (Painter line 875 `new
+        // WarningDialog` / `(` / .. / `)`: 06 at 876, 07(30)/27/21 at 878).
+        auto e = mk(ExprKind::New, cur().line, std::move(type));
         if (!parse_args(&e->kids)) return nullptr;
         e->end_line = t[pos - 1].line;
         return e;
@@ -406,10 +409,10 @@ struct BodyParser {
                 pos++;
                 if (at("(")) {
                     auto call = mk(ExprKind::Call, line, std::move(name));
+                    call->open_line = cur().line;
                     call->flag = true; // receiver present
                     call->kids.push_back(std::move(e)); // receiver
                     if (!parse_args(&call->kids)) return nullptr;
-                call->end_line = t[pos - 1].line;
                     call->end_line = t[pos - 1].line;
                     e = std::move(call);
                 } else {
@@ -496,11 +499,11 @@ struct BodyParser {
         for (;;) {
             if (at_kw("instanceof")) {
                 if (7 < min_prec) break;
-                int line = cur().line;
                 pos++;
                 std::string type;
                 if (!parse_type(&type)) return nullptr;
-                auto e = mk(ExprKind::InstanceOf, line, std::move(type));
+                // reduce line, as for the binary operators below (Gamemode line 1150)
+                auto e = mk(ExprKind::InstanceOf, cur().line, std::move(type));
                 e->kids.push_back(std::move(lhs));
                 lhs = std::move(e);
                 continue;
@@ -508,11 +511,13 @@ struct BodyParser {
             ExprKind kind = ExprKind::Null;
             int prec = bin_op(&kind);
             if (prec == 0 || prec < min_prec) break;
-            int line = cur().line;
             pos++;
             auto rhs = parse_binary(prec + 1);
             if (!rhs) return nullptr;
-            auto e = mk(kind, line);
+            // The node (and its 04/05/14) carries the lexer line at reduction:
+            // the lookahead after the right operand (Duhen_D18V_block line 97:
+            // `a == X` followed by `||` on the next line is tagged 98).
+            auto e = mk(kind, cur().line);
             e->kids.push_back(std::move(lhs));
             e->kids.push_back(std::move(rhs));
             lhs = std::move(e);

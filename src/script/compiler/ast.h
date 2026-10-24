@@ -93,6 +93,7 @@ struct Expr {
     ExprKind kind = ExprKind::Null;
     int line = 0;
     int end_line = 0; // call/new: line of the closing ')'
+    int open_line = 0; // qualified call: line of the '('
     std::string text;
     bool flag = false;
     std::vector<std::unique_ptr<Expr>> kids;
