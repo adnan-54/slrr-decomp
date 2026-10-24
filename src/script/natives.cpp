@@ -7571,8 +7571,30 @@ void run_threads(Vm &vm, float budget_ms, int min_prio)
         s.current = nullptr;
         t->in_slice = false;
         if (st == Thread::Yielded) continue;
-        if (st == Thread::Failed)
-            std::fprintf(stderr, "vm thread failed: %s\n", t->runner->error().c_str());
+        if (st == Thread::Failed) {
+            std::fprintf(stderr, "vm thread failed [%s]: %s\n", t->name.c_str(),
+                         t->runner->error().c_str());
+            // TEMP debug: dump the script Thread's THOR fields.
+            const char *fn[] = {"extended", "methods", "executed", "exeTimer", "injection",
+                                "agents"};
+            for (const char *f : fn) {
+                Value v;
+                std::string de;
+                if (!vm.get_instance_field(t->script, f, &v, &de)) {
+                    std::fprintf(stderr, "  %s: <err %s>\n", f, de.c_str());
+                    continue;
+                }
+                if (v.kind == Value::Obj && v.obj) {
+                    Value cnt;
+                    std::string ce;
+                    bool got = vm.get_instance_field(v.obj, "elementCount", &cnt, &ce);
+                    std::fprintf(stderr, "  %s: obj count=%d\n", f,
+                                 got && cnt.kind == Value::Int ? cnt.i : -999);
+                } else {
+                    std::fprintf(stderr, "  %s: kind=%d\n", f, (int)v.kind);
+                }
+            }
+        }
         // 0x55caf0: flags 0x40 (finished) -> 0x80 (dead).
         t->started = false;
         t->done = true;
