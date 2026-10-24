@@ -254,7 +254,8 @@ struct CarData {
 PartData *part_data(Runtime &rt, Runtime::Resource *r);
 CarData *car_data(Runtime &rt, Runtime::Resource *r);
 // The `car` cfg on the record/super-record chain (same walk as car_data).
-bool load_car_cfg(Runtime &rt, Runtime::Resource *r, CfgFile *cfg);
+bool load_car_cfg(Runtime &rt, Runtime::Resource *r, CfgFile *cfg,
+                  const Package **pkg = nullptr);
 // 0x4c1f90 (Part__initInstance) + 0x4992e0 (Vehicle__createCar) body parts:
 // create the car's "part_comp" and "car_root" bodies in the process world,
 // asleep. No-op unless the type chain's car cfg has a `body` line

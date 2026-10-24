@@ -74,7 +74,7 @@ std::set<Runtime::Resource *> g_players;
 
 // The cfg ref sits on the record's native line, possibly on a super record.
 bool load_native_cfg(Runtime &rt, Runtime::Resource *r, const char *native,
-                     CfgFile *cfg)
+                     CfgFile *cfg, const Package **pkg = nullptr)
 {
     for (Runtime::Resource *n = r; n; n = n->parent) {
         if (!n->package || !n->record) continue;
@@ -83,7 +83,9 @@ bool load_native_cfg(Runtime &rt, Runtime::Resource *r, const char *native,
                 !ref.is_cfg || !ref.file || ref.path.empty())
                 continue;
             std::string err;
-            if (rt.resources().load_cfg(ref, cfg, &err)) return true;
+            if (!rt.resources().load_cfg(ref, cfg, &err)) continue;
+            if (pkg) *pkg = n->package;
+            return true;
         }
     }
     return false;
@@ -103,7 +105,9 @@ bool has_native_ref(Runtime &rt, Runtime::Resource *r, const char *native)
 
 // Type slots: the part manager's list (0x4c6f90 nodes). The car manager embeds
 // the same list, so the car cfg goes through here too (card 150).
-void fill_slots(PartData &p, const CfgFile &cfg)
+// 0x4bfe90 (attach) / 0x4bffb0 (compatible): the part id is stored through
+// 0x51e860 in the cfg's package, so 0x4c9d90 compares global type ids.
+void fill_slots(Runtime &rt, const Package *pkg, PartData &p, const CfgFile &cfg)
 {
     for (const CfgSlot &cs : cfg.slots) {
         Slot s;
@@ -117,11 +121,15 @@ void fill_slots(PartData &p, const CfgFile &cfg)
         s.rot = s.type_rot;
         s.attaches = cs.attaches;
         s.compatibles = cs.compatibles;
+        if (pkg) {
+            for (CfgAttach &a : s.attaches) a.part = rt.resources().global_id(*pkg, a.part);
+            for (CfgAttach &a : s.compatibles) a.part = rt.resources().global_id(*pkg, a.part);
+        }
         p.slots.push_back(std::move(s));
     }
 }
 
-void fill_part(PartData &p, const CfgFile &cfg)
+void fill_part(Runtime &rt, const Package *pkg, PartData &p, const CfgFile &cfg)
 {
     if (!cfg.textures.empty()) p.texture = (int32_t)cfg.textures[0].id;
     if (!cfg.meshes.empty()) p.mesh = (int32_t)cfg.meshes[0].id;
@@ -130,7 +138,7 @@ void fill_part(PartData &p, const CfgFile &cfg)
     // 0x4bf4d0 passes this mass to Physics__createBody, whose inverse mass is 1/m.
     if (!cfg.bodies.empty() && cfg.bodies[0].mass > 0.0f)
         p.inv_mass = 1.0f / cfg.bodies[0].mass;
-    fill_slots(p, cfg);
+    fill_slots(rt, pkg, p, cfg);
 }
 
 // createCar wheel template: one record per `type` line, later lines refine the
@@ -254,7 +262,7 @@ Slot *slot_by_part(PartData *p, int32_t id)
 
 // Type record behind an instance. 0x4c9d90 compares the refs' type ids
 // (`pkg<<16|local`), not the instance ids.
-Runtime::Resource *part_type_of(Runtime &rt, Runtime::Resource *r)
+Runtime::Resource *part_type_of(Runtime &, Runtime::Resource *r)
 {
     if (!r) return nullptr;
     auto pit = g_parts.find(r);
@@ -304,18 +312,21 @@ bool part_compatible(Runtime &rt, Runtime::Resource *A, int32_t slotA,
     return false;
 }
 
-// 0x4cb0b0: target locked when an occupied slot is hard+disabled (0x50), or an
-// attached part's subtree is.
+// 0x4cb0b0: walks UP the install chain only. Per slot in order, only my-side
+// slots (flags & 1, installed onto a parent) count: 0x50 -> locked; else the
+// first one with a mate returns the parent's verdict (no further slots).
 bool part_locked(Runtime &rt, Runtime::Resource *r, int depth)
 {
-    if (!r || depth > 16) return false;
+    // INVENTED: depth guard; the exe chain is acyclic (flag 1 only on the child side).
+    if (!r || depth > 64) return false;
     PartData *p = part_data(rt, r);
     if (!p) return false;
     for (const Slot &s : p->slots) {
-        if (!s.attached) continue;
+        if (!(s.flags & 1u)) continue;
         if ((s.flags & 0x50u) == 0x50u) return true;
+        if (!s.attached) continue;
         Runtime::Resource *t = slot_part(rt, s.attached);
-        if (t && t != r && part_locked(rt, t, depth + 1)) return true;
+        if (t) return part_locked(rt, t, depth + 1);
     }
     return false;
 }
@@ -678,12 +689,13 @@ PartData *part_data(Runtime &rt, Runtime::Resource *r)
     if (it != g_parts.end()) return it->second.get();
     auto up = std::make_unique<PartData>();
     CfgFile cfg;
+    const Package *pkg = nullptr;
     // The car manager embeds the part manager: the chassis' slot list comes from
     // its `car` cfg (0x4c9af0 reads it like a part's).
-    if (load_native_cfg(rt, r, "part", &cfg))
-        fill_part(*up, cfg);
-    else if (load_car_cfg(rt, r, &cfg))
-        fill_slots(*up, cfg);
+    if (load_native_cfg(rt, r, "part", &cfg, &pkg))
+        fill_part(rt, pkg, *up, cfg);
+    else if (load_car_cfg(rt, r, &cfg, &pkg))
+        fill_slots(rt, pkg, *up, cfg);
     PartData *p = up.get();
     g_parts[r] = std::move(up);
     return p;
@@ -703,13 +715,14 @@ CarData *car_data(Runtime &rt, Runtime::Resource *r)
     return p;
 }
 
-bool load_car_cfg(Runtime &rt, Runtime::Resource *r, CfgFile *cfg)
+bool load_car_cfg(Runtime &rt, Runtime::Resource *r, CfgFile *cfg,
+                  const Package **pkg)
 {
     if (!r) return false;
-    if (load_native_cfg(rt, r, "car", cfg)) return true;
+    if (load_native_cfg(rt, r, "car", cfg, pkg)) return true;
     auto it = g_cars.find(r);
     if (it == g_cars.end() || !it->second->cfg_resource) return false;
-    return load_native_cfg(rt, it->second->cfg_resource, "car", cfg);
+    return load_native_cfg(rt, it->second->cfg_resource, "car", cfg, pkg);
 }
 
 // 0x4c1f90 Part__initInstance (body part) + 0x4992e0 Vehicle__createCar
@@ -732,8 +745,9 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
             pd->type = type;
             if (pd->slots.empty()) {
                 CfgFile part_cfg;
-                if (load_native_cfg(rt, type, "part", &part_cfg))
-                    fill_part(*pd, part_cfg);
+                const Package *pkg = nullptr;
+                if (load_native_cfg(rt, type, "part", &part_cfg, &pkg))
+                    fill_part(rt, pkg, *pd, part_cfg);
             }
         }
     }
@@ -1036,14 +1050,6 @@ int part_command(Runtime &rt, Runtime::Resource *part, uint32_t code,
     Runtime::Resource *used = nullptr;
     int32_t found = install_search(rt, part, tref, dst, &used, &t_slot,
                                    n >= 8 ? pos : nullptr);
-    {
-        PartData *dp = g_parts.count(part) ? g_parts[part].get() : nullptr;
-        uint32_t tid = dp && dp->type ? dp->type->id : 0;
-        if (dp && dp->type && dp->type->record && dp->type->package)
-            tid = rt.resources().global_id(*dp->type->package, dp->type->id);
-        std::fprintf(stderr, "DBG install part 0x%x type 0x%x slots %zu dest 0x%x target 0x%x n=%d -> slot %d/%d\n",
-                     part->id, tid, dp ? dp->slots.size() : 0, dest, target, n, found, t_slot);
-    }
     if (!found || !used) return 0; // nothing changes, the script destroys the part
     part_attach(rt, part, found, used, t_slot, dst);
     return 1;
