@@ -15,6 +15,8 @@
 #include <vector>
 
 #include "app/boot.h"
+#include "input/backend.h"
+#include "input/device.h"
 #include "platform/fs.h"
 #include "script/classfile.h"
 #include "script/natives.h"
@@ -23,6 +25,77 @@
 namespace {
 
 const char *kGameDir = "bin/the game";
+
+// INVENTED: the exe enumerates DirectInput at startup (0x565fc0); a headless
+// boot has no devices, so this substitutes a state source that lives for the
+// process. The names are not invented: the saved control set remaps by name
+// through Input.getDeviceName, and platform_backend.cpp uses exactly these.
+input::SyntheticBackend *g_input = nullptr;
+
+void install_synthetic_input()
+{
+    g_input = new input::SyntheticBackend();
+    input::SyntheticBackend::Device keyboard;
+    keyboard.desc.type = input::kKeyboard;
+    keyboard.desc.name = "SysKeyboard";
+    g_input->devices.push_back(keyboard);
+
+    input::SyntheticBackend::Device mouse;
+    mouse.desc.type = input::kMouse;
+    mouse.desc.name = "SysMouse";
+    static const struct {
+        uint32_t id;
+        const char *name;
+    } controls[] = {
+        {0x8002, "Mouse X"}, {0x8004, "Mouse Y"}, {0x8008, "Mouse Z"},
+        {0x1000, "M Button 1"}, {0x1001, "M Button 2"},
+        {0x1002, "M Button 3"}, {0x1003, "M Button 4"},
+        {2, "Mouse X"}, {4, "Mouse Y"}, {8, "Mouse Z"},
+    };
+    for (const auto &c : controls) {
+        input::ControlDesc control;
+        control.id = c.id;
+        control.name = c.name;
+        mouse.desc.controls.push_back(control);
+    }
+    g_input->devices.push_back(mouse);
+    input::install_backend(g_input);  // 0x565fc0
+}
+
+// INVENTED instrumentation: reads the shipped script state.
+// GameLogic.actualState is the active MainMenu (GameLogic.java:164,896);
+// MainMenu.window is the shown Gates (MainMenu.java:14-20); showMenu is 0 while
+// the splash waits and 2 after showPrimaryVisuals (MainMenu.java:69,238).
+bool menu_probe(Boot &boot, int *show, int *seek, std::string *err)
+{
+    Value state;
+    if (!boot.vm()->get_static_field("java.game.GameLogic", "actualState", &state, err))
+        return false;
+    if (state.kind != Value::Obj || !state.obj) {
+        *err = "GameLogic.actualState is not an object";
+        return false;
+    }
+    Value window;
+    if (!boot.vm()->get_instance_field(state.obj, "window", &window, err)) return false;
+    if (window.kind != Value::Obj || !window.obj) {
+        *err = "MainMenu.window is not an object";
+        return false;
+    }
+    Value v;
+    if (!boot.vm()->get_instance_field(window.obj, "showMenu", &v, err)) return false;
+    if (v.kind != Value::Int) {
+        *err = "showMenu is not an int";
+        return false;
+    }
+    *show = v.i;
+    if (!boot.vm()->get_instance_field(window.obj, "messageSeek", &v, err)) return false;
+    if (v.kind != Value::Int) {
+        *err = "messageSeek is not an int";
+        return false;
+    }
+    *seek = v.i;
+    return true;
+}
 
 struct Checker {
     int checks = 0;
@@ -173,10 +246,33 @@ void game_init_check(Boot &boot, Checker &c)
     c.check(create.done && create.error.empty(), "shipped Init(int) constructor runs to completion");
 
     // Drive the game like the exe's main loop after boot, on a simulated clock:
-    // kFrames 16 ms steps (~10 s of game time), never the wall clock.
-    const int kFrames = 6000;
+    // 16 ms steps, never the wall clock.
+    // INVENTED: the press/release frames (the exe reads a real keyboard) and the
+    // 1 s hold so the 50 ms Frontend HotkeyWatcher tick samples it. Scan 0x1c is
+    // ControlSet's MENUSET AXIS_SELECT bind (RCDIK_ENTER); 0x544830 reads the
+    // raw key byte's high bit.
+    const int kFrames = 6000, kPress = 3000, kRelease = 3060;
     FrameLoop loop(0);
-    for (int i = 1; i <= kFrames; i++) loop.frame(i * 16);
+    for (int i = 1; i < kPress; i++) loop.frame(i * 16);
+    int show_before = -1, seek_before = -1;
+    std::string perr;
+    bool probed = menu_probe(boot, &show_before, &seek_before, &perr);
+    c.check(probed && show_before == 0,
+            "main menu waits for input before the press (showMenu == 0, got " +
+                std::to_string(show_before) + (probed ? "" : ": " + perr) + ")");
+    for (int i = kPress; i <= kFrames; i++) {
+        g_input->devices[0].raw.keys[0x1c] = i < kRelease ? 0x80 : 0;
+        loop.frame(i * 16);
+    }
+    int show_after = -1, seek_after = -1;
+    perr.clear();
+    bool probed_after = menu_probe(boot, &show_after, &seek_after, &perr);
+    std::printf("  menu probe: showMenu %d -> %d, messageSeek %d -> %d%s\n",
+                show_before, show_after, seek_before, seek_after,
+                probed_after ? "" : (" (" + perr + ")").c_str());
+    c.check(probed_after && show_after >= 2,
+            "Enter press runs AXIS_SELECT -> showPrimaryVisuals (showMenu >= 2, got " +
+                std::to_string(show_after) + (probed_after ? "" : ": " + perr) + ")");
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
     int failed = 0;
@@ -326,6 +422,10 @@ int selfcheck()
     if (chdir(abs.c_str()) != 0) std::fprintf(stderr, "vmboot: chdir %s failed\n", abs.c_str());
     const std::string rpk = abs + "/system.rpk";
     std::printf("vmboot selfcheck: %s (rpk only)\n", rpk.c_str());
+
+    // Before any script runs: ControlSet.load resolves saved device names
+    // through the table during Init(int), so the backend must be installed.
+    install_synthetic_input();
 
     Boot boot;
     BootResult first = boot.run(rpk);

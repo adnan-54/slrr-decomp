@@ -1,7 +1,7 @@
 ---
 id: 121
-status: todo
-branch:
+status: implemented
+branch: card/121
 depends: []
 ---
 # vmboot: install a synthetic input device and press Enter so the shipped main menu leaves the splash
