@@ -41,3 +41,11 @@ CLSS 2809, CONS-set 1213; old-stamp 152`
   reported; INVENTED: which source-comparison in 0x5557c0 selects 0x11AE1 was not
   traced (the exe default path writes 0x24F9D).
 - Remaining CONS-set differences are codegen order (stage 4), not skeleton.
+
+## Stamp rule (Claude agent trace of 0x5557c0, partial)
+0x55927f default 0x11ae1; 0x55929a ECX = [ebx+0x28] (a string of a node in a sentinel list built
+near 0x55582f, walked around 0x556c40/0x55925a); inlined strcmp against "java.io", "java.lang",
+"java.render", "java.sound", "java.util", "java.net" (0x5b5100..0x5b5138): any match -> 0x24f9d
+(0x5593c9), none -> 0x11ae1; written at file offset 8 (0x5593dc). Probably the import list
+(normal sources import java.util.*), but the node type is not decoded and the 3 neontube files
+(+ system/scripts/util/Rank.class) are not explained by it: likely stale older output.
