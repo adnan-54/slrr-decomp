@@ -802,7 +802,6 @@ void game_init_check(Boot &boot, Checker &c)
     // the same command Vehicle.wakeUp (Vehicle.java:187) sends.
     if (car_res && car_payload && car_payload->root_body) {
         RigidBody *root = car_payload->root_body;
-        const float y_before = root->pos.y;
         // Floor = highest soup surface under the car's start (x,z): a downward
         // ray against the merged map collider (card 144).
         float floor_y = 0.0f;
@@ -817,22 +816,64 @@ void game_init_check(Boot &boot, Checker &c)
                                        top - cm.bounds_min.y + 1.0f, &hit);
             if (floor_found) floor_y = hit.point.y;
         }
+        // INVENTED (fixture): Vehicle.create is called with the 0,0,0 of
+        // Vehicle.java:111, which is 16.9 m above the A1Ring soup at the map
+        // origin. A drop from there reaches the floor above the suspension
+        // ray's speed and tunnels past it (no capsule sensor bodies yet, card
+        // 146 "Not this card"), so start the car on the soup and let the drive
+        // callback carry it on its springs.
+        if (floor_found) root->pos.y = floor_y + 1.0f;
+        const float y_before = root->pos.y;
         boot.runtime()->queue_event(car_res, nullptr, 0x10,
                                     Value::make_str("wakeup"));
         for (int i = kFrames + 1; i <= kFrames + 300; i++) loop.frame(i * 16);
         bool awake = false;
         for (RigidBody *b : process_world().bodies)
             if (b == root) awake = true;
-        std::printf("  car wakeup (0x4a4023): floor %.3f, car_root pos.y %.3f -> %.3f "
+        c.check(awake,
+                "queued \"wakeup\" puts car_root back in the active body list (0x507060)");
+        c.check(floor_found, "freeride map soup lies under the car start");
+
+        // 0x47be30 drive callback: the woken car is carried by its suspension
+        // springs (Vehicle__update 0x49c8e0) instead of the car_root box.
+        Car *sim = car_payload->sim.get();
+        std::printf("  car drive (0x47be30): floor %.3f, car_root pos.y %.3f -> %.3f "
                     "after 300 frames, vel.y %.3f, %zu contact(s)\n",
                     (double)floor_y, (double)y_before, (double)root->pos.y,
                     (double)root->vel.y, process_world().contacts.size());
-        c.check(awake,
-                "queued \"wakeup\" puts car_root back in the active body list (0x507060)");
-        c.check(floor_found && root->pos.y > floor_y - 1.5f,
-                "woken car_root rests on the map soup instead of falling through");
-        c.check(fabsf(root->vel.y) < 1.0f,
-                "woken car_root settles on the map soup (|vel.y| < 1.0)");
+        float load_sum = 0.0f;
+        bool wheels_ok = sim != nullptr && !sim->wheels.empty();
+        if (sim)
+            for (size_t i = 0; i < sim->wheels.size(); i++) {
+                const Wheel &w = sim->wheels[i];
+                float compression = w.rest_ray() - w.ray_len;
+                std::printf("    wheel %zu: ray_len %.3f load %.1f compression %.3f "
+                            "contact %d\n",
+                            i, (double)w.ray_len, (double)w.load,
+                            (double)compression, w.contact ? 1 : 0);
+                load_sum += w.load;
+                if (!w.contact || !(w.load > 0.0f) || !(compression > 0.0f))
+                    wheels_ok = false;
+            }
+        c.check(wheels_ok, "every wheel rests on its spring (contact, load > 0, "
+                           "compression > 0)");
+        float mass = root->def.inv_mass > 0.0f ? 1.0f / root->def.inv_mass : 0.0f;
+        float weight = mass * 9.81f;
+        char lw[128];
+        snprintf(lw, sizeof lw, "spring loads %.1f N vs weight %.1f N",
+                      (double)load_sum, (double)weight);
+        c.check(weight > 0.0f &&
+                    std::fabs(load_sum - weight) / weight < 0.10f,
+                std::string("the car is carried by its springs (") + lw + ")");
+        bool box_contact = false;
+        for (const Contact &ct : process_world().contacts)
+            if (ct.a == root || ct.b == root ||
+                ct.a == car_payload->chassis_body ||
+                ct.b == car_payload->chassis_body)
+                box_contact = true;
+        c.check(!box_contact,
+                "no world contact has car_root or part_comp as a side");
+        c.check(std::fabs(root->vel.y) < 0.1f, "car settles (|vel.y| < 0.1)");
     }
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());

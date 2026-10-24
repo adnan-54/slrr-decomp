@@ -429,6 +429,12 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
     // car_data cannot load the cfg; the exe's type manager vf3 gets it directly.
     if (car->wheels.empty()) fill_car(*car, cfg);
     car->cfg_resource = type;
+    if (!car->sim) car->sim = std::make_unique<Car>();
+    Car *sim = car->sim.get();
+    // INVENTED: createCar sets car+0x70 |= 0x4000 only when M+0x17f0 >= 0 and
+    // DAT_007a75df == 0 (not traced). Engine off and neutral, no throttle.
+    sim->engine.running = false;
+    sim->gear = 0;
     // INVENTED: the typed-object event mask default is not traced (card 040);
     // the car's native vf14 must be reachable from Vehicle.wakeUp/command, which
     // no script enables with setEventMask. EVENT_COMMAND = 0x10 (GameRef.class).
@@ -459,23 +465,30 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
     chassis->def.flags |= 8u;   // body+0x58 |= 8
     car->chassis_body_storage = std::move(chassis);
     car->root_body = nullptr;
-    car->root_body_storage.reset();
 
     // 0x4992e0: "car_root" box at the chassis root's active pose; the chassis
     // is unlinked and becomes its child. addBody head-inserts into the active
-    // root (0x4f7830), so cr comes before the chassis root.
+    // root (0x4f7830), so it comes before the chassis root. The box is the
+    // simulation body itself (Vehicle__update applies its impulses to it).
     RigidBody *root = car->chassis_body;
     if (root) {
         if (root->asleep) world.wake(root); // 0x507060
-        auto cr = std::make_unique<RigidBody>();
+        RigidBody *cr = &sim->body;
         cr->set_box(Vec3{1.0f, 1.0f, 1.0f}, 1.0f); // createBox(1.0f, 5, 1, 1, 1, 0)
+        // The exe's soup pass reaches the car through its compound root
+        // (Collide__bodyVsTriangles 0x4feb20 recurses over compound children,
+        // notes/19 §7). src pairs root shapes only and the drive callback's
+        // wheels live below this box, so a 1x1x1 collider here would sit the
+        // car on the box instead of the springs (card 146 check).
+        // shortcut: no compound child collision yet; upgrade with the part-body
+        // shapes (wheelbone/a_arm, notes/09 "Wheel/suspension objects").
+        cr->def.shape.type = SHAPE_NONE;
         cr->pos = root->pos;
         cr->rot = root->rot;
-        world.add_body(cr.get());
-        car->root_body = cr.get();
-        world.unlink(root);                 // 0x501d00
-        world.attach_child(root, cr.get()); // 0x4f7b20
-        car->root_body_storage = std::move(cr);
+        world.add_body(cr);
+        car->root_body = cr;
+        world.unlink(root);                // 0x501d00
+        world.attach_child(root, cr);      // 0x4f7b20
     }
     // 0x5032d0 PhysBody__updateCompoundMass on part_comp, then through the
     // parent link on car_root. The body's own shape mass is not counted: only
@@ -531,15 +544,45 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
     car->com[1] = com.y;
     car->com[2] = com.z;
 
+    // Wheel records -> simulation wheels. mount = W+0x78 hub in car_root space;
+    // the suspension lengths are W+0x50/54/58 (rest_ray etc. add the radius at
+    // query time), the force/brake shares W+0xcc/d0/d4/e0 and the contact-patch
+    // block S+0x9c/a0/a4.
+    sim->wheels.resize(car->wheels.size());
+    for (size_t i = 0; i < car->wheels.size(); i++) {
+        const WheelData &w = car->wheels[i];
+        Wheel &s = sim->wheels[i];
+        s.radius = w.radius;
+        s.friction = w.friction;
+        s.friction_eff = w.friction_eff;
+        s.rolling_resistance = w.roll_res;
+        for (int k = 0; k < kPacejkaSlots; k++) s.pacejka.p[k] = w.pacejka[k];
+        s.mount = Vec3{w.hub[0] - com.x, w.hub[1] - com.y, w.hub[2] - com.z};
+        s.rest_len = w.rest_len;
+        s.max_len = w.max_len;
+        s.min_len = w.min_len;
+        s.drive_ratio = w.drive_ratio;
+        s.steer_factor = w.steer;
+        s.set_drive(w.drive_eff);
+        s.set_brake(w.brake_eff);
+        s.set_handbrake(w.hbrake_eff);
+        s.set_cpatch(w.cpatch_halfwidth, w.cpatch_sin, w.cpatch_offset);
+    }
+
     // 0x4992e0 wheel loop: static sag = travel, so the wheel carries |g| *
     // M+0x1f34 / n over the travel; bump/rebound from the cfg ratio.
     float gravity = vec_length(process_world().gravity);  // |world+0x1c4| = 9.81
     float wheel_count = (float)car->wheels.size();
-    for (WheelData &w : car->wheels) {
+    for (size_t i = 0; i < car->wheels.size(); i++) {
+        WheelData &w = car->wheels[i];
         if (wheel_count > 0.0f && w.travel > 0.0f)
             w.spring_k = gravity * part_mass / wheel_count / w.travel;
         w.bump = w.spring_k * w.damp_ratio;
         w.rebound = 0.7f * w.bump;
+        Wheel &s = sim->wheels[i];
+        s.spring = w.spring_k;
+        s.bump = w.bump;
+        s.rebound = w.rebound;
     }
     root = car->root_body ? car->root_body : car->chassis_body; // PhysBody__root
     if (root && !root->asleep) world.sleep(root);               // 0x506d90
@@ -595,6 +638,29 @@ int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
     // INVENTED: the rest of the 0x4a2e60 chain (cfg keys such as abs, filter,
     // render, reload) is not ported; returning 0 lets the script see it.
     return 0;
+}
+
+// 0x47be30 Game__runDriveCallbacks -> 0x47be90 -> type_car vf12
+// Vehicle__update 0x49c8e0, once per physics sub-step.
+// INVENTED: the call runs before World::step's force pass instead of between
+// runControllers and integrate (src integrates from the pre-force snapshot, so
+// the impulses must land first); sleeping roots are skipped (the exe's sensors
+// never touch the ground while the root sleeps, so the spring retires and no
+// force is applied, 0x4f2d70 step 1). The ray target is the map groundbody.
+void drive_cars(float dt)
+{
+    RigidBody *ground = nullptr;
+    for (RigidBody *b : process_world().statics)
+        if (b->def.shape.type == SHAPE_MESH && b->def.shape.mesh) {
+            ground = b;
+            break;
+        }
+    for (auto &kv : g_cars) {
+        CarData *c = kv.second.get();
+        if (!c->sim || !c->root_body || c->root_body->asleep) continue;
+        c->sim->ground = ground;
+        c->sim->update(dt);
+    }
 }
 
 int car_body_instances()

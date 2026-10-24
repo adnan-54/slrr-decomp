@@ -17,6 +17,7 @@
 #include "engine/math.h"
 #include "game/runtime.h"
 #include "physics/physics.h"
+#include "vehicle/vehicle.h"
 
 class Vm;
 struct Object;
@@ -208,8 +209,9 @@ struct CarData {
 
     // Vehicle__createCar 0x4992e0: "part_comp" body (car+0x13ec) and the
     // "car_root" box it hangs under. Owned here; the process world links them.
+    // car_root IS sim->body, so Vehicle__update's impulses land on it.
     std::unique_ptr<RigidBody> chassis_body_storage;
-    std::unique_ptr<RigidBody> root_body_storage;
+    std::unique_ptr<Car> sim;   // 0x47d560 drive list -> Vehicle__update 0x49c8e0
     RigidBody *chassis_body = nullptr;
     RigidBody *root_body = nullptr;
     // Compound COM offset (0x5032d0), car_root local (card 146).
@@ -244,6 +246,9 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
 // script handleEvent is then suppressed), 0 for anything else.
 int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
                 const Value &param);
+// 0x47be30 Game__runDriveCallbacks: Vehicle__update 0x49c8e0 for every awake
+// car, once per physics sub-step.
+void drive_cars(float dt);
 // Number of CarData payloads that own car bodies (vmboot body_count check).
 int car_body_instances();
 void bind_wheel(Object *wrapper, WheelData *w);

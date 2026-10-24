@@ -7616,6 +7616,9 @@ void advance_sim(Vm &vm, float dt)
             if (step >= world.step_size)
                 sub = (step - world.step_size > world.step_size) ? world.step_size
                                                                  : step * 0.5f;
+            // 0x47be30 Game__runDriveCallbacks: Vehicle__update per sub-step,
+            // guarded like the step's own accumulator test (0x502060).
+            if (rt && world.accumulator + sub >= 1e-4f) game::drive_cars(sub);
             if (!world.step(sub)) break;
             step -= sub;
             done += sub;
