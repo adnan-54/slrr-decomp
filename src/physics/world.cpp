@@ -767,32 +767,127 @@ static Pose child_world_pose(const RigidBody &a, const RigidBody::CollisionChild
     return p;
 }
 
-// Signed distance of the lowest hull vertex along the face normal. INVENTED
-// analogue of the 0x4fc7e0 TOI: the two-face triangle Poly (0x50f000) measures
-// an unsigned distance, so a hull that crossed the face between two steps sits
-// on the far side and would never see a contact; the support vertex keeps the
-// sign (negative = below the face).
+// 0x506c00: body pose at t on the step-start -> integrated sweep (t = 1 is
+// the integrated state, t = 0 the step start). The exe slerps the rotation
+// (0x5681c0); src has no slerp helper, so shortest-path lerp + normalize.
+static Pose pose_at(const RigidBody &b, const BodyState &start, float t)
+{
+    Pose p;
+    p.pos = b.pos * t + start.pos * (1.0f - t);
+    Quat a = b.rot, q = start.rot;
+    if (a.x * q.x + a.y * q.y + a.z * q.z + a.w * q.w < 0.0f)
+        a = Quat{-a.x, -a.y, -a.z, -a.w};
+    p.rot = Quat{q.x + (a.x - q.x) * t, q.y + (a.y - q.y) * t,
+                 q.z + (a.z - q.z) * t, q.w + (a.w - q.w) * t};
+    quat_normalize(&p.rot);
+    return p;
+}
+
+// Child pose in the root frame at sweep position t.
+static Pose child_pose_at(const RigidBody &a, const RigidBody::CollisionChild &c,
+                          const BodyState &start, float t)
+{
+    Pose root = pose_at(a, start, t);
+    Pose p;
+    p.pos = root.pos + mat_vec(pose_rotation(root), c.pose.pos);
+    quat_mul(&p.rot, &root.rot, &c.pose.rot);
+    return p;
+}
+
+// Signed distance of the lowest hull vertex along the face normal. This is the
+// 0x4fc7e0 deep-branch witness (min vertex of kind 1 along the face normal);
+// it keeps the sign a two-face triangle Poly (0x50f000) cannot.
 static float hull_plane_distance(const Poly &poly, const Mat34 &rot, const Vec3 &pos,
-                                 const Vec3 &n, const Vec3 &v0, Vec3 *support)
+                                 const Vec3 &n, const Vec3 &v0, Vec3 *support,
+                                 int *vertex_index = nullptr)
 {
     float lowest = 1e30f;
     Vec3 point{0.0f, 0.0f, 0.0f};
-    for (const Vec3 &v : poly.verts) {
-        Vec3 world = pos + mat_vec(rot, v);
+    int index = 0;
+    for (size_t i = 0; i < poly.verts.size(); i++) {
+        Vec3 world = pos + mat_vec(rot, poly.verts[i]);
         float d = vec_dot(n, world - v0);
         if (d < lowest) {
             lowest = d;
             point = world;
+            index = (int)i;
         }
     }
     if (support) *support = point;
+    if (vertex_index) *vertex_index = index;
     return poly.verts.empty() ? 1e30f : lowest;
 }
 
-// 0x4feb20 walk over the merged soup: the map-node AABB test runs on the
-// CollisionMesh's tree nodes and the per-face filters are 0x4f9860/0x4fc450.
-// 0x4fc7e0 then keeps the minimum V-Clip distance and creates one contact.
-static void consider_hull_pair(RigidBody &a, RigidBody &g, std::vector<Contact> &next)
+// Kind-1 feature of a hull vertex (the deep branch reports it as fA).
+static int hull_vertex_feature(const Poly &poly, int vertex)
+{
+    for (size_t i = 0; i < poly.features.size(); i++)
+        if (poly.features[i].kind == POLY_V && poly.features[i].vertex == vertex)
+            return (int)i;
+    return 0;
+}
+
+// One (body child, soup triangle) candidate of 0x4feb20. The triangle and its
+// two-face Poly (0x50f000) are fixed; 0x4fc7e0 re-evaluates the distance at
+// poses along the step sweep.
+struct HullCandidate {
+    int child = -1;
+    int tri = -1;
+    Vec3 vw[3]{{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}};
+    Vec3 n{0.0f, 1.0f, 0.0f};  // stored PHYS face normal (world)
+    Poly face;
+    float d = 0.0f;            // last distance - margin (0 for a mesh)
+    bool deep = false;         // last evaluation took the deep branch
+    bool marked = false;       // 0x4fc7e0 re-evaluation bookkeeping
+    int fa = 0, fb = 0;
+    Vec3 pa{0.0f, 0.0f, 0.0f};  // hull witness, child-local
+    Vec3 pb{0.0f, 0.0f, 0.0f};  // face witness, world
+    Vec3 nn{0.0f, 1.0f, 0.0f};  // face -> hull normal, world
+};
+
+// 0x50d230 at the sweep position t. The exe measures with V-Clip at every
+// pose; src's walk overruns on a hull already deep inside the face (separate
+// card), and 0x4fc7e0 ends such a candidate in its deep branch anyway (margin
+// 0 for a mesh), so a hull whose lowest vertex is behind the face uses that
+// signed vertex distance. INVENTED: gap filling for the unported walk.
+static void evaluate_candidate(HullCandidate &c, const RigidBody &a,
+                               const BodyState &start, float t)
+{
+    const RigidBody::CollisionChild &cc = a.collision_children[c.child];
+    const Pose cp = child_pose_at(a, cc, start, t);
+    const Mat34 cr = pose_rotation(cp);
+    Vec3 support{0.0f, 0.0f, 0.0f};
+    int vi = 0;
+    float ds = hull_plane_distance(*cc.poly, cr, cp.pos, c.n, c.vw[0], &support, &vi);
+    if (ds < 0.0f) {
+        c.deep = true;
+        c.d = ds;
+        c.nn = c.n;
+        c.fa = hull_vertex_feature(*cc.poly, vi);
+        c.fb = 0;
+        c.pa = mat_tvec(cr, support - cp.pos);
+        c.pb = support - c.n * ds;
+        return;
+    }
+    c.deep = false;
+    Pose bpose;  // the triangle poly holds world vertices
+    c.d = vclip_closest(cp, *cc.poly, bpose, c.face, &c.fa, &c.fb, &c.pa, &c.pb, &c.nn);
+}
+
+// 0x4fc7e0's "still approaching" test: n . (body world point - pB) < 0.
+static bool hull_approaching(const HullCandidate &c, const RigidBody &a,
+                             const BodyState &start, float t)
+{
+    const RigidBody::CollisionChild &cc = a.collision_children[c.child];
+    const Pose cp = child_pose_at(a, cc, start, t);
+    return vec_dot(c.nn, cp.pos - c.pb) < 0.0f;
+}
+
+// 0x4feb20 broad phase over the merged soup: node AABB and the
+// 0x4f9860/0x4fc450 filters run on the step sweep (start pose -> integrated
+// pose). INVENTED: merged soup instead of the streamed resource nodes.
+static void collect_hull_candidates(const RigidBody &a, const BodyState &start,
+                                    const RigidBody &g, std::vector<HullCandidate> &out)
 {
     const CollisionMesh &gm = *g.def.shape.mesh;
     if (gm.nodes.empty())
@@ -800,34 +895,36 @@ static void consider_hull_pair(RigidBody &a, RigidBody &g, std::vector<Contact> 
     const Pose gp = g.pose();
     const Mat34 gr = g.rotation();
     const bool stored_normals = gm.face_normals.size() == gm.triangles.size();
-    float best = kAddSlop;  // accept-check: best.d <= 0.02 (0x4fc7e0)
-    int best_child = -1, best_tri = -1, best_fa = 0, best_fb = 0;
-    Vec3 best_pa{0.0f, 0.0f, 0.0f}, best_pb{0.0f, 0.0f, 0.0f};
-    Vec3 best_n{0.0f, 1.0f, 0.0f};
-
     for (size_t ci = 0; ci < a.collision_children.size(); ci++) {
         const RigidBody::CollisionChild &cc = a.collision_children[ci];
         if (cc.shape.type != SHAPE_MESH || !cc.shape.mesh || !cc.poly)
             continue;
-        const Pose cp = child_world_pose(a, cc);
-        const Mat34 cr = pose_rotation(cp);
+        const Pose cp0 = child_world_pose(a, cc);            // start pose
+        const Pose cp1 = child_pose_at(a, cc, start, 1.0f);  // integrated pose
+        const Mat34 cr1 = pose_rotation(cp1);
         const float br = cc.shape.bounding_radius();
-        // Face-cache AABB half extents (shape+0x14): raw mesh bounds + 0.05.
+        // Face-cache AABB half extents (shape+0x14): raw mesh bounds + 0.05,
+        // plus |R^T motion| * 1.5 for the swept OBB (0x4feb20).
         const CollisionMesh &cm = *cc.shape.mesh;
-        const Vec3 half{fmaxf(fabsf(cm.bounds_min.x), fabsf(cm.bounds_max.x)) + 0.05f,
-                        fmaxf(fabsf(cm.bounds_min.y), fabsf(cm.bounds_max.y)) + 0.05f,
-                        fmaxf(fabsf(cm.bounds_min.z), fabsf(cm.bounds_max.z)) + 0.05f};
+        Vec3 lm = mat_tvec(cr1, cp1.pos - cp0.pos);
+        const Vec3 half{fmaxf(fabsf(cm.bounds_min.x), fabsf(cm.bounds_max.x)) + 0.05f +
+                            fabsf(lm.x) * 1.5f,
+                        fmaxf(fabsf(cm.bounds_min.y), fabsf(cm.bounds_max.y)) + 0.05f +
+                            fabsf(lm.y) * 1.5f,
+                        fmaxf(fabsf(cm.bounds_min.z), fabsf(cm.bounds_max.z)) + 0.05f +
+                            fabsf(lm.z) * 1.5f};
         uint32_t stack[64];
         int sp = 0;
         stack[sp++] = 0;
         while (sp > 0) {
             const CollisionMesh::Node &node = gm.nodes[stack[--sp]];
-            // 0x4feb20 node test: |child.pos - node.c|_k <= node.h_k + br.
+            // 0x4feb20 node test, swept over the step.
             bool miss = false;
             for (int k = 0; k < 3; k++) {
-                float c = 0.5f * (vec_axis(node.min, k) + vec_axis(node.max, k));
-                float h = 0.5f * (vec_axis(node.max, k) - vec_axis(node.min, k));
-                if (fabsf(vec_axis(cp.pos, k) - c) > h + br) miss = true;
+                float lo = fminf(vec_axis(cp0.pos, k), vec_axis(cp1.pos, k));
+                float hi = fmaxf(vec_axis(cp0.pos, k), vec_axis(cp1.pos, k));
+                if (hi < vec_axis(node.min, k) - br || lo > vec_axis(node.max, k) + br)
+                    miss = true;
             }
             if (miss) continue;
             if (node.count == 0) {
@@ -838,80 +935,164 @@ static void consider_hull_pair(RigidBody &a, RigidBody &g, std::vector<Contact> 
             for (uint32_t k = 0; k < node.count; k++) {
                 const uint32_t ti = gm.order[node.first + k];
                 const CollisionMesh::Triangle &tri = gm.triangles[ti];
-                Vec3 vw[3];
+                HullCandidate c;
                 for (int i = 0; i < 3; i++)
-                    vw[i] = gp.pos + mat_vec(gr, gm.vertices[tri.v[i]]);
+                    c.vw[i] = gp.pos + mat_vec(gr, gm.vertices[tri.v[i]]);
                 Vec3 n = stored_normals ? mat_vec(gr, gm.face_normals[ti])
-                                        : vec_cross(vw[1] - vw[0], vw[2] - vw[0]);
-                n = vec_normalize(n, Vec3{0.0f, 1.0f, 0.0f});
-                if (!swept_sphere_face(cp.pos, cp.pos, br, vw[0], vw[1], vw[2], n))
+                                        : vec_cross(c.vw[1] - c.vw[0], c.vw[2] - c.vw[0]);
+                c.n = vec_normalize(n, Vec3{0.0f, 1.0f, 0.0f});
+                if (!swept_sphere_face(cp0.pos, cp1.pos, br, c.vw[0], c.vw[1], c.vw[2],
+                                       c.n))
                     continue;
                 Vec3 tv[3];
                 for (int i = 0; i < 3; i++)
-                    tv[i] = mat_tvec(cr, vw[i] - cp.pos);
-                if (!box_triangle(half, mat_tvec(cr, n), tv))
+                    tv[i] = mat_tvec(cr1, c.vw[i] - cp1.pos);
+                if (!box_triangle(half, mat_tvec(cr1, c.n), tv))
                     continue;
-                Poly face = poly_triangle(vw[0], vw[1], vw[2], n);
-                int fa = 0, fb = 0;
-                Vec3 pa{0.0f, 0.0f, 0.0f}, pb{0.0f, 0.0f, 0.0f};
-                Vec3 nn{0.0f, 1.0f, 0.0f};
-                Pose bpose;  // the face poly holds world vertices
-                float d = vclip_closest(cp, *cc.poly, bpose, face, &fa, &fb, &pa, &pb, &nn);
-                Vec3 support{0.0f, 0.0f, 0.0f};
-                float ds = hull_plane_distance(*cc.poly, cr, cp.pos, n, vw[0], &support);
-                // 0x4fc7e0: a penetrating V-Clip (d <= -margin, margin 0) is
-                // replaced by the min hull-vertex distance along the face normal.
-                // INVENTED (src has no prev-state TOI bisection to tell which side
-                // a hull came from): a child centre behind the face (the back face
-                // of a two-sided road) never approached its front, so such a face
-                // only counts while V-Clip reports separation; in front of the
-                // face the signed distance also catches a hull that crossed it.
-                bool front = vec_dot(n, cp.pos - vw[0]) > 0.0f;
-                if (!front && d <= 0.0f)
+                // INVENTED side gate (card 164): the merged soup stores road
+                // faces twice (normals up and down); keep the face the hull
+                // started in front of.
+                if (!(vec_dot(c.n, cp0.pos - c.vw[0]) > 0.0f))
                     continue;
-                bool use_support = d <= 0.0f || (front && ds < d);
-                float cand = use_support ? ds : d;
-                if (cand < best) {
-                    best = cand;
-                    best_child = (int)ci;
-                    best_tri = (int)ti;
-                    best_fa = fa;
-                    best_fb = fb;
-                    if (use_support) {
-                        best_n = n;
-                        best_pa = mat_tvec(cr, support - cp.pos);
-                        best_pb = support - n * ds;  // closest point on the face plane
-                    } else {
-                        best_n = nn;
-                        best_pa = pa;
-                        best_pb = pb;
-                    }
-                }
+                c.child = (int)ci;
+                c.tri = (int)ti;
+                c.face = poly_triangle(c.vw[0], c.vw[1], c.vw[2], c.n);
+                out.push_back(c);
             }
         }
     }
-    if (best_child < 0)
+}
+
+static bool hull_contact_exists(const World &w, const std::vector<Contact> &next,
+                                const RigidBody *a, const RigidBody *g, int child, int tri)
+{
+    for (const Contact &c : w.contacts)
+        if (c.a == a && c.b == g && c.child_index == child && c.soup_triangle == tri)
+            return true;
+    for (const Contact &c : next)
+        if (c.a == a && c.b == g && c.child_index == child && c.soup_triangle == tri)
+            return true;
+    return false;
+}
+
+// INVENTED: harness counter read only by vmboot (card 165): contacts created
+// through the 0x4fc7e0 deep branch. The exe has no such counter.
+static unsigned g_hull_deep_contacts = 0;
+unsigned hull_deep_contacts() { return g_hull_deep_contacts; }
+
+// 0x4fc7e0 Collide__candidatesTOI: 10-step bisection of the sweep from the
+// integrated pose (t = 1) back toward the step start (t = 0), warm-started from
+// the cached features; creates at most one contact per body.
+static void consider_hull_pair(const World &w, RigidBody &a, RigidBody &g,
+                               const BodyState &start, std::vector<Contact> &next)
+{
+    std::vector<HullCandidate> cands;
+    collect_hull_candidates(a, start, g, cands);
+    if (cands.empty())
         return;
-    const RigidBody::CollisionChild &cc = a.collision_children[best_child];
-    const Pose cp = child_world_pose(a, cc);
-    const Vec3 paw = cp.pos + mat_vec(pose_rotation(cp), best_pa);
-    Contact c;
-    c.a = &a;
-    c.b = &g;
-    c.normal = best_n;
-    c.separation = best;  // mesh margin (shape+0x10) is 0
-    c.world_point = (paw + best_pb) * 0.5f;  // best_pb is in world coords
+    // PairCache 0x4f6ea0: features of an existing contact for this pair.
+    for (HullCandidate &c : cands)
+        for (const Contact &old : w.contacts)
+            if (old.a == &a && old.b == &g && old.child_index == c.child &&
+                old.soup_triangle == c.tri) {
+                c.fa = old.feature_a;
+                c.fb = old.feature_b;
+                break;
+            }
+
+    float t = 1.0f, step = 0.5f;
+    int iter = 0;
+    HullCandidate *best = nullptr;
+    for (HullCandidate &c : cands) {
+        evaluate_candidate(c, a, start, t);
+        if (!best || c.d < best->d) best = &c;
+        if (best->d <= 0.0f) break;
+    }
+    while (best) {
+        if (best->d > 0.0f) {
+            if (best->d < kAddSlop &&
+                (iter == 0 || hull_approaching(*best, a, start, t)))
+                break;
+            if (iter == 0 && best->d >= kAddSlop)
+                break;  // no contact
+            t += step;
+        } else {
+            t -= step;
+        }
+        step *= 0.5f;
+        if (++iter >= 10) break;
+        if (best->d <= 0.0f) {
+            evaluate_candidate(*best, a, start, t);
+            if (best->d <= 0.0f) continue;  // next loop turn
+            best->marked = true;
+        }
+        for (HullCandidate &c : cands) {
+            if (c.marked) {  // keep its d, clear the mark
+                c.marked = false;
+                continue;
+            }
+            evaluate_candidate(c, a, start, t);
+        }
+        best = nullptr;
+        for (HullCandidate &c : cands) {
+            if (!best || c.d < best->d) best = &c;
+            if (best->d <= 0.0f) break;
+        }
+    }
+    if (!best || best->d > kAddSlop)
+        return;
+    const HullCandidate &c = *best;
+    if (hull_contact_exists(w, next, &a, &g, c.child, c.tri))
+        return;  // 0x502830 rejects duplicates (same child, triangle)
+    const RigidBody::CollisionChild &cc = a.collision_children[c.child];
+    const Pose cp = child_pose_at(a, cc, start, t);
+    const Mat34 gr = g.rotation();
+    const Pose gp = g.pose();
+    Vec3 paw = cp.pos + mat_vec(pose_rotation(cp), c.pa);
+    Contact ct;
+    ct.a = &a;
+    ct.b = &g;
+    ct.normal = c.nn;
+    ct.separation = c.d;
+    ct.world_point = (paw + c.pb) * 0.5f;
     // Lift the child witness into the root frame (notes/11 §4, child+0x1c).
-    c.local_a = cc.pose.pos + mat_vec(pose_rotation(cc.pose), best_pa);
-    c.local_b = mat_tvec(gr, best_pb - gp.pos);
-    c.friction = cc.shape.friction < g.def.shape.friction ? cc.shape.friction
-                                                          : g.def.shape.friction;
-    c.restitution = 0.5f * (cc.shape.restitution + g.def.shape.restitution);
-    c.feature_a = best_fa;
-    c.feature_b = best_fb;
-    c.child_index = best_child;
-    c.soup_triangle = best_tri;
-    next.push_back(c);
+    ct.local_a = cc.pose.pos + mat_vec(pose_rotation(cc.pose), c.pa);
+    ct.local_b = mat_tvec(gr, c.pb - gp.pos);
+    ct.friction = cc.shape.friction < g.def.shape.friction ? cc.shape.friction
+                                                           : g.def.shape.friction;
+    ct.restitution = 0.5f * (cc.shape.restitution + g.def.shape.restitution);
+    ct.feature_a = c.fa;
+    ct.feature_b = c.fb;
+    ct.child_index = c.child;
+    ct.soup_triangle = c.tri;
+    if (c.deep) g_hull_deep_contacts++;
+    next.push_back(ct);
+}
+
+// Event phase H of 0x502060 (0x4fc610 -> 0x4feb20 -> 0x4fc7e0): create new
+// hull-vs-soup contacts on the integrated pose. Returns how many were added.
+static size_t add_hull_contacts(World &w, const std::vector<StepState> &states)
+{
+    std::vector<Contact> next;
+    for (RigidBody *a : w.bodies) {
+        if (!is_dynamic(*a) || a->collision_children.empty())
+            continue;
+        const StepState *st = nullptr;
+        for (const StepState &s : states)
+            if (s.body == a) {
+                st = &s;
+                break;
+            }
+        if (!st) continue;
+        for (RigidBody *g : w.statics) {
+            if (g->def.shape.type != SHAPE_MESH || !g->def.shape.mesh)
+                continue;
+            consider_hull_pair(w, *a, *g, st->start, next);
+        }
+    }
+    size_t added = next.size();
+    w.contacts.insert(w.contacts.end(), next.begin(), next.end());
+    return added;
 }
 
 // Phys__shapeDistance 0x50d9d0 refresh of an existing hull contact: result 0
@@ -978,16 +1159,15 @@ static void update_contacts(World &w, bool add_new)
         for (size_t j = 0; j < w.statics.size(); j++)
             consider_pair(w, a, *w.statics[j], add_new, next);
         // Collide__bodyVsTriangles 0x4feb20: a compound root's child hulls
-        // collide with a static triangle soup. INVENTED: merged soup instead
-        // of the streamed resource nodes (notes/19).
+        // collide with a static triangle soup. Existing pairs are refreshed
+        // here (0x4f9af0); new ones are created in the step's event phase.
+        // INVENTED: merged soup instead of the streamed resource nodes
+        // (notes/19).
         if (is_dynamic(a) && !a.collision_children.empty())
             for (RigidBody *g : w.statics) {
                 if (g->def.shape.type != SHAPE_MESH || !g->def.shape.mesh)
                     continue;
-                if (add_new)
-                    consider_hull_pair(a, *g, next);
-                else
-                    refresh_hull_contacts(w, a, *g, next);
+                refresh_hull_contacts(w, a, *g, next);
             }
     }
     w.contacts.swap(next);
@@ -1066,6 +1246,15 @@ int World::step(float dt)
                 sum += resolve_contact(c, h, states);
             if (sum == 0)
                 converged = true;
+        }
+        // 0x502060 H: the event phase creates new collision pairs when the
+        // iteration converged (or at iteration 19). New hull-vs-soup contacts
+        // re-open the loop like PhysicsWorld__resolveImpacts 0x4ffd20 does.
+        // shortcut: resolveImpacts (mode 6 -> 7 before resolve) is not ported;
+        // the added contacts set converged = false directly.
+        if (converged || it == 19) {
+            if (add_hull_contacts(*this, states) > 0)
+                converged = false;
         }
         for (StepState &s : states)
             integrate_body(*s.body, s.start, h);

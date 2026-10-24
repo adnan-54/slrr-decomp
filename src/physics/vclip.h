@@ -75,3 +75,7 @@ float vclip_closest(const Pose &pose_a, const Poly &poly_a,
 float vclip_check(const Pose &pose_a, const Poly &poly_a,
                   const Pose &pose_b, const Poly &poly_b,
                   int feature_a, int feature_b);
+
+// INVENTED: harness counter, incremented next to the "Voronoi error" print;
+// read only by vmboot (card 165). The exe has no such counter.
+int vclip_overruns();

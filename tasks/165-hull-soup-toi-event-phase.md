@@ -1,6 +1,6 @@
 ---
 id: 165
-status: todo
+status: blocked
 branch: card/165
 depends: [164]
 ---
@@ -117,3 +117,58 @@ Exe walk port (stepEE 0x50a410, stepEF 0x50aa60, clipEdge 0x508fe0, stepVE 0x50b
 decompiled in notes/11 "Voronoi error in vmboot"; body-vs-body TOI (0x4fb370); streamed soup nodes.
 
 ## Result
+
+BLOCKED after 2 failed vmboot runs (card rule). The event-phase TOI is implemented and the
+248 -> 33 overruns, but 33 remain, all in the INVENTED forced-drag crash, so check 1 fails.
+
+State: branch `card/165`. `make -C src -j4 check` runs 137 checks: 136 pass, 1 fails
+(`no V-Clip overrun in the career-race block`). Old 135 checks still pass (auto 43.98 m/s,
+semi-auto 42.04 m/s).
+
+Numbers (run A = committed physics; run B = transient probe-threshold experiment, reverted):
+| | run A (committed) | run B |
+|---|---|---|
+| overruns, whole career-race block | **33** (0 before the forced drag) | 45 (0 before) |
+| forced-drag frames with a hull contact | 87 | 80 |
+| min separation, forced drag | -0.206327 m | -0.206327 m |
+| min non-deep separation | not sampled (harness added after) | 0.003574 m |
+| deep-branch contacts, forced drag | 47 | 42 |
+| crash (first \|n.y\| < 0.5 contact) | drag frame 55, car_root 46.21 -3.49 -441.39, \|v\| 37.40 m/s | same |
+| forced-drag final \|vel\| | 12.93 m/s (before card: 1.7) | 13.64 m/s |
+| auto drive final | 43.98 m/s | 43.98 m/s |
+| semi-auto final | 42.04 m/s | 42.04 m/s |
+
+What changed:
+- `world.cpp`: `consider_hull_pair(a, g, next, start)` now takes `StepState::start`, runs the
+  0x4feb20 swept filters (node AABB over start->integrated, `swept_sphere_face(cp0, cp1, ..)`,
+  OBB half extents + `|R^T motion|*1.5 + 0.05`, side gate) and the 0x4fc7e0 bisection t=1 -> 0
+  (10 steps, warm features from the cached contact for the same child/triangle, one contact per
+  body, earliest TOI, 0x502830 duplicate rule). `pose_at`/`child_pose_at` are 0x506c00 (position
+  lerp; rotation shortest-path lerp + normalize, `shortcut:` no slerp in engine/math.h).
+- Hull contacts are no longer created at the step start: `update_contacts` only refreshes them
+  (`refresh_hull_contacts`); `add_hull_contacts` runs in the event phase of `World::step`
+  (after resolve, before re-integrate, when converged or `it == 19`) and sets `converged = false`
+  when it adds one (`shortcut:` 0x4ffd20 resolveImpacts result not ported).
+- `vclip.cpp/.h`: INVENTED harness counter `vclip_overruns()`, incremented next to the fprintf.
+- `world.cpp`: INVENTED harness counter `hull_deep_contacts()`.
+- vmboot: checks 1 (hard overrun 0 over settle+auto+drag+semi), 2 (non-deep TOI separation
+  > -0.05 m, deep branch excepted and counted), 3 (crash print).
+
+INVENTED, besides the counters:
+- `evaluate_candidate` uses `hull_plane_distance` (lowest hull vertex along the face normal,
+  the 0x4fc7e0 deep-branch witness) whenever that distance is negative, instead of calling
+  0x50d230, because the ported walk overruns on a hull already inside the face. Gap filling for
+  the unported walk; must go when the walk card lands.
+- Side gate `n . (child start pos - face vertex) > 0` still applied to every candidate, not only
+  after a deep bisection: the merged soup stores road faces with both windings, and without the
+  gate the reversed twin enters as a false deep candidate. With the walk ported the two-sided
+  0x50f000 poly should make it unnecessary.
+- Node walk over the merged soup instead of the streamed resource nodes.
+
+Diagnosis of the remaining 33: they still come from `vclip_closest` in `evaluate_candidate` at
+poses where the signed vertex distance is >= 0 (only the drag run; settle/auto/semi are clean).
+That is the 0x50d230 walk 2-cycle the card says is a separate card. A transient experiment
+(using the signed distance inside the 0x4fc7e0 0.02 m contact slop too, run B) moved the count to
+45 and the deep contacts 47 -> 42: the walk keeps cycling at those crash poses whatever the probe
+threshold, so the fix is the walk port (stepEE 0x50a410 / stepEF 0x50aa60 / stepVE / stepVF), not
+this card. Reverted to the faithful d <= -margin deep rule.

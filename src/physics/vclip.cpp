@@ -10,6 +10,9 @@
 
 namespace {
 
+// INVENTED: vmboot harness counter (card 165); the exe only prints.
+int g_vclip_overruns = 0;
+
 Vec3 to_world(const Pose &pose, Vec3 local)
 {
     return pose.pos + mat_vec(pose_rotation(pose), local);
@@ -598,7 +601,13 @@ float vclip_closest(const Pose &pose_a, const Poly &poly_a,
     }
 
     fprintf(stderr, "Voronoi error (infinite loop)\n");
+    g_vclip_overruns++;
     return 1e6f;
+}
+
+int vclip_overruns()
+{
+    return g_vclip_overruns;
 }
 
 float vclip_check(const Pose &pose_a, const Poly &poly_a,

@@ -33,6 +33,9 @@
 #include "script/natives.h"
 #include "script/packages.h"
 
+// INVENTED: world.cpp harness counter (card 165), read only by vmboot.
+unsigned hull_deep_contacts();
+
 namespace {
 
 const char *kGameDir = "bin/the game";
@@ -1078,6 +1081,11 @@ void game_init_check(Boot &boot, Checker &c)
             for (const Wheel &w : c->wheels) n += w.gate_rejects;
         return n;
     };
+    // Card 165: V-Clip overruns and deep-branch contacts over the whole
+    // career-race block (settle, auto drive, forced drag, semi-auto).
+    const unsigned vclip_overrun0 = (unsigned)vclip_overruns();
+    const unsigned hull_deep0 = hull_deep_contacts();
+    unsigned vclip_overrun_auto = vclip_overrun0;  // captured before the forced drag
     if (car_res && car_payload && car_payload->root_body) {
         RigidBody *root = car_payload->root_body;
         // Floor = highest soup surface under the car's start (x,z): a downward
@@ -1981,10 +1989,35 @@ void game_init_check(Boot &boot, Checker &c)
             car_payload->c_drag = x_car->c_drag;
             for (int k = 0; k < 3; k++) car_payload->drag_center[k] = x_car->drag_center[k];
             int moving = 0, clamps = 0, bad = 0;
+            // Card 165 checks 2/3: hull-vs-soup contacts in the forced-drag run.
+            float hull_min_sep = 1e30f;
+            float hull_min_toi = 1e30f;  // non-deep (d > 0) contacts only
+            int hull_frames = 0;
+            int crash_frame = -1;
+            Vec3 crash_pos{0.0f, 0.0f, 0.0f};
+            float crash_v = 0.0f;
+            const unsigned hull_deep_drag0 = hull_deep_contacts();
             Vec3 last_v{0.0f, 0.0f, 0.0f}, last_f{0.0f, 0.0f, 0.0f};
+            vclip_overrun_auto = (unsigned)vclip_overruns();
             key(200, true);
             for (int i = 0; i < 300; i++) {
                 frames(1);
+                bool hull_hit = false;
+                for (const Contact &ct : process_world().contacts) {
+                    if (ct.child_index < 0) continue;
+                    hull_hit = true;
+                    if (ct.separation < hull_min_sep) hull_min_sep = ct.separation;
+                    // 0x4fc7e0's deep branch ends with d <= -margin (margin 0
+                    // for a mesh), so a d > 0 contact is a bisected TOI.
+                    if (ct.separation > 0.0f && ct.separation < hull_min_toi)
+                        hull_min_toi = ct.separation;
+                    if (crash_frame < 0 && std::fabs(ct.normal.y) < 0.5f) {
+                        crash_frame = i;
+                        crash_pos = root->pos;
+                        crash_v = vec_length(root->vel);
+                    }
+                }
+                if (hull_hit) hull_frames++;
                 const Vec3 v = sim->drag_velocity;
                 const Vec3 f = sim->drag_force;
                 float v2 = vec_dot(v, v);
@@ -2025,6 +2058,27 @@ void game_init_check(Boot &boot, Checker &c)
                     "forced-drag final |vel| stays within v_top (" +
                         std::to_string((double)final_v) + " <= " +
                         std::to_string((double)v_top) + " m/s)");
+            // Card 165 check 2: TOI contacts must not land deep (the 0x4fc7e0
+            // deep branch excepted; margin 0 for a mesh, so print its count).
+            unsigned deep_drag = hull_deep_contacts() - hull_deep_drag0;
+            std::printf("  hull vs soup TOI (0x4feb20/0x4fc7e0): %d drag frame(s) with a "
+                        "hull contact, min separation %.6f m, min non-deep %.6f m, "
+                        "%u deep-branch contact(s)\n",
+                        hull_frames, (double)hull_min_sep, (double)hull_min_toi,
+                        deep_drag);
+            c.check(hull_frames > 0 && hull_min_toi > -0.05f,
+                    "every non-deep hull-vs-soup contact in the forced-drag run stays "
+                    "above -0.05 m separation (min " + std::to_string((double)hull_min_toi) +
+                        " m over " + std::to_string(hull_frames) + " frame(s); " +
+                        std::to_string(deep_drag) + " deep-branch contact(s) excepted)");
+            // Card 165 check 3 (print only): the first wall contact.
+            if (crash_frame >= 0)
+                std::printf("  crash: drag frame %d, car_root %.2f %.2f %.2f, |v| %.2f m/s "
+                            "(first hull contact with |n.y| < 0.5)\n",
+                            crash_frame, (double)crash_pos.x, (double)crash_pos.y,
+                            (double)crash_pos.z, (double)crash_v);
+            else
+                std::printf("  crash: no wall contact in the 300 drag frames\n");
         }
         // Card 162: semi-auto gearbox 0x4ad480 (transmission flag 0x20).
         // INVENTED harness: Track.enter sends "transmission " +
@@ -2125,6 +2179,17 @@ void game_init_check(Boot &boot, Checker &c)
                 "transmission restored to " + std::to_string(tr) + " (flags " +
                     std::to_string(car_payload->flags & 0x70u) + " == " +
                     std::to_string(tr_bits) + ")");
+        // Card 165 check 1: on the integrated pose with the 0x4fc7e0 TOI the
+        // walk never runs out of steps in the whole career-race block.
+        unsigned race_overruns = (unsigned)vclip_overruns() - vclip_overrun0;
+        unsigned race_auto = vclip_overrun_auto - vclip_overrun0;
+        unsigned race_deep = hull_deep_contacts() - hull_deep0;
+        std::printf("  vclip overruns (0x50d230) over the career-race block: %u "
+                    "(%u before the forced drag, %u deep-branch hull contact(s))\n",
+                    race_overruns, race_auto, race_deep);
+        c.check(race_overruns == 0,
+                "no V-Clip overrun in the career-race block (" +
+                    std::to_string(race_overruns) + ", 0x50d230)");
     }
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
