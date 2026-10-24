@@ -7545,13 +7545,14 @@ bool spawn_untimed(Vm &vm, std::unique_ptr<Thread> runner, int32_t priority,
 // resumed threads at the tail; the vector order is stable). Runners are kept
 // after completion (and after stop) so a script cannot destroy the Thread
 // object that is currently on the pump's stack.
-// shortcut: src has no per-slice wall clock, so one call makes ONE pass and each
-// eligible thread gets run_slice(256). The exe gives it s*q ms with
-// q = min(budget, 10) and s = prio < 0 ? (prio + 10) * 0.089999996f + 0.1f
-// : prio * 9.9f + 1.0f.
+// The exe gives each eligible thread s*q ms with q = min(budget, 10) and
+// s = prio < 0 ? (prio + 10) * 0.089999996f + 0.1f : prio * 9.9f + 1.0f.
+// shortcut: src has no per-slice wall clock, so one call makes ONE pass and the
+// slice is counted in instructions at an INVENTED rate of kInstrPerMs; 256-token
+// slices preempted creators between Thread.start() and the setup that follows it
+// (MainMenu: start() then addMethod loop), which the exe's ms slices never do.
 void run_threads(Vm &vm, float budget_ms, int min_prio)
 {
-    (void)budget_ms;
     Scheduler &s = sched(vm);
     if (s.pumping) return;
     s.pumping = true;
@@ -7567,34 +7568,18 @@ void run_threads(Vm &vm, float budget_ms, int min_prio)
         if (t->sleeping) continue;
         t->in_slice = true;
         s.current = t;  // ctx+4
-        Thread::Status st = t->runner->run_slice(256);
+        const float kInstrPerMs = 1000.0f;  // INVENTED, see above
+        float q = budget_ms < 10.0f ? budget_ms : 10.0f;
+        float sp = t->priority < 0 ? (t->priority + 10) * 0.089999996f + 0.1f
+                                   : t->priority * 9.9f + 1.0f;
+        size_t slice = (size_t)(sp * q * kInstrPerMs);
+        if (slice < 256) slice = 256;
+        Thread::Status st = t->runner->run_slice(slice);
         s.current = nullptr;
         t->in_slice = false;
         if (st == Thread::Yielded) continue;
-        if (st == Thread::Failed) {
-            std::fprintf(stderr, "vm thread failed [%s]: %s\n", t->name.c_str(),
-                         t->runner->error().c_str());
-            // TEMP debug: dump the script Thread's THOR fields.
-            const char *fn[] = {"extended", "methods", "executed", "exeTimer", "injection",
-                                "agents"};
-            for (const char *f : fn) {
-                Value v;
-                std::string de;
-                if (!vm.get_instance_field(t->script, f, &v, &de)) {
-                    std::fprintf(stderr, "  %s: <err %s>\n", f, de.c_str());
-                    continue;
-                }
-                if (v.kind == Value::Obj && v.obj) {
-                    Value cnt;
-                    std::string ce;
-                    bool got = vm.get_instance_field(v.obj, "elementCount", &cnt, &ce);
-                    std::fprintf(stderr, "  %s: obj count=%d\n", f,
-                                 got && cnt.kind == Value::Int ? cnt.i : -999);
-                } else {
-                    std::fprintf(stderr, "  %s: kind=%d\n", f, (int)v.kind);
-                }
-            }
-        }
+        if (st == Thread::Failed)
+            std::fprintf(stderr, "vm thread failed: %s\n", t->runner->error().c_str());
         // 0x55caf0: flags 0x40 (finished) -> 0x80 (dead).
         t->started = false;
         t->done = true;

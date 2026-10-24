@@ -621,12 +621,6 @@ bool Thread::start_call(ClassState *decl, const MethodInfo *m, Object *self,
     const char *sg = decl->unit->str(m->sig);
     std::string name = nm ? nm : std::string();
     std::string sig = sg ? sg : std::string();
-    // TEMP debug
-    if (name == "addMethod" || name == "methodStatus" || name == "start") {
-        std::string cn = decl->unit->class_name(decl->unit->self_class);
-        std::fprintf(stderr, "TEMP call %s.%s%s argc=%zu self=%p\n", cn.c_str(), name.c_str(),
-                     sig.c_str(), args ? args->size() : 0, (void *)self);
-    }
 
     if (m->flags & 0x40) {
         Value selfv;
