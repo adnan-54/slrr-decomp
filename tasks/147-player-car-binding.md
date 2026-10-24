@@ -1,7 +1,7 @@
 ---
 id: 147
-status: todo
-branch:
+status: implemented
+branch: card/147
 depends: [146]
 ---
 # Player controller binds the car; engine on at create; getWheel loads WheelRef

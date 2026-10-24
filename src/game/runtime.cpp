@@ -432,6 +432,11 @@ Runtime::Resource *Runtime::resolve(uint32_t id, const Package *base)
         id = resources_->global_id(*base, id);   // 0x51e860
         if (!id) return nullptr;
     }
+    // 0x51fa40 resolves through the RI registry, which also holds created
+    // instances (0x8000... game instances, 0xffff... script resources).
+    if ((id >> 16) == 0x8000u || (id >> 16) == 0xffffu)
+        for (auto &up : instances_)
+            if (up->id == id) return up.get();
     // 0x517b80: the high word is a registry slot, mounted on first reference.
     // 0x51e310: the mount links the package's records into their parents.
     const Package *target = resources_->registry_package(id >> 16);
@@ -731,13 +736,14 @@ void Runtime::queue_event(Resource *target, Resource *sender, uint32_t code,
 {
     if (!target) return;
     // 0x47c760 step 2: the native type handler (typed+0x4c vf14) runs before
-    // the script and a non-zero return suppresses handleEvent. Only the car
-    // command handler is ported.
+    // the script and a non-zero return suppresses handleEvent. The car and
+    // native-player command handlers are ported.
     // shortcut: other native kinds and the streaming check (typed+0x4c == 0
     // path) are not modelled; upgrade when engine types exist.
     if (target->event_mask & code) {
         uint32_t ev = code & 0x0fffffffu;  // vf14 gets the masked code
-        if (!game::car_command(*this, target, ev, param) && target->script)
+        if (!game::car_command(*this, target, ev, param) &&
+            !game::player_command(*this, target, ev, param) && target->script)
             dispatch_script(*this, target, sender, code, param, method);
     }
 

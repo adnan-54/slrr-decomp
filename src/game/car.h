@@ -155,6 +155,13 @@ struct CarData {
     int32_t gear = 0;            // +0x1e5c
     int32_t gear_copy = 0;       // +0x1e60
     int32_t horn_id = 0;         // +0x1e00
+    // Control slots / driver slot from the car cfg (M+0x17ec / M+0x17f0,
+    // 0x48dee0); slot_player[s] is R_s's player ref (car+0x150 + s*0x4a8).
+    int control_slots = 0;
+    int driver_slot = -1;
+    Runtime::Resource *slot_player[4] = {};
+    float starter_timer = -1.0f; // +0x1e6c (0x499511; shift lock while >= 0)
+    float prev_clutch = 0.0f;    // +0x1fa8 last clutch written by updateControls
     float gear_ratio = 0.0f;     // +0x1e0c ratio[gear] (Vehicle__update 0x498b40)
     float shaft_speed = 0.0f;    // +0x1e78 driveshaft / wheel-average speed
     float rpm_raw = 0.0f;        // +0x1e7c
@@ -246,6 +253,11 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
 // script handleEvent is then suppressed), 0 for anything else.
 int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
                 const Value &param);
+// 0x4d2d20 type_player__vf14 EVENT_COMMAND: "controllable <car id>" queues the
+// "activate ..." bind to the car. Returns 1 for every code on a native player
+// (the Controller script never gets commands), 0 otherwise.
+int player_command(Runtime &rt, Runtime::Resource *player, uint32_t code,
+                   const Value &param);
 // 0x47be30 Game__runDriveCallbacks: Vehicle__update 0x49c8e0 for every awake
 // car, once per physics sub-step.
 void drive_cars(float dt);

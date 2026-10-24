@@ -39,6 +39,10 @@
 #include "script/vm.h"
 #include "vehicle/dyno.h"
 
+// 0x7a75df: global Steam "neutralized" flag, read by 0x49446b, 0x494646 and
+// 0x49a4f8 (Vehicle__createCar 0x49a4ef, see game::create_car_bodies).
+bool steam_neutralized = false;
+
 namespace {
 
 using Args = std::vector<Value>;
@@ -555,9 +559,6 @@ bool system_log(Vm &, const Args &a, Value *out, std::string *)
 }
 
 // ---- java.util.Steam ------------------------------------------------------
-
-// 0x7a75df: global "neutralized" flag, read by 0x49446b, 0x494646, 0x49a4f8.
-bool steam_neutralized = false;
 
 // INVENTED: the engine has no Steam service, so every steam_api.dll call takes
 // its failure path and only the log line is observable.
@@ -3904,7 +3905,7 @@ bool ch_get_wheel(Vm &vm, const Args &a, Value *out, std::string *err)
     *out = Value::make_null();
     game::CarData *c = car_of(a);
     if (!c || i < 0 || (size_t)i >= c->wheels.size()) return true;
-    ClassState *cs = vm.find_class("java.game.parts.WheelRef");
+    ClassState *cs = vm.get_class("java.game.parts.WheelRef");  // 0x4b4150: JVM__getClass loads the class on a miss
     if (!cs) {
         *err = "Chassis.getWheel: java.game.parts.WheelRef is not loaded";
         return false;

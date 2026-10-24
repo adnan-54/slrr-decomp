@@ -10,12 +10,16 @@
 #include <string.h>
 
 #include <memory>
+#include <set>
 #include <utility>
 
 #include "parts/cfg.h"
 #include "resource/manager.h"
 #include "script/vm.h"
 #include "vehicle/dyno.h"
+
+// 0x7a75df: Steam.neutralize flag; createCar 0x49a4ef reads it.
+extern bool steam_neutralized;
 
 namespace game {
 namespace {
@@ -60,6 +64,10 @@ std::map<Runtime::Resource *, std::unique_ptr<CarData>> g_cars;
 std::map<Object *, WheelData *> g_wheels;
 std::map<Object *, audio::SfxTable *> g_sfx_tables;
 std::map<Object *, std::unique_ptr<EngineModel>> g_dynos;
+// Native-player instances (type record's `native player`, no cfg). Their vf14
+// swallows every command; the instance's type is not reachable from the node,
+// so the flag is recorded when the type manager runs (instantiate).
+std::set<Runtime::Resource *> g_players;
 
 // The cfg ref sits on the record's native line, possibly on a super record.
 bool load_native_cfg(Runtime &rt, Runtime::Resource *r, const char *native,
@@ -74,6 +82,18 @@ bool load_native_cfg(Runtime &rt, Runtime::Resource *r, const char *native,
             std::string err;
             if (rt.resources().load_cfg(ref, cfg, &err)) return true;
         }
+    }
+    return false;
+}
+
+// Same walk, for the native handlers without a cfg (0x48dee0's `player`).
+bool has_native_ref(Runtime &rt, Runtime::Resource *r, const char *native)
+{
+    for (Runtime::Resource *n = r; n; n = n->parent) {
+        if (!n->package || !n->record) continue;
+        for (const DataRef &ref : rt.resources().refs(*n->package, *n->record))
+            if (ref.kind == DataRef::Native && ref.native == native && !ref.is_cfg)
+                return true;
     }
     return false;
 }
@@ -108,6 +128,20 @@ void fill_part(PartData &p, const CfgFile &cfg)
 void fill_car(CarData &c, const CfgFile &cfg)
 {
     for (const CfgLine &ln : cfg.lines) {
+        // 0x48dee0 / 0x48e070: control slots M+0x17ec, driver slot M+0x17f0.
+        // M+0x120 is taken as 0 (UNRESOLVED; same in notes/09).
+        if (ln.key == "controller" || ln.key == "driver") {
+            if (c.control_slots < 4) {
+                if (c.control_slots == 0) c.driver_slot = 0;
+                if (ln.key == "driver") c.driver_slot = c.control_slots - 1;
+                c.control_slots++;
+            }
+            continue;
+        }
+        if (ln.key == "nodriver") {
+            c.driver_slot = -1;
+            continue;
+        }
         if (ln.key == "type") {
             WheelData w;
             w.index = (int32_t)c.wheels.size();
@@ -181,6 +215,21 @@ float curve_at(const std::vector<float> &rpm, const std::vector<float> &val,
     // exe order: (dv * dq) / drpm + v0
     return (val[i] - val[i - 1]) * (q - rpm[i - 1]) / (rpm[i] - rpm[i - 1]) +
            val[i - 1];
+}
+
+// 0x59b438 custom scanner: skip the command word, then strtol base 0 (the
+// "0x%x" ids of "activate" and the signed decimal ids of "controllable").
+bool scan_id(const std::string &cmd, const char *word, uint32_t *id)
+{
+    size_t n = strlen(word);
+    if (cmd.compare(0, n, word) != 0) return false;
+    const char *p = cmd.c_str() + n;
+    while (*p == ' ' || *p == '\t') p++;
+    char *end = nullptr;
+    long v = strtol(p, &end, 0);
+    if (end == p) return false;
+    *id = (uint32_t)v;
+    return true;
 }
 
 }  // namespace
@@ -421,6 +470,14 @@ bool load_car_cfg(Runtime &rt, Runtime::Resource *r, CfgFile *cfg)
 void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
                        Runtime::Resource *type, const std::string &params)
 {
+    // 0x523c80 also runs the type record's native manager for `native player`
+    // (0x5240e0); src needs its command handler (card 147).
+    if (type && has_native_ref(rt, type, "player")) {
+        // INVENTED: the typed-object event mask default is not traced (card 040).
+        inst->event_mask |= 0x10u;
+        if (g_rt != &rt) reset(&rt);  // else the first car_data() wipes g_players
+        g_players.insert(inst);
+    }
     CfgFile cfg;
     if (!type || !load_native_cfg(rt, type, "car", &cfg) || cfg.bodies.empty()) return;
     CarData *car = car_data(rt, inst);
@@ -431,9 +488,12 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
     car->cfg_resource = type;
     if (!car->sim) car->sim = std::make_unique<Car>();
     Car *sim = car->sim.get();
-    // INVENTED: createCar sets car+0x70 |= 0x4000 only when M+0x17f0 >= 0 and
-    // DAT_007a75df == 0 (not traced). Engine off and neutral, no throttle.
-    sim->engine.running = false;
+    // 0x49a4ef: engine on at create for a car with a driver slot (M+0x17f0 >= 0)
+    // unless Steam.neutralize set the process flag (0x7a75df). car+0x1e6c = -1
+    // (0x499511) is the CarData default.
+    if (car->driver_slot >= 0)
+        car->flags = steam_neutralized ? (car->flags & ~0x4000u)
+                                       : (car->flags | 0x4000u);
     sim->gear = 0;
     // INVENTED: the typed-object event mask default is not traced (card 040);
     // the car's native vf14 must be reachable from Vehicle.wakeUp/command, which
@@ -635,9 +695,77 @@ int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
         c->shaft_speed = 0.0f;
         return 1;
     }
+    // 0x4a3360: "activate 0x<player> 0x<camera> 0x<render>" (0x4a1470 slot
+    // search): rebind the player ref of the first slot it already owns, else the
+    // first free slot. Camera/render ids and the HUD slots are not kept.
+    if (cmd.compare(0, 9, "activate ") == 0) {
+        uint32_t pid = 0;
+        if (!scan_id(cmd, "activate", &pid)) return 0;
+        Runtime::Resource *player = rt.resolve(pid);
+        if (!player) return 0;
+        int slot = -1;
+        for (int s = 0; s < c->control_slots && s < 4; s++)
+            if (c->slot_player[s] && c->slot_player[s]->id == pid) {
+                slot = s;
+                break;
+            }
+        if (slot < 0)
+            for (int s = 0; s < c->control_slots && s < 4; s++)
+                if (!c->slot_player[s]) {
+                    slot = s;
+                    break;
+                }
+        if (slot < 0) return 0;
+        c->slot_player[slot] = player;
+        return 1;
+    }
+    // 0x4a37f0: transmission mode -> the gearbox flags. tr&1 is the auto branch;
+    // INVENTED: the tr&1 == 0 (manual-clutch) branch is not read, only the 0x30
+    // clear is ported for it.
+    if (cmd.compare(0, 13, "transmission ") == 0) {
+        uint32_t tr = 0;
+        scan_id(cmd, "transmission", &tr);
+        c->flags &= ~0x30u;
+        if (tr & 1) {
+            if (tr & 2)
+                c->flags &= ~0x40u;
+            else
+                c->flags |= 0x40u;
+            c->flags |= (tr & 4) ? 0x20u : 0x10u;
+            c->prev_clutch = c->clutch_input;
+        }
+        return 1;
+    }
+    // 0x4a35xx: the multiplier is stored on the player (unused here).
+    if (cmd.compare(0, 18, "damage_multiplier ") == 0) return 1;
     // INVENTED: the rest of the 0x4a2e60 chain (cfg keys such as abs, filter,
     // render, reload) is not ported; returning 0 lets the script see it.
     return 0;
+}
+
+// 0x4d2d20 type_player__vf14 EVENT_COMMAND (0x10) -> 0x4d2ab0. The native
+// player swallows every command (the Controller script never sees one).
+int player_command(Runtime &rt, Runtime::Resource *player, uint32_t code,
+                   const Value &param)
+{
+    if (!player || !g_players.count(player)) return 0;
+    if (code == 0x10 && param.kind == Value::Str) {
+        uint32_t car_id = 0;
+        // "controllable <car id>": send the bind to the car (0x4d2ab0).
+        if (scan_id(param.s, "controllable", &car_id)) {
+            Runtime::Resource *car = rt.resolve(car_id);
+            if (car) {
+                char cmd[64];
+                // INVENTED: camera/render ids (player+0x218c/+0x219c) are 0, and
+                // the player's +0x2310 list / "control" reply are not kept.
+                snprintf(cmd, sizeof cmd, "activate 0x%x 0x0 0x0", player->id);
+                rt.queue_event(car, nullptr, 0x10, Value::make_str(cmd));
+            }
+        }
+        // Other commands (osd, viewport, camera, renderinstance, device, leave,
+        // control): no-op.
+    }
+    return 1;
 }
 
 // 0x47be30 Game__runDriveCallbacks -> 0x47be90 -> type_car vf12
@@ -765,6 +893,7 @@ void reset(Runtime *rt)
     g_wheels.clear();
     g_sfx_tables.clear();
     g_dynos.clear();
+    g_players.clear();
     g_cars.clear();
     g_parts.clear();
     g_rt = rt;

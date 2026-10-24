@@ -876,6 +876,64 @@ void game_init_check(Boot &boot, Checker &c)
         c.check(std::fabs(root->vel.y) < 0.1f, "car settles (|vel.y| < 0.1)");
     }
 
+    // Card 147: Track.enter's "controllable" / "transmission" commands bind the
+    // player's Controller to the car (notes/09 "Control path").
+    Object *ctrl_obj = nullptr;
+    {
+        Value pv2;
+        std::string perr2;
+        if (boot.vm()->get_static_field("java.game.GameLogic", "player", &pv2, &perr2) &&
+            pv2.kind == Value::Obj && pv2.obj) {
+            Value cv;
+            perr2.clear();
+            if (boot.vm()->get_instance_field(pv2.obj, "controller", &cv, &perr2) &&
+                cv.kind == Value::Obj)
+                ctrl_obj = cv.obj;
+        }
+    }
+    // 0x48dee0: Axis _main_*.cfg has one `controller` line -> 1 slot, driver 0.
+    c.check(car_payload && car_payload->control_slots == 1 &&
+                car_payload->driver_slot == 0,
+            "Axis car cfg gives 1 control slot, driver slot 0 (0x48dee0)");
+    // 0x4d2ab0 -> 0x4a3360: player "controllable <car id>" binds the controller.
+    c.check(car_payload && ctrl_obj && car_payload->slot_player[0] &&
+                car_payload->slot_player[0]->script == ctrl_obj,
+            "controllable binds GameLogic.player.controller to slot 0 (0x4a3360)");
+    // 0x49a4ef: engine on at create when M+0x17f0 >= 0 and Steam not neutralized.
+    c.check(car_payload && (car_payload->flags & 0x4000u) != 0,
+            "createCar sets the engine-on flag for a driven car (0x49a4ef)");
+    // 0x4a37f0: 0x40 = auto clutch, 0x10 = auto gearbox, 0x20 = semi-auto.
+    Value trv;
+    std::string trerr;
+    bool have_tr = boot.vm()->get_static_field("java.util.Config",
+                                              "player_transmission", &trv, &trerr);
+    int tr = have_tr && trv.kind == Value::Int ? trv.i : 0;
+    uint32_t tr_bits =
+        (tr & 1) ? (((tr & 2) ? 0u : 0x40u) | ((tr & 4) ? 0x20u : 0x10u)) : 0u;
+    c.check(have_tr && car_payload && (car_payload->flags & 0x70u) == tr_bits,
+            "transmission command sets the 0x4a37f0 flags (mode " +
+                std::to_string(tr) + ")");
+    // Chassis.java:346 setInstantCenter(10000 x6) runs in updatevariables, after
+    // the fixed getWheel loads WheelRef (0x4b4150).
+    bool ic_ok = car_payload && !car_payload->wheels.empty();
+    if (car_payload)
+        for (const game::WheelData &w : car_payload->wheels)
+            if (std::fabs(w.ic_h[0] - w.hub[0] - 10000.0f) >= 0.01f ||
+                std::fabs(w.ic_l[2] - w.hub[2] - 10000.0f) >= 0.01f)
+                ic_ok = false;
+    c.check(ic_ok, "updatevariables reached setInstantCenter(10000) on every wheel "
+                   "(0x4b4150 getWheel loads WheelRef)");
+    if (car_payload) {
+        std::printf("  player bind: slots %d driver %d, controller %p slot0 script %p, "
+                    "flags 0x%x, transmission %d -> 0x%x\n",
+                    car_payload->control_slots, car_payload->driver_slot,
+                    (void *)ctrl_obj,
+                    (void *)(car_payload->slot_player[0]
+                                 ? car_payload->slot_player[0]->script
+                                 : nullptr),
+                    car_payload->flags, tr, car_payload->flags & 0x70u);
+    }
+
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
     if (dealer_at_garage) {
         bool dealer_thread = false;
