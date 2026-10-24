@@ -4,7 +4,12 @@
 #include <string>
 #include <vector>
 
+#include "game/runtime.h"
 #include "script/vm.h"
+
+namespace input {
+class Controller;
+}
 
 namespace natives {
 
@@ -32,6 +37,9 @@ void set_clock(Vm &vm, double now_ms);
 void monitor_notify_all(Vm &vm, Object *o);
 // 0x47e050: sub-step the process world by min(warp * dt, 0.1f), timers + flush each sub-step.
 void advance_sim(Vm &vm, float dt);
+// The Controller block behind a `native player` resource (0x4d3cb0's object),
+// created on first use; the control list reads its axes (0x498300 ax/ai).
+input::Controller *controller_of(Runtime::Resource *r);
 // Read-only snapshot of the VM's script threads for checks and tools.
 struct ThreadInfo {
     std::string name;

@@ -161,6 +161,11 @@ struct CarData {
     int driver_slot = -1;
     Runtime::Resource *slot_player[4] = {};
     float starter_timer = -1.0f; // +0x1e6c (0x499511; shift lock while >= 0)
+    float shift_end = -1.0f;     // +0x1e68 shift completes at this world time
+    float shift_t70 = -1.0f;     // +0x1e70 0x4b0190 timer
+    float shift_t74 = -1.0f;     // +0x1e74 0x4b0190 timer
+    float horn_axis = 0.0f;      // previous ai(54), horn edge detect
+    float gearset_last = 0.0f;   // +0x2280 last ai(51) gearset
     float prev_clutch = 0.0f;    // +0x1fa8 last clutch written by updateControls
     float gear_ratio = 0.0f;     // +0x1e0c ratio[gear] (Vehicle__update 0x498b40)
     float shaft_speed = 0.0f;    // +0x1e78 driveshaft / wheel-average speed
@@ -261,6 +266,9 @@ int player_command(Runtime &rt, Runtime::Resource *player, uint32_t code,
 // 0x47be30 Game__runDriveCallbacks: Vehicle__update 0x49c8e0 for every awake
 // car, once per physics sub-step.
 void drive_cars(float dt);
+// 0x47bc20 Game__runControlCallbacks -> 0x498300 Vehicle__updateControls for
+// every car, once per physics tick before the sub-steps.
+void control_cars(float dt);
 // Number of CarData payloads that own car bodies (vmboot body_count check).
 int car_body_instances();
 void bind_wheel(Object *wrapper, WheelData *w);

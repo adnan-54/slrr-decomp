@@ -1,7 +1,7 @@
 ---
 id: 148
-status: todo
-branch:
+status: implemented
+branch: card/148
 depends: [147, 149]
 ---
 # Control list: Vehicle__updateControls reads the player's axes once per physics tick

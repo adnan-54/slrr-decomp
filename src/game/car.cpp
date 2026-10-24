@@ -9,12 +9,15 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <algorithm>
 #include <memory>
 #include <set>
 #include <utility>
 
+#include "input/controller.h"
 #include "parts/cfg.h"
 #include "resource/manager.h"
+#include "script/natives.h"
 #include "script/vm.h"
 #include "vehicle/dyno.h"
 
@@ -785,7 +788,17 @@ void drive_cars(float dt)
         }
     for (auto &kv : g_cars) {
         CarData *c = kv.second.get();
-        if (!c->sim || !c->root_body || c->root_body->asleep) continue;
+        if (!c->sim || !c->root_body) continue;
+        if (c->root_body->asleep) {
+            // 0x49c984 Vehicle__update §0: a sleeping car records its steer and
+            // gear so updateControls can tell input from rest.
+            if (!(c->flags & 1u)) {
+                c->steer_copy = c->steer_input;
+                c->gear_copy = c->gear;
+                c->flags |= 1u;
+            }
+            continue;
+        }
         Car &sim = *c->sim;
         // INVENTED glue: the exe keeps one struct; src has CarData (natives) and
         // vehicle::Car (simulation), so copy the control inputs and the engine
@@ -821,6 +834,173 @@ void drive_cars(float dt)
         c->rpm_smoothed = e.smoothed_omega;
         c->shaft_speed = sim.shaft_speed;
         c->gear_ratio = c->gear >= 0 && c->gear < 8 ? c->ratio[c->gear] : 0.0f;
+    }
+}
+
+// 0x4b0190 shift timers (SFX and the gearstick bone are not ported).
+static void shift_timers(CarData &c, bool up, float now)
+{
+    if (up) {
+        c.shift_t70 = now + 0.5f;
+        c.shift_t74 = now + 1.0f;
+    } else {
+        c.shift_t74 = now + 0.3f;
+        c.shift_t70 = now + 0.7f;
+    }
+}
+
+// 0x498300 _type_car vf11 Vehicle__updateControls: the mode-8 control list
+// 0x47bc20 calls it for every car once per physics tick, before the sub-steps.
+// Reads the driver slot's Controller axes into CarData, shifts gears and wakes
+// a sleeping root on input (0x498599). dt is the tick accumulator.
+void control_cars(float dt)
+{
+    if (!g_rt) return;
+    World &world = process_world();
+    float now = world.time;
+    for (auto &kv : g_cars) {
+        CarData *c = kv.second.get();
+        if (!c->sim) continue;
+        // shortcut: the traffic AI pointer (car+0x2054) is not modelled.
+        float old_thr = c->throttle;
+        float old_brk = c->brake_input;
+        float old_clu = c->clutch_input;
+        // The exe's tear is the car part payload's +0xb4 (PartData::tear).
+        auto pi = g_parts.find(kv.first);
+        float tear = pi != g_parts.end() ? pi->second->tear : 1.0f;
+        if (!(tear > 0.0f)) {
+            // shortcut: +0x1f64/68/6c (push/lift/roll) are not kept.
+            c->handbrake_input = 0.0f;
+            c->brake_input = 0.0f;
+            c->throttle = 0.0f;
+        } else if (c->driver_slot < 0) {
+            c->horn_id = 0;
+            c->brake_input = 0.0f;
+            c->throttle = 0.0f;
+        } else if (!c->slot_player[c->driver_slot]) {
+            c->throttle = 0.0f;
+            c->brake_input = 0.0f;
+            c->horn_id = 0;
+        } else {
+            input::Controller *p =
+                natives::controller_of(c->slot_player[c->driver_slot]);
+            auto ax = [p](int v) { return p ? p->get_axis_val(v) : 0.0f; };
+            // ai(v): the native player answers int(val * 127) (notes/09).
+            auto ai = [&ax](int v) {
+                return (float)(int)(ax(v) * 127.0f) * (1.0f / 127.0f);
+            };
+            c->steer_input = ax(1);         // TURN_LEFTRIGHT
+            c->throttle = ax(28);
+            c->brake_input = ax(29);        // +0x1dec holds the same value
+            c->handbrake_input = ax(48);
+            c->clutch_input = ai(49);
+            c->nitro_input = ai(31);
+            float shift = ai(50);           // GEAR_UPDOWN
+            float horn_ax = ai(54);         // HORN
+            float gearset = ai(51);         // GEAR_SET
+            if (c->flags & 0x40000u) {      // "brake" command
+                c->throttle = 0.0f;
+                c->brake_input = 1.0f;
+                c->handbrake_input = 1.0f;
+                c->nitro_input = 0.0f;
+                shift = 0.0f;
+                c->gear = 0;
+            }
+            if ((horn_ax > 0.1f) != (c->horn_axis > 0.1f))
+                c->horn_id = (c->horn_id + 1) & 3;
+            c->horn_axis = horn_ax;
+            // Gear shift: the 0x400000 latch clears while |shift| <= 0.1.
+            if (shift > 0.1f) {
+                if (!(c->flags & 0x400000u)) {
+                    c->flags |= 0x400000u;
+                    if (c->gears) {
+                        if (c->gear == 7) {
+                            c->gear = 0;
+                            c->shift_end = now + 0.2f;
+                        } else if (c->gear < c->gears) {
+                            c->gear++;
+                            c->shift_end = now + 0.3f;
+                        }
+                        shift_timers(*c, true, now);
+                    }
+                }
+            } else if (shift < -0.1f) {
+                if (!(c->flags & 0x400000u)) {
+                    c->flags |= 0x400000u;
+                    if (c->gears) {
+                        if (c->gear == 0) {
+                            c->gear = 7;
+                            c->shift_end = now + 0.3f;
+                        } else if (c->gear != 7) {
+                            c->gear--;
+                            c->shift_end = now + 0.2f;
+                        }
+                        shift_timers(*c, false, now);
+                    }
+                }
+            } else {
+                c->flags &= ~0x400000u;
+            }
+            // DAT_005fe31c is 0, so only a positive gearset acts.
+            if (gearset > 0.0f && c->gearset_last != gearset) {
+                c->gearset_last = gearset;
+                int g = (int)(gearset * 7.0f + 0.5f);
+                if (g > 7) g = 7;
+                if (g != c->gear && ((g >= 0 && g <= c->gears) || g == 7)) {
+                    c->gear = g;
+                    shift_timers(*c, false, now);
+                }
+            }
+        }
+        if (c->flags & 0x40000u) {
+            c->brake_input = 1.0f;
+            c->handbrake_input = 1.0f;
+            c->nitro_input = 0.0f;
+            c->gear = 0;
+            c->throttle = 0.0f;
+        }
+        // 0x4b04a0 shift timers.
+        if (c->starter_timer >= 0.0f) c->throttle = 0.0f;
+        if (c->shift_end > 0.0f) {
+            if (c->shift_end <= now) {
+                c->shift_end = -1.0f;
+                c->shifting = 0;
+            } else if (!(c->flags & 0x30u)) {   // manual clutch
+                c->throttle = 0.0f;
+                c->clutch_input = 1.0f;
+                c->shifting = 1;
+            } else {
+                c->clutch_input = 0.0f;
+                c->shifting = 1;
+            }
+        }
+        // shortcut: 0x4b03c0 (shift completion) is not ported.
+        if (c->shift_t70 > 0.0f && c->shift_t70 <= now) c->shift_t70 = -1.0f;
+        if (c->shift_t74 > 0.0f && c->shift_t74 <= now) c->shift_t74 = -1.0f;
+        if (c->shift_t70 < 0.0f && c->shift_t74 < 0.0f) c->shifting = 0;
+        // shortcut: auto gearbox/semi-auto/auto clutch (0x497930/0x4ad480/
+        // 0x4977a0, flags 0x10/0x20/0x40), speed limiter 0x1000, steer assist
+        // 0x2000, flags 0x80/0x100/0x4000000 helpers and the aero/slot-object
+        // axis lists are later cards.
+        c->flags &= ~0x03000000u;
+        float k = std::min(10.0f * dt, 1.0f);
+        c->throttle = old_thr + (c->throttle - old_thr) * k;
+        c->brake_input = old_brk + (c->brake_input - old_brk) * k;
+        float kc = std::min(33.333336f * dt, 1.0f);
+        c->clutch_input = old_clu + (c->clutch_input - old_clu) * kc;
+        // 0x4aa830 (wheel steer geometry) is vehicle::Car's job, from steer.
+        if (!(c->flags & 1u)) {
+            if (std::fabs(c->steer_copy - c->steer_input) <= 0.001f) continue;
+        } else {
+            bool asleep = c->root_body && c->root_body->asleep;
+            if (asleep && std::fabs(c->throttle) <= 0.01f &&
+                std::fabs(c->steer_input - c->steer_copy) <= 0.01f &&
+                c->gear == c->gear_copy)
+                continue;
+            c->flags = (c->flags & ~1u) | 2u;
+            if (asleep) world.wake(c->root_body);  // 0x507060 via 0x498599
+        }
+        c->steer_copy = c->steer_input;
     }
 }
 

@@ -7483,6 +7483,10 @@ namespace natives {
 // 0x60251c: the same clock System.simTime (0x4e5810) returns.
 double sim_time(Vm &) { return process_world().time; }
 
+// Public alias of the per-resource controller block for the game control list
+// (Vehicle__updateControls 0x498300 reads the driver's Controller axes).
+input::Controller *controller_of(Runtime::Resource *r) { return ::controller_of(r); }
+
 // 0x569730 clock, passed in by the host frame loop.
 void set_clock(Vm &vm, double now_ms) { sched(vm).now_ms = now_ms; }
 
@@ -7601,8 +7605,7 @@ void monitor_notify_all(Vm &vm, Object *o)
 
 // 0x47e050: sub-step the process world (0x502060), then run timers
 // (0x47b700) and the deferred flush (0x47d070) after every sub-step.
-// shortcut: control/drive callback lists 0x47bc20/0x47be30, the perf average
-// and camera snapshots are not ported.
+// shortcut: the perf average and camera snapshots are not ported.
 void advance_sim(Vm &vm, float dt)
 {
     Scheduler &s = sched(vm);
@@ -7611,6 +7614,14 @@ void advance_sim(Vm &vm, float dt)
     float step = std::min(s.warp * dt, 0.1f);  // 0x5da468
     float done = 0.0f;
     if (!s.quit_request) {  // 0x5f0c74
+        // 0x47e050: the mode-8 control list runs once per tick before the
+        // sub-steps (accumulator 0x5938c4).
+        static float ctrl_acc = 0.0f;
+        ctrl_acc += step;
+        if (ctrl_acc > 1e-4f) {
+            game::control_cars(ctrl_acc);
+            ctrl_acc = 0.0f;
+        }
         while (step > 0.0f) {
             if (s.quit_request) break;
             float sub = step;

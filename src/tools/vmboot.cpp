@@ -968,6 +968,75 @@ void game_init_check(Boot &boot, Checker &c)
         std::printf("\n");
     }
 
+    // Card 148: the mode-8 control list (0x47bc20 -> Vehicle__updateControls
+    // 0x498300) reads the driver Controller's axes. Shipped
+    // save/controls/active_control_set group 1: A (DIK 0x1e) -> axis 50 gear up,
+    // Up (0xc8) -> axis 28 throttle, Left/Right (0xcb/0xcd) -> axis 1 steer.
+    if (car_payload && car_payload->root_body) {
+        RigidBody *root = car_payload->root_body;
+        int fr = kFrames + 300;
+        auto key = [](int dik, bool down) {
+            g_input->devices[0].raw.keys[dik] = down ? 0x80 : 0;
+        };
+        auto frames = [&fr, &loop](int n) {
+            for (int i = 0; i < n; i++) loop.frame(++fr * 16);
+        };
+        auto report = [car_payload, root](const char *phase) {
+            std::printf("  control %s: gear %d, throttle %.3f, steer %.3f, "
+                        "speed %.2f m/s, rpm %.0f\n",
+                        phase, car_payload->gear, (double)car_payload->throttle,
+                        (double)car_payload->steer_input,
+                        (double)vec_length(root->vel), (double)car_payload->rpm_raw);
+        };
+        key(0x1e, true);
+        frames(10);
+        report("A held");
+        key(0x1e, false);
+        frames(10);
+        report("A released");
+        // 0x498300's shift block is guarded by `if (gears)`; the purchased car
+        // has no transmission part yet (shipped Chassis.java:717 leaves gears 0
+        // without an engine, card 150), so neutral stays until then.
+        int want_gear = car_payload->gears > 0 ? 1 : 0;
+        c.check(car_payload->gear == want_gear,
+                "A (axis 50) shifts neutral -> 1st when the car has gears (got gear " +
+                    std::to_string(car_payload->gear) + ", gears " +
+                    std::to_string(car_payload->gears) + ")");
+        c.check(std::fabs(car_payload->gear_ratio -
+                          car_payload->ratio[car_payload->gear]) < 1e-6f,
+                "gear_ratio follows ratio[gear] after the shift (got " +
+                    std::to_string((double)car_payload->gear_ratio) + ")");
+        // INVENTED (fixture): a resting car sleeps (0x506d90); sleeping it here
+        // exercises the input wake path 0x498599.
+        process_world().sleep(root);
+        key(200, true);
+        frames(60);
+        bool awake = false;
+        for (RigidBody *b : process_world().bodies)
+            if (b == root) awake = true;
+        report("Up held");
+        c.check(car_payload->throttle > 0.9f,
+                "Up (axis 28) gives throttle > 0.9 (got " +
+                    std::to_string((double)car_payload->throttle) + ")");
+        c.check(awake, "throttle input wakes the sleeping car_root (0x498599)");
+        key(203, true);
+        frames(60);
+        report("Up + Left");
+        c.check(car_payload->steer_input > 0.9f,
+                "Left (axis 1) gives steer > 0.9 (got " +
+                    std::to_string((double)car_payload->steer_input) + ")");
+        key(203, false);
+        key(205, true);
+        frames(60);
+        report("Up + Right");
+        c.check(car_payload->steer_input < -0.9f,
+                "Right (axis 1) gives steer < -0.9 (got " +
+                    std::to_string((double)car_payload->steer_input) + ")");
+        key(205, false);
+        key(200, false);
+        frames(1);
+    }
+
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
     if (dealer_at_garage) {
         bool dealer_thread = false;
