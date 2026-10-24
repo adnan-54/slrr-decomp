@@ -478,19 +478,30 @@ void game_init_check(Boot &boot, Checker &c)
             }
         }
         if (i == kRaceCmd) {
-            // EventList.java:52,537: CMD_RACE in freeride mode runs
-            // freerideSetup() and changes the section to java.game.Track.
+            // EventList.java:44,345: CMD_RACE belongs to the Generator dialog,
+            // not the EventList (which only holds it in eGen, EventList.java:22);
+            // the Generator's osdCommand freerideSetup()s and changes the section
+            // to java.game.Track (EventList.java:52,537-545).
             Value st;
             std::string rerr;
             if (actual_state(boot, &st, &rerr)) {
                 race_from = object_class(boot, st.obj);
                 race_at_eventlist = is_a(boot, st.obj->cls, "java.game.EventList");
+                Object *gen = nullptr;
                 if (race_at_eventlist) {
+                    Value gv;
+                    if (boot.vm()->get_instance_field(st.obj, "eGen", &gv, &rerr) &&
+                        gv.kind == Value::Obj)
+                        gen = gv.obj;
+                }
+                if (gen) {
                     // INVENTED: stands in for clicking the freeride Race button.
-                    bool ok = osd_command(boot, st.obj, 0x10E, "THRD-EVENT-RACE", &rerr);
+                    bool ok = osd_command(boot, gen, 0x10E, "THRD-EVENT-RACE", &rerr);
                     if (!ok && !rerr.empty())
                         std::printf("  eventlist cmd 0x10E: not started (%s)\n",
                                     rerr.c_str());
+                } else if (race_at_eventlist) {
+                    std::printf("  eventlist cmd 0x10E: EventList.eGen is null\n");
                 } else {
                     std::printf("  eventlist cmd 0x10E skipped: actualState is %s\n",
                                 race_from.c_str());
@@ -558,15 +569,26 @@ void game_init_check(Boot &boot, Checker &c)
             "back from the used dealer: actualState is java.game.Garage at the testdrive "
             "cmd (got " + testdrive_from + ")");
     c.check(player_car != nullptr, "buying the shown used car sets GameLogic.player.car");
-    // Card 127: Track construction still pulls in stub engine services, so the
-    // freeride destination is asserted only when the run reached it.
-    if (class_after == "java.game.Track") {
-        c.check(true, "testdrive -> race reaches java.game.Track");
-    } else {
-        std::printf("  freeride: not reached (actualState %s after EventList cmd 0x%X from "
-                    "%s)\n",
-                    class_after.c_str(), 0x10E, race_from.c_str());
+    // Track.java:291-299: the freeride race builds Track(game = the event's
+    // careerGM, map = new GroundRef(td.map_id)).
+    c.check(class_after == "java.game.Track",
+            "testdrive -> race reaches java.game.Track (got " + class_after + ")");
+    std::string game_after = "(none)", map_after = "(none)";
+    if (have_state_after && state_after.kind == Value::Obj && state_after.obj) {
+        Value gv, mv;
+        std::string ferr;
+        if (boot.vm()->get_instance_field(state_after.obj, "game", &gv, &ferr) &&
+            gv.kind == Value::Obj && gv.obj)
+            game_after = object_class(boot, gv.obj);
+        ferr.clear();
+        if (boot.vm()->get_instance_field(state_after.obj, "map", &mv, &ferr) &&
+            mv.kind == Value::Obj && mv.obj)
+            map_after = object_class(boot, mv.obj);
     }
+    c.check(game_after == "java.game.Freeride",
+            "Track.game is the freeride gamemode (got " + game_after + ")");
+    c.check(map_after == "java.util.resource.GroundRef",
+            "Track.map is a non-null GroundRef (got " + map_after + ")");
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
     if (dealer_at_garage) {
