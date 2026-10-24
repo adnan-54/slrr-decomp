@@ -27,6 +27,7 @@ struct CollisionMesh {
 
     std::vector<Vec3> vertices;       // local body frame, metres
     std::vector<Triangle> triangles;
+    std::vector<Vec3> face_normals;   // stored PHYS normal per triangle; empty for SCX
     std::vector<Node> nodes;
     std::vector<uint32_t> order;      // triangle indices, leaf order
     Vec3 bounds_min{0.0f, 0.0f, 0.0f};
@@ -45,6 +46,13 @@ std::shared_ptr<const CollisionMesh> build_collision_mesh(const mesh::Mesh &m);
 std::shared_ptr<const CollisionMesh> build_collision_mesh(
     const std::vector<Vec3> &verts, const std::vector<CollisionMesh::Triangle> &tris);
 
+// Same tree plus the PHYS chunk's stored face normals, one per triangle in the
+// same order as `tris` (0x519940 face.n). A size mismatch leaves face_normals
+// empty and mesh_segment_cross refuses the mesh.
+std::shared_ptr<const CollisionMesh> build_collision_mesh(
+    const std::vector<Vec3> &verts, const std::vector<CollisionMesh::Triangle> &tris,
+    const std::vector<Vec3> &normals);
+
 struct MeshRayHit {
     Vec3 point{0.0f, 0.0f, 0.0f};  // world
     Vec3 normal{0.0f, 1.0f, 0.0f}; // world, unit, faces the ray
@@ -55,6 +63,23 @@ struct MeshRayHit {
 // Closest hit along `dir` in [0, max_dist]; `pose` maps mesh-local to world.
 bool mesh_raycast(const CollisionMesh &m, const Pose &pose, Vec3 origin, Vec3 dir,
                   float max_dist, MeshRayHit *hit);
+
+// One crossing of the wheel sensor segment against a map PHYS face, as 0x4fd110
+// reports it. The normal is the stored PHYS face normal, never recomputed.
+struct SegmentCross {
+    Vec3 point{0.0f, 0.0f, 0.0f};  // world
+    Vec3 normal{0.0f, 1.0f, 0.0f}; // world, PHYS face normal
+    float t = 0.0f;                // fraction along p0 -> p1 (0x4fd110 return)
+    uint32_t triangle = 0;
+};
+
+// Every face 0x4fd110 accepts along p0 -> p1 (0x5043d0 picks the 2D axes).
+// The exe tests every face of the resident map node; the segment's AABB query
+// is the src broadphase (INVENTED: a crossing face always overlaps it, so the
+// face set equals the exe's all-faces loop). Requires face_normals; returns 0
+// otherwise. All hits are pushed in tree order.
+int mesh_segment_cross(const CollisionMesh &m, const Pose &pose, Vec3 p0, Vec3 p1,
+                       std::vector<SegmentCross> *out);
 
 // Contacts between a mesh and a sphere/box/capsule. Normals are B -> A as in
 // physics.h; `mesh_is_a` says which side the mesh is. Up to max_hits witnesses

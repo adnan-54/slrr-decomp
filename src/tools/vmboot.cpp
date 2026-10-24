@@ -230,6 +230,25 @@ void walk_map_instance(const RpkArchive &rpk, const RpkRecord &rec, MapTally &t,
         if (child.type == 1) walk_map_instance(rpk, child, t, err);
 }
 
+// Same walk and order as game/runtime.cpp gather_ground_soup, plus the PHYS
+// stored face normals (card 156 check 1).
+void gather_phys_faces(const RpkArchive &rpk, const RpkRecord &rec, std::vector<Vec3> *verts,
+                       std::vector<CollisionMesh::Triangle> *tris, std::vector<Vec3> *normals)
+{
+    RpkInstanceData inst;
+    std::string err;
+    if (!rpk.parse_instance(rec, &inst, &err)) return;
+    uint32_t base = (uint32_t)verts->size();
+    for (size_t i = 0; i + 2 < inst.verts.size(); i += 3)
+        verts->push_back(vec3(inst.verts[i], inst.verts[i + 1], inst.verts[i + 2]));
+    for (const RpkPhysFace &f : inst.faces) {
+        tris->push_back(CollisionMesh::Triangle{{base + f.v[0], base + f.v[1], base + f.v[2]}});
+        normals->push_back(vec3(f.n[0], f.n[1], f.n[2]));
+    }
+    for (const RpkRecord &child : inst.children)
+        if (child.type == 1) gather_phys_faces(rpk, child, verts, tris, normals);
+}
+
 std::string lower_ascii(std::string s)
 {
     for (char &c : s)
@@ -1024,6 +1043,62 @@ void game_init_check(Boot &boot, Checker &c)
         c.check(!box_contact,
                 "no world contact has car_root or part_comp as a side");
         c.check(std::fabs(root->vel.y) < 0.1f, "car settles (|vel.y| < 0.1)");
+
+        // Card 156: the wheel "ray" is the sensor segment (0x4f3f10) tested
+        // one-sided against every PHYS face by 0x4fd110, using the stored
+        // face normal. Re-read the map records here and compare.
+        std::vector<Vec3> gverts;
+        std::vector<CollisionMesh::Triangle> gtris;
+        std::vector<Vec3> gnormals;
+        if (map_res && map_res->package && map_res->record)
+            gather_phys_faces(map_res->package->rpk, *map_res->record, &gverts, &gtris,
+                              &gnormals);
+        auto expected = build_collision_mesh(gverts, gtris, gnormals);
+        bool normals_ok = ground && ground->def.shape.mesh && expected && sim;
+        bool sensor_ok = normals_ok;
+        if (sim && ground && ground->def.shape.mesh && expected) {
+            const CollisionMesh &cm = *ground->def.shape.mesh;
+            Mat34 rr = root->rotation();
+            Vec3 up = mat_vec(rr, Vec3{0.0f, 1.0f, 0.0f});
+            Pose gpose = ground->pose();
+            for (size_t i = 0; i < sim->wheels.size(); i++) {
+                const Wheel &w = sim->wheels[i];
+                Vec3 top = root->pos + mat_vec(rr, w.mount);
+                std::vector<SegmentCross> hits;
+                int n = mesh_segment_cross(cm, gpose, top - up * w.max_ray(), top, &hits);
+                float nearest = 1e30f;
+                Vec3 nearest_normal{0.0f, 0.0f, 0.0f};
+                uint32_t nearest_tri = 0;
+                for (const SegmentCross &h : hits) {
+                    float d = vec_length(top - h.point);
+                    if (d < nearest) {
+                        nearest = d;
+                        nearest_normal = h.normal;
+                        nearest_tri = h.triangle;
+                    }
+                    if (h.triangle >= expected->face_normals.size()) {
+                        normals_ok = false;
+                        continue;
+                    }
+                    Vec3 en = expected->face_normals[h.triangle];
+                    if (float_bits(h.normal.x) != float_bits(en.x) ||
+                        float_bits(h.normal.y) != float_bits(en.y) ||
+                        float_bits(h.normal.z) != float_bits(en.z))
+                        normals_ok = false;
+                }
+                std::printf("    wheel %zu sensor (0x4fd110): %d hit(s), nearest |top-X| "
+                            "%.4f (ray_len %.4f), normal (%.4f %.4f %.4f) tri %u\n",
+                            i, n, (double)nearest, (double)w.ray_len,
+                            (double)nearest_normal.x, (double)nearest_normal.y,
+                            (double)nearest_normal.z, nearest_tri);
+                if (n < 1 || std::fabs(nearest - w.ray_len) > 1e-3f)
+                    sensor_ok = false;
+            }
+        }
+        c.check(normals_ok,
+                "every sensor crossing uses the PHYS stored face normal (0x4fd110)");
+        c.check(sensor_ok,
+                "every wheel sensor segment crosses the map soup at its ray_len");
 
         // Card 154 done-when a: the part on chassis slot 311+i is a Spring and
         // its updatevariables values reach the simulation wheel (0x4c8b10).

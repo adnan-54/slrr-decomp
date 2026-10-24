@@ -1,6 +1,6 @@
 ---
 id: 156
-status: todo
+status: implemented
 branch: card/156
 depends: [144, 154]
 ---
@@ -89,3 +89,15 @@ Using the test for the wheels (157), the 0x4f3d70 selection, node streaming (0x4
 materials (S+0xa8/+0xac), 0x4feb20 / 0x4fc7e0 body-vs-soup narrow phase.
 
 ## Result
+Implemented on card/156 (2026-10-24).
+
+- `physics/mesh`: `CollisionMesh::face_normals` + 3-arg `build_collision_mesh(verts, tris,
+  normals)`; `SegmentCross` + `mesh_segment_cross` porting `0x4fd110` / `0x5043d0` literally
+  (both branches, one-sided `d1 > 0 && d0 <= 0`, stored normal, segment-AABB broadphase).
+- `game/runtime.cpp`: `gather_ground_soup` keeps `RpkPhysFace::n` in triangle order and the
+  ground body is built with the normals.
+- `vmboot`: independent record walk (`gather_phys_faces`) + two checks. `make -C src -j4 check`
+  green. Capped run (4 GB, 280 s): `selfcheck: PASSED (102 checks, 0 failure(s))`, peak RSS
+  581.6 MB. Per wheel nearest |top-X|: 0.5536 / 0.5504 / 0.5519 / 0.5512 m, each equal to
+  `ray_len`; 1 hit each; normals bitwise equal to the independently re-read PHYS normals.
+  Loads 3069 / 3260 / 3098 / 3134 N (sum 12560.4 vs weight 12559.7 N); older checks unchanged.

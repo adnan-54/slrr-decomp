@@ -319,6 +319,88 @@ struct Cand {
     uint32_t triangle = 0;
 };
 
+// 0x5043d0: the two axes left after dropping the dominant face-normal axis.
+void drop_axis(Vec3 n, int *i, int *j)
+{
+    float ax = fabsf(n.x), ay = fabsf(n.y), az = fabsf(n.z);
+    if (ay < ax) {
+        if (az <= ax) {
+            *i = 1;
+            *j = 2;
+        } else {
+            *i = 0;
+            *j = 1;
+        }
+    } else {
+        if (az <= ay) {
+            *i = 0;
+            *j = 2;
+        } else {
+            *i = 0;
+            *j = 1;
+        }
+    }
+}
+
+// 0x4fd110: one-sided segment-vs-face crossing in the mesh frame. `n` is the
+// stored PHYS normal, so the test accepts only a P0 below -> P1 above crossing
+// of a face whose normal points at P1.
+bool segment_cross_face(Vec3 p0, Vec3 p1, Vec3 v0, Vec3 v1, Vec3 v2, Vec3 n,
+                        Vec3 *point, float *tout)
+{
+    float d0 = vec_dot(n, p0 - v0);
+    float d1 = vec_dot(n, p1 - v0);
+    if (!(d1 > 0.0f && d0 <= 0.0f))
+        return false;
+    if (fabsf(d0) > 0.02f || fabsf(d1) > 0.02f) {
+        float t = fabsf(d0 / (d0 - d1));
+        Vec3 q = (p0 - v0) + (p1 - p0) * t;
+        int i, j;
+        drop_axis(n, &i, &j);
+        Vec3 a = v1 - v0, b = v2 - v0;
+        float inv = 1.0f / (comp(b, j) * comp(a, i) - comp(b, i) * comp(a, j));
+        float s = (comp(b, j) * comp(q, i) - comp(b, i) * comp(q, j)) * inv;
+        float u = (comp(a, i) * comp(q, j) - comp(a, j) * comp(q, i)) * inv;
+        if (s >= 0.0f && s <= 1.0f && u >= 0.0f && s + u <= 1.0f) {
+            *point = v0 + q;
+            *tout = t;
+            return true;
+        }
+        return false;
+    }
+    // In-plane: clip the segment against the three edge half-planes.
+    int i, j;
+    drop_axis(n, &i, &j);
+    float A = comp(v1 - v0, i) * comp(v2 - v0, j) - comp(v2 - v0, i) * comp(v1 - v0, j);
+    if (fabsf(A) < 1e-5f)
+        return false;
+    const Vec3 v[3] = {v0, v1, v2};
+    float t_in = 0.0f, t_out = 1.0f;
+    for (int k = 0; k < 3; k++) {
+        Vec3 e = v[(k + 1) % 3] - v[k];
+        float ex = comp(e, i) * A;
+        float ey = -comp(e, j) * A;
+        float f0 = (comp(p0, j) - comp(v[k], j)) * ex + (comp(p0, i) - comp(v[k], i)) * ey;
+        float f1 = (comp(p1, j) - comp(v[k], j)) * ex + (comp(p1, i) - comp(v[k], i)) * ey;
+        if (f0 >= 0.0f) {
+            float te = f0 / (f0 - f1);
+            if (te > t_in)
+                t_in = te;
+        } else {
+            if (f1 < 0.0f)
+                return false;
+            float to = f0 / (f0 - f1);
+            if (to < t_out)
+                t_out = to;
+        }
+        if (t_out <= t_in)
+            return false;
+    }
+    *point = p0 + (p0 - p1) * t_in; // sign as decompiled, keep it
+    *tout = t_in;
+    return true;
+}
+
 void add_cand(std::vector<Cand> *out, Vec3 pa, Vec3 pb, Vec3 n, float sep, uint32_t tri,
               float slop)
 {
@@ -522,10 +604,19 @@ std::shared_ptr<const CollisionMesh> build_collision_mesh(const mesh::Mesh &src)
 std::shared_ptr<const CollisionMesh> build_collision_mesh(
     const std::vector<Vec3> &verts, const std::vector<CollisionMesh::Triangle> &tris)
 {
+    return build_collision_mesh(verts, tris, std::vector<Vec3>());
+}
+
+std::shared_ptr<const CollisionMesh> build_collision_mesh(
+    const std::vector<Vec3> &verts, const std::vector<CollisionMesh::Triangle> &tris,
+    const std::vector<Vec3> &normals)
+{
     std::shared_ptr<CollisionMesh> out = std::make_shared<CollisionMesh>();
     out->vertices = verts;
+    bool have_normals = normals.size() == tris.size();
     out->triangles.reserve(tris.size());
-    for (const CollisionMesh::Triangle &t : tris) {
+    for (size_t i = 0; i < tris.size(); i++) {
+        const CollisionMesh::Triangle &t = tris[i];
         if (t.v[0] >= verts.size() || t.v[1] >= verts.size() || t.v[2] >= verts.size())
             continue;
         Vec3 a = verts[t.v[0]], b = verts[t.v[1]], c = verts[t.v[2]];
@@ -533,6 +624,8 @@ std::shared_ptr<const CollisionMesh> build_collision_mesh(
         if (vec_dot(cr, cr) <= 1e-16f)
             continue; // degenerate face
         out->triangles.push_back(t);
+        if (have_normals)
+            out->face_normals.push_back(normals[i]);
     }
     if (out->triangles.empty())
         return std::shared_ptr<const CollisionMesh>();
@@ -611,6 +704,35 @@ bool mesh_raycast(const CollisionMesh &m, const Pose &pose, Vec3 origin, Vec3 di
     hit->distance = best;
     hit->triangle = best_tri;
     return true;
+}
+
+int mesh_segment_cross(const CollisionMesh &m, const Pose &pose, Vec3 p0, Vec3 p1,
+                       std::vector<SegmentCross> *out)
+{
+    if (m.nodes.empty() || m.face_normals.size() != m.triangles.size())
+        return 0;
+    Mat34 rot = pose_rotation(pose);
+    Vec3 lo = mat_tvec(rot, p0 - pose.pos);
+    Vec3 hi = mat_tvec(rot, p1 - pose.pos);
+    Vec3 qmin{fminf(lo.x, hi.x), fminf(lo.y, hi.y), fminf(lo.z, hi.z)};
+    Vec3 qmax{fmaxf(lo.x, hi.x), fmaxf(lo.y, hi.y), fmaxf(lo.z, hi.z)};
+    std::vector<uint32_t> tris;
+    query_aabb(m, qmin, qmax, &tris);
+    int count = 0;
+    for (uint32_t ti : tris) {
+        const CollisionMesh::Triangle &t = m.triangles[ti];
+        Vec3 n = m.face_normals[ti];
+        Vec3 point;
+        float tt;
+        if (!segment_cross_face(lo, hi, m.vertices[t.v[0]], m.vertices[t.v[1]],
+                                m.vertices[t.v[2]], n, &point, &tt))
+            continue;
+        if (out)
+            out->push_back(
+                SegmentCross{pose.pos + mat_vec(rot, point), mat_vec(rot, n), tt, ti});
+        count++;
+    }
+    return count;
 }
 
 int mesh_contacts(const CollisionMesh &m, const Pose &mesh_pose, const Shape &prim,
