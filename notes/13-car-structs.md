@@ -749,3 +749,51 @@ my-side slot points back at the chassis. Real count 75 = ok installs on that car
 mass is not added twice (the printed total equals car_root, so load_part_cfg finds no part cfg
 for the car resource).
 
+
+### 15.2 `add_part`: who fills `Part.attachedParts` (2026-10-24, card 163 RE)
+`Part.attachedParts` (Part.java:263) is filled only by the exe: `Part.addpart(GameRef)` (Part.java:272,
+comment "a rendszer (g_car.cpp) hivja" = the system calls it). No shipped script sends `add_part`.
+Chain (asm-checked):
+- `Part__commitInstall 0x4c7d20` -> (car ref set) `0x4ca390(P, 0)` (ECX = type M):
+  `if (P+0xc8 /*car id*/ != P+8 /*own id*/) { sprintf(buf, "add_part %d", P /*the native part
+  pointer, EDI, 0x4ca3b3*/); Game__queueEvent 0x47d550(P+0xc0 /*car ref*/, 0, 0x10, buf, 0);`
+  (synchronous, notes/18 §1) `if (!param) P+0xac = getInfo(car, 0x3f); per-render +0x1b4/+0x1b8 = P+0xac }`.
+  Then (getInfo(car,7) == 5) add_light / add_wing / add_rollbar / add_mslot, add_linked, then for every
+  M slot of P with `flags & 2` (a child installed on P): child `+0xc0` ref := P `+0xcc` (car), child
+  `+0xd0` = P `+0xd0`, child `+0xac` = P `+0xac`, recurse `0x4ca390(child, 1)` (so a subtree installed
+  before it reached the car reports every part). Tail: `if (!param && car id != own id)` queue
+  `"updatevariables"` to the car.
+- Car side: `type_car__vf14 0x4a2e60`, word `add_part` (0x4a50bc): `Str__scan(buf, "%*s %d", &p)`
+  (0x569380), `0x4942b0(car, p)`, then `r = 0x4a8200(car, p); if (r) r+0x88 |= 1; return 1`.
+- `0x4942b0(car, P)`: append a `ResourceRefDLNode` (0x47b090, bound to P) to the car list
+  `car+0xfc..0x104`; car script instance (car typed `+0x50`, the Chassis object, Vehicle.java:111)
+  gets `GameObject__callScriptMethod 0x47dd50(typed, "addpart", 0, 4, GameRef(P), 0x4f)` =
+  `Part.addpart(GameRef)` -> `chassis.attachedParts.addElement(P script)`. Then engine bookkeeping
+  (car runtime slot 0x191 = engine slot: flag 0x4000 unless steam-neutralized, dynodata -> e+0xc30)
+  and the wheel-part branch (P+0xd0 in 101..400: per-wheel record `car+0x1414 + ((id-101)%10)*0x2e4`,
+  `+0x2e0` = first type slot with flags `0x100000`, offsets the wheel pivot). Not ported (card 163).
+- `0x4a8200(car, P)`: when the car's runtime slot holding P has a type-slot `+0x154` record, appends a
+  0x8c-byte entry at `car+0x151c + n*0x8c` (`n = car+0x1518++`) linking both bodies (hinge/joint-like
+  data; 0x4b10c0(0)); UNRESOLVED purpose (doors/hood?). Not ported.
+- Part side `type_part__vf14 0x4c4400` word `add_part` -> `0x4c17b0(part, P)`: the same list + script
+  `addpart` on a part host; no caller sends it to a part in shipped data (only 0x4ca390 sends add_part,
+  always to the car ref).
+So `chassis.attachedParts` = every committed install of the car (all depths), one entry per part.
+`Vehicle.isDriveable2` (Vehicle.java:288) walks it for Block/Battery/SteeringWheel/Pedals/FrontSeat;
+`Part.currentPrice/getCondition/repair*` (Part.java:491-680) sum over it.
+
+**src gap (2026-10-24, src at e170a7e):** `part_attach` (car.cpp ~715) never runs 0x4ca390, so
+`attachedParts` is empty: every bought car says "You can't drive this car because there's no engine
+installed." (Garage CMD_EVENTLIST 133, Garage.java:1587-1593), and dealer prices only count the
+chassis (used SunStrip $3516 vs $20472 with the parts summed).
+**Second gap:** `Runtime::script_instance` (runtime.cpp:706) resolves a record's direct-FQN
+`script java.game...` ref with `vm_->find_class` (loaded table only). The exe 0x51fcc0 sends that
+form to 0x55add0 `JVM::getClass`, which loads it through the package tree (notes/03 "Class load path").
+Classes no script names as a constant (all three batteries `parts.rpk` 0x53ff/0xe8/0xe9,
+`java.game.parts.accessories.stock_Battery_*`) get no script instance, `Part.addPart` installs
+nothing (`xa.create` returns null), so no used car ever has a battery. Scratch probe with both
+fixed: 76 entries in `chassis.attachedParts` of the freeride SunStrip, 16 of 20 browsed dealer cars
+`isDriveable() == null`, and Garage CMD_EVENTLIST -> `EventList(MODE_AMATEUR)` -> hint
+WarningDialog -> `eGen.osdCommand(CMD_RACE)` -> `java.game.Track` with `Track.game =
+java.game.CircuitRacing` (thread "circuit racing GM animation thread" alive), 0 failed threads;
+freeride selfcheck still 127/127 (car_root mass unchanged 1280.294 kg).

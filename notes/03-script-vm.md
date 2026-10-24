@@ -40,6 +40,8 @@ Address range of the VM code: roughly **0x548c40–0x565000** (~360 functions). 
 - Record loader 0x51fcc0 (rsd text of a type record): `script <dir>\Name.class` -> 0x55aca0(dir, Name):
   look the class up by dotted name in the VM's class table; if absent -> 0x55bec0(dir, Name).
   `script <FQN>` (no `.class`) -> 0x55add0(FQN). Empty -> "Missing class: %s".
+  0x55add0 loads on demand (package tree), so a class no script references still loads here; src
+  used the loaded-table lookup only (runtime.cpp:706, card 163, notes/13 §15.2).
 - 0x55bec0 = `JVM::compileSource` 0x5598f0(dir, Name), then read `<dir>\Name.class` (File__readAll
   0x565610; < 1 byte -> "JavaMachine::loadClass: failed to load <path>"), parse 0x554ee0, package check
   0x55f780 ("Package conflict: multiple packages placed at the same location (").

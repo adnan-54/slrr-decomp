@@ -205,3 +205,17 @@ list, `GameRef__getPhysBody` 0x4eabc0 -> body+0xb4 frame `+0x20c*0xd4`). src
 `natives::advance_sim` ports only the clock part; there is no process-wide physics world
 and no native ground object (`type_ground__vf3` 0x4bade0, notes/19 §1/§4), so the player
 car is never put into a world nor integrated. Card 137 = driver fix + hard check.
+
+## 6. Next gameplay step after card 162: career race entry (2026-10-24)
+Freeride Track loop needs nothing new: Freeride.java has no handleEvent; Track.handleEvent only
+re-arms its 1 s timer and message boxes (Track.java:1773-1867); Track.animate runs only through an
+animate hook (no shipped freeride path enables it). A real race starts from the Garage:
+CMD_EVENTLIST 133 (Garage.java:1587) -> `player.car.isDriveable()` -> `EventList(MODE_AMATEUR)`
+(careerEvents = EVENT_ROOT children, GameLogic.java:372) -> Generator CMD_RACE -> `Track(cEvent.careerGM)`.
+First blocker: `isDriveable()` fails ("no engine installed", then "missing a battery") because src
+never fills `chassis.attachedParts` (0x4ca390 add_part, notes/13 §15.2) and does not load
+record-named classes on demand (0x55add0). Card 163. With both fixed (scratch), the first career
+event loads `java.game.CircuitRacing` on a Track, 0 failed threads; car/physics checks of the
+freeride harness do not apply there (different map/grid). NEXT after 163: vmboot career flow
+(CMD_EVENTLIST + hint dialog + CMD_RACE) and what CircuitRacing needs per tick (countdown timers,
+checkpoint Triggers, bots via createBotCars/Bot/Navigator).
