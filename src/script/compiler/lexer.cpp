@@ -1,5 +1,6 @@
 #include "script/compiler/lexer.h"
 
+#include <cstring>
 #include <unordered_set>
 
 namespace {
@@ -209,10 +210,24 @@ bool lex_java(const std::string &src, std::vector<Token> *out, std::string *err)
 
         Token t;
         t.kind = TokKind::Punct;
-        t.text = std::string(1, (char)c);
         t.line = line;
+        // Java lexes the longest operator, and whitespace separates operators
+        // (`+ +` is not `++`). Longest first.
+        static const char *const punct_ops[] = {
+            ">>>=", "<<=", ">>=", ">>>", ">>", "<<", ">=", "<=", "==", "!=", "&&", "||",
+            "++",   "--",  "+=",  "-=",  "*=", "/=", "%=", "&=", "|=", "^=",
+        };
+        size_t len = 1;
+        for (const char *op : punct_ops) {
+            size_t olen = std::strlen(op);
+            if (i + olen <= n && std::strncmp(src.c_str() + i, op, olen) == 0) {
+                len = olen;
+                break;
+            }
+        }
+        t.text = src.substr(i, len);
         out->push_back(t);
-        i++;
+        i += len;
     }
 
     Token eof;

@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "script/compiler/lexer.h"
+
 struct TokenRange {
     int begin = 0; // first token index
     int end = 0;   // one past the last token index
@@ -57,4 +59,6 @@ struct JavaUnit {
 };
 
 // Returns false and sets *err to "<line>: <message>" on a syntax error.
-bool parse_java(const std::string &src, JavaUnit *out, std::string *err);
+// When tokens is non-null it receives the lexed file (body ranges index it).
+bool parse_java(const std::string &src, JavaUnit *out, std::string *err,
+                std::vector<Token> *tokens = nullptr);

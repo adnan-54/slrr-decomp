@@ -20,6 +20,7 @@
 #include "platform/fs.h"
 #include "resource/manager.h"
 #include "script/classfile.h"
+#include "script/compiler/body.h"
 #include "script/compiler/decl.h"
 #include "script/natives.h"
 #include "script/vm.h"
@@ -1138,7 +1139,12 @@ static int parse_java_cmd(int argc, char **argv)
         }
     }
 
-    size_t classes = 0, methods = 0;
+    size_t classes = 0, methods = 0, bodies = 0;
+    std::vector<std::string> first_failures;
+    auto fail = [&](const std::string &msg) {
+        failures++;
+        if (first_failures.size() < 20) first_failures.push_back(msg);
+    };
     for (const std::string &path : files) {
         std::string src, err;
         if (!read_text(path, &src)) {
@@ -1147,16 +1153,33 @@ static int parse_java_cmd(int argc, char **argv)
             continue;
         }
         JavaUnit unit;
-        if (!parse_java(src, &unit, &err)) {
-            std::fprintf(stderr, "%s:%s\n", path.c_str(), err.c_str());
-            failures++;
+        std::vector<Token> tokens;
+        if (!parse_java(src, &unit, &err, &tokens)) {
+            fail(path + ":" + err);
             continue;
         }
         classes += unit.classes.size();
-        for (const ClassDecl &c : unit.classes) methods += c.methods.size();
+        for (const ClassDecl &c : unit.classes) {
+            methods += c.methods.size();
+            for (const MethodDecl &m : c.methods) {
+                if (!m.has_body) continue;
+                BodyAst body;
+                bodies++;
+                if (!parse_method_body(tokens, m.body, &body, &err)) fail(path + ":" + err);
+            }
+            for (const FieldDecl &f : c.fields)
+                for (const Declarator &d : f.decls) {
+                    if (!d.has_init) continue;
+                    BodyAst body;
+                    bodies++;
+                    if (!parse_field_init(tokens, d.init, &body, &err))
+                        fail(path + ":" + err);
+                }
+        }
     }
-    std::printf("java parse: %zu files, %zu classes, %zu methods, %zu failures\n",
-                files.size(), classes, methods, failures);
+    for (const std::string &e : first_failures) std::fprintf(stderr, "%s\n", e.c_str());
+    std::printf("java parse: %zu files, %zu classes, %zu methods, %zu bodies, %zu failures\n",
+                files.size(), classes, methods, bodies, failures);
     return failures ? 1 : 0;
 }
 

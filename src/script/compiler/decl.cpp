@@ -342,7 +342,8 @@ struct Parser {
 
 } // namespace
 
-bool parse_java(const std::string &src, JavaUnit *out, std::string *err)
+bool parse_java(const std::string &src, JavaUnit *out, std::string *err,
+                std::vector<Token> *tokens_out)
 {
     std::vector<Token> tokens;
     std::string lex_err;
@@ -356,5 +357,6 @@ bool parse_java(const std::string &src, JavaUnit *out, std::string *err)
         if (err) *err = p.err;
         return false;
     }
+    if (tokens_out) *tokens_out = std::move(tokens);
     return true;
 }

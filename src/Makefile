@@ -9,6 +9,7 @@ BUILD := build
 
 LIB_SRC  := script/classfile.cpp script/vm.cpp script/packages.cpp script/natives.cpp \
             script/compiler/lexer.cpp script/compiler/decl.cpp \
+            script/compiler/body.cpp \
             resource/rpk.cpp resource/rdb.cpp resource/manager.cpp \
             parts/cfg.cpp physics/shape.cpp physics/world.cpp physics/mesh.cpp \
             mesh/scx.cpp render/device.cpp render/scene.cpp render/ui.cpp \
