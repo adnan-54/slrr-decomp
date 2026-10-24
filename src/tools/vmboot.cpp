@@ -1990,6 +1990,8 @@ void game_init_check(Boot &boot, Checker &c)
                     std::to_string((double)car_payload->steer_input) + ")");
         float omega_y = (float)(omega_sum / turn_frames);
         float vf = (float)(vf_sum / turn_frames);
+        // Card 169: Left's yaw direction is measured here, not assumed.
+        const float left_yaw_sign = omega_y >= 0.0f ? 1.0f : -1.0f;
         float r_kin = lwb > 1e-6f ? vf * std::tan(d_f) / lwb : 0.0f;
         float ratio = r_kin != 0.0f ? omega_y / r_kin : 0.0f;
         std::printf("  steer frame (0x4aa830): Lwb %.3f m, d_f %.4f rad, "
@@ -2284,6 +2286,252 @@ void game_init_check(Boot &boot, Checker &c)
                 "final speed is within the rev-limiter/top-gear bound (|vel| " +
                     std::to_string((double)final_speed) + " m/s <= top gear at peak "
                     "rpm " + std::to_string((double)v_peak) + " m/s)");
+        // Card 169 (INVENTED harness, no engine code): the exe steers only
+        // through the native bot driver (0x4803a0/0x480850/0x482630/0x486020),
+        // which is not ported. Follow the AI spline the script itself hands to
+        // those bots -- track_data.splinesAI.elementAt(0), driven in decreasing
+        // file index (0x486020 looks ahead at `param - d`). Keys are the ones
+        // the card-148 block above already uses.
+        {
+            auto read_int0 = [&](const char *field) {
+                Value av;
+                std::string e;
+                if (!game_object ||
+                    !boot.vm()->get_instance_field(game_object, field, &av, &e) ||
+                    av.kind != Value::Array || !av.arr || av.arr->elems.empty() ||
+                    av.arr->elems[0].kind != Value::Int)
+                    return -1;
+                return av.arr->elems[0].i;
+            };
+            const int nt0 = read_int0("nextTrigger");
+            restore_spawn();
+            game::car_command(*rt, car_res, 0x10, Value::make_str("reset"));
+            int spline_settle = 0;
+            while (std::fabs(car_payload->shaft_speed) > 1.0f && spline_settle < 300) {
+                frames(1);
+                spline_settle++;
+            }
+            std::vector<Vec3> spline;
+            std::string spline_path;
+            {
+                Object *live_track_data = nullptr;
+                Value ev, tv, spv, elv;
+                std::string se;
+                if (game_object &&
+                    boot.vm()->get_instance_field(game_object, "gmcEvent", &ev, &se) &&
+                    ev.kind == Value::Obj && ev.obj &&
+                    boot.vm()->get_instance_field(ev.obj, "track", &tv, &se) &&
+                    tv.kind == Value::Obj)
+                    live_track_data = tv.obj;
+                if (live_track_data &&
+                    boot.vm()->get_instance_field(live_track_data, "splinesAI", &spv, &se) &&
+                    spv.kind == Value::Obj && spv.obj &&
+                    rt->call_method(spv.obj, "elementAt", {Value::make_int(0)}, &elv, &se) &&
+                    elv.kind == Value::Str)
+                    spline_path = elv.s;
+                std::vector<uint8_t> bytes;
+                std::string read_err;
+                std::replace(spline_path.begin(), spline_path.end(), '\\', '/');
+                if (spline_path.empty())
+                    read_err = "no splinesAI on the live track_data";
+                // selfcheck() chdir'ed into kGameDir, so the script path is
+                // already relative to it.
+                else if (!fs::read_file(spline_path, &bytes, &read_err))
+                    bytes.clear();
+                if (!bytes.empty()) {
+                    std::string text(bytes.begin(), bytes.end());
+                    size_t at = 0;
+                    while (at < text.size()) {
+                        size_t nl = text.find('\n', at);
+                        std::string line = text.substr(
+                            at, nl == std::string::npos ? std::string::npos : nl - at);
+                        at = nl == std::string::npos ? text.size() : nl + 1;
+                        double x, y, z;
+                        if (std::sscanf(line.c_str(), "%lf %lf %lf", &x, &y, &z) == 3)
+                            spline.push_back(Vec3{(float)x, (float)y, (float)z});
+                    }
+                    std::reverse(spline.begin(), spline.end());  // decreasing file index
+                }
+                c.check(spline.size() > 2,
+                        "the live track_data splinesAI[0] (" + spline_path + ") loads (" +
+                            std::to_string(spline.size()) + " point(s)" +
+                            (read_err.empty() ? "" : ": " + read_err) + ")");
+            }
+            if (spline.size() > 2) {
+                // Closed polyline in x/z: cum[i] is the arc length up to point
+                // i (the closing segment is the zero-length last -> first one).
+                std::vector<float> cum(spline.size() + 1, 0.0f);
+                for (size_t i = 0; i < spline.size(); i++) {
+                    const Vec3 &a = spline[i], &b = spline[(i + 1) % spline.size()];
+                    cum[i + 1] = cum[i] + std::hypot(b.x - a.x, b.z - a.z);
+                }
+                const float total = cum.back();
+                auto point_at = [&](float s) {
+                    s = std::fmod(s, total);
+                    if (s < 0.0f) s += total;
+                    for (size_t i = 0; i < spline.size(); i++) {
+                        if (s <= cum[i + 1] || i + 1 == spline.size()) {
+                            float len = cum[i + 1] - cum[i];
+                            float t = len > 1e-6f ? (s - cum[i]) / len : 0.0f;
+                            const Vec3 &a = spline[i],
+                                       &b = spline[(i + 1) % spline.size()];
+                            return Vec3{a.x + (b.x - a.x) * t, 0.0f,
+                                        a.z + (b.z - a.z) * t};
+                        }
+                    }
+                    return spline.back();
+                };
+                auto project = [&](float x, float z, float *dist) {
+                    float best = 1e30f, best_s = 0.0f;
+                    for (size_t i = 0; i < spline.size(); i++) {
+                        const Vec3 &a = spline[i], &b = spline[(i + 1) % spline.size()];
+                        float dx = b.x - a.x, dz = b.z - a.z;
+                        float len2 = dx * dx + dz * dz;
+                        float t = len2 > 1e-12f
+                                      ? ((x - a.x) * dx + (z - a.z) * dz) / len2
+                                      : 0.0f;
+                        t = std::max(0.0f, std::min(1.0f, t));
+                        float px = a.x + dx * t, pz = a.z + dz * t;
+                        float d2 = (x - px) * (x - px) + (z - pz) * (z - pz);
+                        if (d2 < best) {
+                            best = d2;
+                            best_s = cum[i] + t * (cum[i + 1] - cum[i]);
+                        }
+                    }
+                    if (dist) *dist = std::sqrt(best);
+                    return best_s;
+                };
+                auto seg_dir = [&](float q) {
+                    Vec3 a = point_at(q), b = point_at(q + 2.0f);
+                    float l = std::hypot(b.x - a.x, b.z - a.z);
+                    return l > 1e-4f ? Vec3{(b.x - a.x) / l, 0.0f, (b.z - a.z) / l}
+                                     : Vec3{0.0f, 0.0f, 0.0f};
+                };
+                auto turn_ahead = [&](float s) {
+                    // Net heading change over the next 40 m (20 m samples): a
+                    // polyline that turns more than 0.6 rad is a corner.
+                    Vec3 d0 = seg_dir(s), d1 = seg_dir(s + 20.0f),
+                         d2 = seg_dir(s + 40.0f);
+                    float t = 0.0f;
+                    if (vec_length(d0) > 0.5f && vec_length(d1) > 0.5f)
+                        t += std::fabs(std::atan2(d0.z * d1.x - d0.x * d1.z,
+                                                  vec_dot(d0, d1)));
+                    if (vec_length(d1) > 0.5f && vec_length(d2) > 0.5f)
+                        t += std::fabs(std::atan2(d1.z * d2.x - d1.x * d2.z,
+                                                  vec_dot(d1, d2)));
+                    return t;
+                };
+                // The reversed polyline must run the way the car faces at the
+                // spawn projection; do not flip the steering silently.
+                float spawn_off = 0.0f;
+                float spawn_s = project(root->pos.x, root->pos.z, &spawn_off);
+                Vec3 sd = seg_dir(spawn_s);
+                Vec3 fw = mat_vec(root->rotation(), Vec3{0.0f, 0.0f, fwd_sign});
+                float fwl = std::hypot(fw.x, fw.z);
+                Vec3 fh = fwl > 1e-4f ? Vec3{fw.x / fwl, 0.0f, fw.z / fwl}
+                                      : Vec3{0.0f, 0.0f, 0.0f};
+                float dir_dot = vec_dot(fh, sd);
+                c.check(dir_dot >= 0.0f,
+                        "the reversed spline runs with the car forward at the spawn "
+                        "projection (dot " + std::to_string((double)dir_dot) +
+                            ", spawn " +
+                            std::to_string((double)spawn_off) + " m from the polyline)");
+                RigidBody *cp0 = nullptr;  // cpTrigger[0]'s sensor body
+                {
+                    Value av, tgv;
+                    std::string e;
+                    if (game_object &&
+                        boot.vm()->get_instance_field(game_object, "cpTrigger", &av, &e) &&
+                        av.kind == Value::Array && av.arr && !av.arr->elems.empty() &&
+                        av.arr->elems[0].kind == Value::Obj && av.arr->elems[0].obj &&
+                        boot.vm()->get_instance_field(av.arr->elems[0].obj, "trigger",
+                                                      &tgv, &e) &&
+                        tgv.kind == Value::Obj && tgv.obj) {
+                        Runtime::Handle *th = rt->handle(tgv.obj);
+                        cp0 = th && th->target ? th->target->trigger_body.get() : nullptr;
+                    }
+                }
+                float max_off = 0.0f, closest_cp = 1e30f;
+                Vec3 first_off_pos{0.0f, 0.0f, 0.0f};
+                float first_off_speed = 0.0f;
+                int used = 0, next_trigger = -1;
+                for (int i = 0; i < 4000; i++) {
+                    frames(1);
+                    used = i + 1;
+                    float off = 0.0f;
+                    float s = project(root->pos.x, root->pos.z, &off);
+                    // Print only: where the car left the spline and how fast it
+                    // was going (10 m is ~5 route widths).
+                    if (off > 10.0f && max_off <= 10.0f) {
+                        first_off_pos = root->pos;
+                        first_off_speed = vec_length(root->vel);
+                    }
+                    max_off = std::max(max_off, off);
+                    if (cp0) closest_cp = std::min(closest_cp,
+                                                   vec_length(root->pos - cp0->pos));
+                    float vh = std::hypot(root->vel.x, root->vel.z);
+                    float vl = vec_length(root->vel);
+                    float L = std::min(30.0f, std::max(8.0f, 8.0f + 0.6f * vl));
+                    Vec3 tgt = point_at(s + L);
+                    float a = 0.0f;
+                    if (vh > 2.0f) {
+                        Vec3 h{root->vel.x / vh, 0.0f, root->vel.z / vh};
+                        float tl = std::hypot(tgt.x - root->pos.x, tgt.z - root->pos.z);
+                        Vec3 to{(tgt.x - root->pos.x) / tl, 0.0f,
+                                (tgt.z - root->pos.z) / tl};
+                        a = std::atan2(h.z * to.x - h.x * to.z,
+                                       h.x * to.x + h.z * to.z);
+                    }
+                    float want_speed =
+                        (std::fabs(a) > 0.25f || turn_ahead(s) > 0.6f) ? 12.0f : 30.0f;
+                    key(203, vh > 2.0f && a * left_yaw_sign > 0.05f);
+                    key(205, vh > 2.0f && a * left_yaw_sign < -0.05f);
+                    key(200, vl < want_speed);
+                    key(208, vl > want_speed + 3.0f);
+                    next_trigger = read_int0("nextTrigger");
+                    if (next_trigger > nt0) break;
+                }
+                key(200, false);
+                key(208, false);
+                key(203, false);
+                key(205, false);
+                frames(1);
+                int rp_total = read_int0("rpTotal");
+                Value lv;
+                std::string le;
+                int cur_lap = -1;
+                if (game_object &&
+                    boot.vm()->get_instance_field(game_object, "current_lap", &lv, &le) &&
+                    lv.kind == Value::Int)
+                    cur_lap = lv.i;
+                std::printf("  spline driver (INVENTED, %s): %d frame(s), nt0 %d, "
+                            "nextTrigger[0] %d, rpTotal[0] %d, current_lap %d, pos "
+                            "%.2f %.2f %.2f, closest cp0 %.2f m, max spline distance "
+                            "%.2f m, left the spline (>10 m) at %.2f %.2f %.2f with "
+                            "|v| %.2f m/s\n",
+                            spline_path.c_str(), used, nt0, next_trigger, rp_total,
+                            cur_lap, (double)root->pos.x, (double)root->pos.y,
+                            (double)root->pos.z,
+                            closest_cp < 1e29f ? (double)closest_cp : -1.0,
+                            (double)max_off, (double)first_off_pos.x,
+                            (double)first_off_pos.y, (double)first_off_pos.z,
+                            (double)first_off_speed);
+                c.check(std::fabs(omega_y) > 0.05f,
+                        "Left yaws the car (|mean angular velocity y| > 0.05 rad/s "
+                        "over the card-170 turn frames, got " +
+                            std::to_string((double)omega_y) + ")");
+                c.check(nt0 == 0 && next_trigger == 1,
+                        "the spline driver itself observes checkpoint 0 "
+                        "(CircuitRacing.handleCheckpoint, nt0 " +
+                            std::to_string(nt0) + " -> nextTrigger[0] " +
+                            std::to_string(next_trigger) + " after " +
+                            std::to_string(used) + " frame(s), closest cp0 " +
+                            std::to_string(closest_cp < 1e29f ? (double)closest_cp
+                                                              : -1.0) +
+                            " m, max spline distance " +
+                            std::to_string((double)max_off) + " m)");
+            }
+        }
         // Card 161 check 4. INVENTED harness: force the largest shipped C_drag /
         // drag_center onto the player car (the exe reaches it by removing the
         // parts that reduce C_drag) and keep driving 300 frames.
