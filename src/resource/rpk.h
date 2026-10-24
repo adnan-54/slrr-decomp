@@ -35,6 +35,25 @@ struct RpkRecord {
     uint8_t extra[48] = {};
 };
 
+// One triangle of a type-1 blob's PHYS chunk (0x519940): material index and
+// three vertex indices into the chunk's vertex array (verts/3).
+struct RpkPhysFace {
+    uint32_t mat = 0;
+    uint32_t v[3] = {};
+    float n[3] = {};
+};
+
+// Parsed data of a type-1 (game instance) record. parse_instance walks only
+// the direct children; callers recurse into the type-1 ones.
+struct RpkInstanceData {
+    std::vector<RpkRecord> children;   // embedded records, same layout as the table
+    std::vector<RpkPhysFace> faces;    // all PHYS chunks, indices offset into verts
+    std::vector<float> verts;          // xyz triples, metres in the world frame
+    std::vector<uint32_t> extp;        // EXTP precache ids
+    std::string rsd;                   // RSD text chunks concatenated
+    int phys_chunks = 0;
+};
+
 class RpkArchive {
 public:
     // Strict parse: header, version, sub-package table, record table and every
@@ -52,6 +71,11 @@ public:
     size_t table_offset = 0;   // record table start
     size_t table_end = 0;      // record table end = data area start
     std::vector<RpkRecord> records;
+
+    // 0x519940 ResourceInstance_Game__loadData: embedded child records, PHYS
+    // triangle soup, EXTP ids and RSD text of a type-1 record's data.
+    bool parse_instance(const RpkRecord &rec, RpkInstanceData *out,
+                        std::string *err) const;
 
     size_t size() const { return bytes_.size(); }
     const RpkRecord *find(uint32_t id) const;

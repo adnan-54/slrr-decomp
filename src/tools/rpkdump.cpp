@@ -15,9 +15,11 @@
 #include <string.h>
 
 #include <algorithm>
+#include <set>
 #include <string>
 #include <vector>
 
+#include "platform/fs.h"
 #include "resource/rdb.h"
 #include "resource/rpk.h"
 
@@ -331,6 +333,105 @@ struct Checker {
     }
 };
 
+// Map packages and their shipped type-1 blob totals (notes/19 §7). The .scm
+// path is null where the map has no materials list (mat meaning UNRESOLVED).
+struct MapRow {
+    const char *name;
+    const char *rpk_path;
+    const char *scm_path;
+    size_t instances, phys_chunks, faces, verts;
+};
+
+static const MapRow kMapRows[] = {
+    {"city", "bin/the game/maps/city.rpk", "bin/the game/maps/city/meshes/city.scm",
+     58210, 23976, 197286, 236064},
+    {"city2", "bin/the game/maps/city2.rpk", "bin/the game/maps/city2/meshes/city2.scm",
+     56689, 19040, 251902, 276107},
+    {"test_track", "bin/the game/maps/test_track.rpk", nullptr, 12224, 6420, 66825, 77132},
+    {"roc_track", "bin/the game/maps/ROC_track.rpk", nullptr, 10894, 5147, 55040, 61777},
+};
+
+struct MapTally {
+    size_t instances = 0, phys_chunks = 0, faces = 0, verts = 0;
+    size_t parse_failures = 0, multi_phys = 0, duplicate_ids = 0;
+    uint32_t max_mat = 0;
+    std::set<uint32_t> child_ids;
+};
+
+static void walk_map_instance(const RpkArchive &rpk, const RpkRecord &rec, MapTally &t)
+{
+    RpkInstanceData inst;
+    std::string err;
+    if (!rpk.parse_instance(rec, &inst, &err)) {
+        if (t.parse_failures < 3)
+            std::printf("    %s: %s\n", rec.name.c_str(), err.c_str());
+        t.parse_failures++;
+        return;
+    }
+    t.instances++;
+    t.phys_chunks += (size_t)inst.phys_chunks;
+    if (inst.phys_chunks > 1) t.multi_phys++;
+    t.faces += inst.faces.size();
+    t.verts += inst.verts.size() / 3;
+    for (const RpkPhysFace &f : inst.faces)
+        if (f.mat > t.max_mat) t.max_mat = f.mat;
+    for (const RpkRecord &child : inst.children) {
+        if (!t.child_ids.insert(child.id).second) t.duplicate_ids++;
+        if (child.type == 1) walk_map_instance(rpk, child, t);
+    }
+}
+
+static unsigned scm_materials(const char *path)
+{
+    std::vector<uint8_t> bytes;
+    std::string err;
+    if (!fs::read_file(path, &bytes, &err)) return 0;
+    std::string text(bytes.begin(), bytes.end());
+    unsigned n = 0;
+    if (std::sscanf(text.c_str(), "materials %u", &n) != 1) return 0;
+    return n;
+}
+
+static void selfcheck_maps(Checker &c)
+{
+    for (const MapRow &row : kMapRows) {
+        if (!fs::exists(row.rpk_path)) {
+            std::printf("  note: %s missing, map check skipped\n", row.rpk_path);
+            continue;
+        }
+        RpkArchive rpk;
+        std::string err;
+        if (!rpk.load(row.rpk_path, &err)) {
+            c.check(false, std::string(row.name) + ": archive parses: " + err);
+            continue;
+        }
+        MapTally t;
+        for (const RpkRecord &rec : rpk.records)
+            if (rec.type == 1) walk_map_instance(rpk, rec, t);
+        std::printf("  map %-9s type-1 %6zu, PHYS %5zu, faces %7zu, verts %7zu\n",
+                    row.name, t.instances, t.phys_chunks, t.faces, t.verts);
+        c.check(t.parse_failures == 0,
+                std::string(row.name) + ": every type-1 blob parses (" +
+                    std::to_string(t.parse_failures) + " failure(s))");
+        c.check(t.instances == row.instances && t.phys_chunks == row.phys_chunks &&
+                    t.faces == row.faces && t.verts == row.verts,
+                std::string(row.name) + ": totals match the corpus table (type-1 " +
+                    std::to_string(row.instances) + ", PHYS " +
+                    std::to_string(row.phys_chunks) + ", faces " +
+                    std::to_string(row.faces) + ", verts " + std::to_string(row.verts) + ")");
+        c.check(t.duplicate_ids == 0,
+                std::string(row.name) + ": embedded child ids are unique per map");
+        c.check(t.multi_phys == 0,
+                std::string(row.name) + ": no blob has more than one PHYS chunk");
+        if (row.scm_path) {
+            unsigned materials = scm_materials(row.scm_path);
+            c.check(materials > 0 && t.max_mat < materials,
+                    std::string(row.name) + ": max mat " + std::to_string(t.max_mat) +
+                        " < " + std::to_string(materials) + " .scm materials");
+        }
+    }
+}
+
 static bool check_door_part(const RpkArchive &rpk, const Rdb &rdb, Checker &c)
 {
     const RpkRecord *rec = rpk.find(0xD2);
@@ -536,6 +637,7 @@ static int selfcheck(int argc, char **argv)
     for (int i = 0; i < argc; i += 2)
         selfcheck_pair(argv[i], argv[i + 1], c, &door_seen);
     c.check(door_seen, "Axis pair with part 0x000000d2 was among the checked pairs");
+    selfcheck_maps(c);
     std::printf("selfcheck: %s (%d failure(s))\n", c.failures ? "FAILED" : "PASSED",
                 c.failures);
     if (c.failures) std::fprintf(stderr, "selfcheck FAILED (%d failure(s))\n", c.failures);

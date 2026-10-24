@@ -22,6 +22,7 @@
 #include "platform/fs.h"
 #include "physics/physics.h"
 #include "resource/manager.h"
+#include "resource/rpk.h"
 #include "script/classfile.h"
 #include "script/compiler/decl.h"
 #include "script/natives.h"
@@ -177,6 +178,31 @@ struct Checker {
 bool contains(const std::vector<std::string> &v, const std::string &s)
 {
     return std::find(v.begin(), v.end(), s) != v.end();
+}
+
+// Type-1 blob tree totals (notes/19 §7); only type-1 children are parsed.
+struct MapTally {
+    size_t instances = 0, phys_chunks = 0, faces = 0, verts = 0;
+};
+
+void walk_map_instance(const RpkArchive &rpk, const RpkRecord &rec, MapTally &t,
+                       std::string *err)
+{
+    RpkInstanceData inst;
+    if (!rpk.parse_instance(rec, &inst, err)) return;
+    t.instances++;
+    t.phys_chunks += (size_t)inst.phys_chunks;
+    t.faces += inst.faces.size();
+    t.verts += inst.verts.size() / 3;
+    for (const RpkRecord &child : inst.children)
+        if (child.type == 1) walk_map_instance(rpk, child, t, err);
+}
+
+std::string lower_ascii(std::string s)
+{
+    for (char &c : s)
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+    return s;
 }
 
 uint32_t float_bits(float f)
@@ -623,6 +649,7 @@ void game_init_check(Boot &boot, Checker &c)
     c.check(class_after == "java.game.Track",
             "testdrive -> race reaches java.game.Track (got " + class_after + ")");
     std::string game_after = "(none)", map_after = "(none)";
+    Object *map_object = nullptr;
     if (have_state_after && state_after.kind == Value::Obj && state_after.obj) {
         Value gv, mv;
         std::string ferr;
@@ -631,13 +658,72 @@ void game_init_check(Boot &boot, Checker &c)
             game_after = object_class(boot, gv.obj);
         ferr.clear();
         if (boot.vm()->get_instance_field(state_after.obj, "map", &mv, &ferr) &&
-            mv.kind == Value::Obj && mv.obj)
+            mv.kind == Value::Obj && mv.obj) {
             map_after = object_class(boot, mv.obj);
+            map_object = mv.obj;
+        }
     }
     c.check(game_after == "java.game.Freeride",
             "Track.game is the freeride gamemode (got " + game_after + ")");
     c.check(map_after == "java.util.resource.GroundRef",
             "Track.map is a non-null GroundRef (got " + map_after + ")");
+
+    // 0x519940: Track.map's record carries the embedded type-1 tree whose PHYS
+    // chunks are the map collision (notes/19 §7).
+    Runtime::Resource *map_res = nullptr;
+    if (map_object) {
+        Runtime::Handle *mh = boot.runtime()->handle(map_object);
+        if (mh) map_res = mh->target;
+    }
+    MapTally mt;
+    std::string map_err, map_name = "(none)";
+    if (map_res && map_res->record && map_res->package) {
+        map_name = map_res->record->name;
+        walk_map_instance(map_res->package->rpk, *map_res->record, mt, &map_err);
+    } else {
+        map_err = "Track.map has no record-backed handle target";
+    }
+    std::printf("  map %s (record 0x%08x): %zu type-1 instance(s), %zu PHYS chunk(s), "
+                "%zu face(s), %zu vert(s)\n",
+                map_name.c_str(), map_res && map_res->record ? map_res->record->id : 0u,
+                mt.instances, mt.phys_chunks, mt.faces, mt.verts);
+    c.check(map_err.empty(), "Track.map type-1 blob tree parses" +
+                                 (map_err.empty() ? std::string() : ": " + map_err));
+    c.check(mt.faces > 0, "freeride map has ground triangles (" +
+                              std::to_string(mt.faces) + ")");
+    // Corpus rows from notes/19 §7, keyed by the package leaf name.
+    struct MapRow {
+        const char *name;
+        size_t instances, phys_chunks, faces, verts;
+    };
+    static const MapRow rows[] = {
+        {"city", 58210, 23976, 197286, 236064},
+        {"city2", 56689, 19040, 251902, 276107},
+        {"test_track", 12224, 6420, 66825, 77132},
+        {"roc_track", 10894, 5147, 55040, 61777},
+    };
+    std::string leaf = map_res && map_res->package ? map_res->package->rpk_path : "";
+    size_t sep = leaf.find_last_of("\\/");
+    if (sep != std::string::npos) leaf = leaf.substr(sep + 1);
+    leaf = lower_ascii(leaf);
+    if (leaf.size() >= 4 && leaf.compare(leaf.size() - 4, 4, ".rpk") == 0)
+        leaf.resize(leaf.size() - 4);
+    const MapRow *row = nullptr;
+    for (const MapRow &r : rows)
+        if (leaf == r.name || lower_ascii(map_name) == r.name) row = &r;
+    if (row) {
+        c.check(mt.instances == row->instances && mt.phys_chunks == row->phys_chunks &&
+                    mt.faces == row->faces && mt.verts == row->verts,
+                std::string("freeride map ") + row->name + " totals match the corpus table");
+    } else {
+        // INVENTED: the shipped freeride event picks multibot/maps/A1Ring.rpk,
+        // outside the card's four-map corpus; use the record layout instead:
+        // Track.map must be the package's top type-1 record (id 1, notes/01).
+        c.check(map_res && map_res->record && map_res->record->id == 1 &&
+                    map_res->record->type == 1,
+                "freeride map record is the package's type-1 master (id 1)");
+        std::printf("  note: %s has no corpus table row (multibot map)\n", leaf.c_str());
+    }
 
     // INVENTED: Gamemode.wakeUpCars (Gamemode.java:799) is not called -- its
     // Track.java:1056 call is commented out; in the exe the freeride car wakes
