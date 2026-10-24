@@ -1,9 +1,9 @@
 # Script compiler (.java -> TUFA .class) — plan
 
-Why: 621 shipped scripts exist only as `<dir>/src/Name.java` (418 car parts under cars/racers,
-135 wheels, 38 running gear, 28 engines, multibot track_data for every freeride map). The exe
-compiles them at class load (JVM::compileSource 0x5598f0, notes/03). Without it, freeride
-(`CareerEvent.init` -> `track_data` create) and most car parts cannot run.
+Why: 635 shipped scripts exist only as `<dir>/src/Name.java` (418 car parts under cars/racers,
+135 wheels, 38 running gear, 28 engines, 16 package-root base classes; see "Compile on load").
+The exe compiles them at class load (JVM::compileSource 0x5598f0, notes/03). Without it most
+car parts cannot run.
 
 Verification (real data only): 2,742 shipped `src/Name.java` + `Name.class` pairs. The target is
 behaviour-equivalent output; byte equality with the shipped .class is the strongest check and
@@ -220,3 +220,61 @@ Card 134 ports this.
   207 body differences are the known stale/float set: 189 float 1-ulp, 5 getBlock returns
   (Center_Differential `()Part` vs `()Block`), 5 transmissions with `TT_AUTO`/`TT_MANUAL*`
   inlined, 4 edited strings, 3 neontube line shifts, 1 Garage httpRequestAsync call.
+
+## Compile on load (traced 2026-10-24, Ghidra)
+
+Callers: record `script <dir>\Name.class` 0x51fcc0 -> 0x55aca0 (dir\Name -> dotted, scans the
+loaded-class hash; absent -> 0x55bec0); getClass 0x55add0 -> 0x55c0c0 findDir -> 0x55bec0.
+JavaMachine::loadClass 0x55bec0 always calls JVM::compileSource 0x5598f0(dir, Name) first
+(return value ignored), then reads `<dir>\Name.class` (File__readAll; < 1 byte -> log
+"JavaMachine::loadClass: failed to load <path>", return 0), JVM::addClass 0x554ee0, package
+register 0x55f780.
+
+0x5598f0 compileSource(dir, Name):
+- src = `dir + "\src\" + Name + ".java"`, cls = `dir + "\" + Name + ".class"` (0x100-char
+  buffers). Existence 0x565200 (game file system: `/`->`\`, packed-file lookup 0x527bf0 when
+  DAT_007a5b50, else disk 0x545490).
+- recompile = cls missing, OR (src exists AND time(cls) != time(src)), OR header bad. Time
+  0x564ef0 -> 0x5453b0: GetFileTime last-write (UTC) -> FileTimeToDosDateTime ->
+  `(dostime >> 1) | (dosdate << 15)` (lossy, overlapping bits; missing file -> 0). Header:
+  first 12 bytes; bad = `(magic != "TUFA" || ver != 4 || build != 0x11ae1) && build != 0x24f9d`
+  (so build word 0x24f9d alone is accepted whatever the magic/version; old stamp 0x24f5c is bad).
+- src missing: not needed -> return 1; needed -> log `JVM::compileSource: recompilation needed
+  of "<src>" but source not exists` (0x5695c0, log only) and return 1: the old .class (if any)
+  is still read by 0x55bec0.
+- not needed -> return 1 (no work).
+- compile: delete cls first (0x564fa0: close cached handle 0x565980, DeleteFileA 0x545420);
+  open src (0x565760; fail -> log `JVM::compileSource: file not found: "<src>"`, return 0);
+  this+0x70 line = 0, this+0x74 = src path, this+0x48 = dir, new ConstantPool 0x54ac80 ->
+  DAT_007a25c0; DAT_007a2518 (parse root) = 0; yyparse 0x54db20; close. Root set ->
+  JVM::compileHook 0x5557c0.
+- after: if cls still does not exist -> `JVM::compileSource: Syntax error in "%s" at line %d`
+  -> 0x569570(-1) -> 0x544e80: MessageBox + `_exit(-1)` (the game quits). Else the cls time is
+  set to the src time (0x5658d0 -> 0x545cb0 SetFileTime), so the next start does not recompile.
+- Result IS written to disk, beside the source dir: compileHook 0x5557c0 opens
+  `dir + "\" + <first class's simple name> + ".class"` for writing (0x5657b0, at the first class
+  of the unit), writes header (stamp rule above) + CONS/FILD/MTHD/CLSS/TREE per class via
+  0x565950, closes at 0x559723. If the first class name differs from the file name, 0x55bec0
+  then fails to read `<dir>\Name.class` (log only).
+- Semantic errors inside compileHook ("cannot find parent class", "no such class",
+  "field name reused", "missing 'return (expr)'", "local variable redefinition", ...) are
+  logged via 0x5695c0 and compilation continues: the .class is still written.
+- What it compiles against: no separate index. compileHook registers the unit's package with
+  dir (0x55f780, "java.unnamed" when none), names resolve via getFQN 0x55b1d0 (imports +
+  0x55c7a0 package tree) and members via 0x55aa20 -> 0x55b130 (loaded classes) else
+  JVM::getClass 0x55add0, which loads (and recursively compiles) the referenced class. Resource
+  literals go through the live global name registry 0x518940 (see "Resource literal casing").
+
+Shipped data (bin/the game, case-insensitive pairing `<dir>\src\X.java` <-> `<dir>\X.class`):
+- 635 java-only sources: 418 cars/racers part scripts, parts/wheels 135, parts/running_gear 38,
+  parts/engines 28, parts/scripts 15 (package-root base classes: enginepart Driveshaft,
+  IgnitionModule, bodypart RollCage, rgearpart.suspension FL/FR/RL/RRMcPhersonStrut,
+  FLDoubleWishbone, DrumBrake, Block_Vee_OHV, OHV/SOHC Camshaft/CylinderHead,
+  Transaxle_Differential), parts/accessories 1 (NOS_canister_48pds). Correction to the intro:
+  all 60 multibot `maps/*/data/track_data.class` exist, so freeride does not need the compiler.
+  Source dir spelling varies (`src`, `SRC`, `Src`).
+- 2819 pairs: 166 headers fail the check (152 old stamp 0x24f5c + others) and in this copy
+  1126 pairs have differing DOS times (files copied 2026-07-05): the exe would recompile and
+  overwrite all of those here.
+- src today: packages.cpp load_class_at prints "SERVICE MISSING (no compiler)" and fails.
+  Card 135 hooks the compiler for the missing-.class case, in memory.
