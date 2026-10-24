@@ -1615,6 +1615,31 @@ static void auto_gearbox(CarData &c, float tear, float now)
     move();
 }
 
+// 0x4ad480: semi-auto gearbox (flags 0x20). "transmission 5" leaves the auto
+// box 0x10 off, so this is the only shifter: it up/down-shifts from the shaft
+// speed while the driven wheels grip, and re-engages 1st below 0 rpm.
+static void semi_auto(CarData &c, float tear, float now)
+{
+    if (!(tear > 0.0f) || !(c.flags & 0x4000u) || (c.flags & 0x40004u) ||
+        c.gears == 0 || c.gear == 7 || c.gear == 0 ||
+        !(std::fabs(drive_slip(c)) < 0.2f))
+        return;
+    float w = c.shaft_speed * c.gear_ratio * c.rearend_ratio;
+    float r = w * 9.549296f;
+    float T = c.rpm_limit <= r ? 0.0f : c.torque_at(r);
+    if (0.0f <= r) {
+        c.semi_shifts += upshift(c, r, T, w, now);
+        c.semi_shifts += downshift(c, r, T, now);
+        return;
+    }
+    if (c.shift_t74 <= 0.0f) {
+        c.gear = 1;
+        c.shift_end = now + 0.2f;
+        shift_timers(c, false, now);
+        c.semi_shifts++;
+    }
+}
+
 // 0x4977a0 (e, car, dt): automatic clutch. Moves clutch_input toward the
 // launch target: 1 (open) above the 1.2*limiter shaft speed, else the launch
 // curve between idle and the launch rpm.
@@ -1764,6 +1789,7 @@ void control_cars(float dt)
         // 0x497930 auto gearbox, 0x4977a0 auto clutch (transmission flags 0x10
         // and 0x40, set by player_transmission 0x4a37f0).
         if (c->flags & 0x10u) auto_gearbox(*c, tear, now);
+        if (c->flags & 0x20u) semi_auto(*c, tear, now);
         if (c->flags & 0x40u) auto_clutch(*c, tear, dt);
         // 0x4b04a0 shift timers.
         if (c->starter_timer >= 0.0f) c->throttle = 0.0f;
@@ -1784,9 +1810,9 @@ void control_cars(float dt)
         if (c->shift_t70 > 0.0f && c->shift_t70 <= now) c->shift_t70 = -1.0f;
         if (c->shift_t74 > 0.0f && c->shift_t74 <= now) c->shift_t74 = -1.0f;
         if (c->shift_t70 < 0.0f && c->shift_t74 < 0.0f) c->shifting = 0;
-        // shortcut: semi-auto 0x4ad480 (flags 0x20), speed limiter 0x1000,
-        // steer assist 0x2000, flags 0x80/0x100/0x4000000 helpers and the
-        // aero/slot-object axis lists are later cards.
+        // shortcut: speed limiter 0x1000, steer assist 0x2000, flags
+        // 0x80/0x100/0x4000000 helpers and the aero/slot-object axis lists are
+        // later cards.
         c->flags &= ~0x03000000u;
         float k = std::min(10.0f * dt, 1.0f);
         c->throttle = old_thr + (c->throttle - old_thr) * k;

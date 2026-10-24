@@ -1516,6 +1516,10 @@ void game_init_check(Boot &boot, Checker &c)
     // Up (0xc8) -> axis 28 throttle, Left/Right (0xcb/0xcd) -> axis 1 steer.
     if (car_payload && car_payload->root_body) {
         RigidBody *root = car_payload->root_body;
+        // INVENTED harness: spawn pose, restored before the independent
+        // semi-auto run (the earlier launches reach the map edge).
+        const Vec3 semi_spawn = root->pos;
+        const Quat semi_rot = root->rot;
         int fr = kFrames + 300;
         auto key = [](int dik, bool down) {
             g_input->devices[0].raw.keys[dik] = down ? 0x80 : 0;
@@ -1838,6 +1842,114 @@ void game_init_check(Boot &boot, Checker &c)
                         std::to_string((double)final_v) + " <= " +
                         std::to_string((double)v_top) + " m/s)");
         }
+        // Card 162: semi-auto gearbox 0x4ad480 (transmission flag 0x20).
+        // INVENTED harness: Track.enter sends "transmission " +
+        // Config.player_transmission (default 1); 5 is the shipped
+        // Vehicle.TRANSMISSION_SEMIAUTO.
+        // INVENTED harness: the 1200 frames above have carried the car to the
+        // edge of the test-track ground, so put it back at the spawn pose.
+        root->pos = semi_spawn;
+        root->rot = semi_rot;
+        root->vel = Vec3{0.0f, 0.0f, 0.0f};
+        root->angular_momentum = Vec3{0.0f, 0.0f, 0.0f};
+        root->pos_correction = Vec3{0.0f, 0.0f, 0.0f};
+        if (sim)
+            for (Wheel &w : sim->wheels) {
+                w.spin = 0.0f;
+                w.kappa_prev = 0.0f;
+            }
+        game::car_command(*rt, car_res, 0x10, Value::make_str("transmission 5"));
+        c.check((car_payload->flags & 0x70u) == 0x60u,
+                "transmission 5 sets the semi-auto flags 0x20|0x40 (got " +
+                    std::to_string(car_payload->flags & 0x70u) + ")");
+        game::car_command(*rt, car_res, 0x10, Value::make_str("reset"));
+        int semi_settle = 0;
+        while (std::fabs(car_payload->shaft_speed) > 1.0f && semi_settle < 300) {
+            frames(1);
+            semi_settle++;
+        }
+        // Check 2: neutral stays while throttle is held and no shift key is
+        // pressed (0x4ad480 returns at gear 0; the auto box 0x10 is off).
+        key(200, true);
+        bool semi_neutral = true;
+        for (int i = 0; i < 60; i++) {
+            frames(1);
+            if (car_payload->gear != 0) semi_neutral = false;
+        }
+        key(200, false);
+        c.check(semi_neutral,
+                "transmission 5 stays in neutral under throttle with no shift key "
+                "(0x4ad480 returns at gear 0)");
+        // Check 3: the 0x498300 shift block engages 1st from neutral.
+        key(0x1e, true);
+        frames(10);
+        key(0x1e, false);
+        frames(10);
+        int semi_gear = car_payload->gear;
+        c.check(car_payload->gears > 0 && semi_gear == 1,
+                "A shifts neutral -> 1st under transmission 5 (got gear " +
+                    std::to_string(semi_gear) + ", gears " +
+                    std::to_string(car_payload->gears) + ")");
+        // Check 4: drive with no shift key; only 0x4ad480 may shift.
+        if (car_payload->gears > 0 && semi_gear == 1) {
+            car_payload->semi_shifts = 0;
+            std::vector<int> semi_gears;
+            key(200, true);
+            for (int i = 0; i < 600; i++) {
+                frames(1);
+                semi_gears.push_back(car_payload->gear);
+            }
+            key(200, false);
+            int semi_max = 0, semi_changes = 0, semi_bad_step = 0, semi_bad_gear = 0;
+            for (size_t i = 0; i < semi_gears.size(); i++) {
+                int g = semi_gears[i];
+                if (g == 0 || g == 7) semi_bad_gear++;
+                if (g > semi_max) semi_max = g;
+                if (i != 0) {
+                    int step = g - semi_gears[i - 1];
+                    if (step != 0) {
+                        semi_changes++;
+                        if (step != 1 && step != -1) semi_bad_step++;
+                    }
+                }
+            }
+            float semi_vel = vec_length(root->vel);
+            float semi_h = sqrtf(root->vel.x * root->vel.x + root->vel.z * root->vel.z);
+            float semi_rpm = car_payload->rpm_raw * 9.549296f;
+            std::printf("  semi-auto drive (0x4ad480): max gear %d, semi_shifts %d, "
+                        "gear changes %d, final |vel| %.2f m/s (horizontal %.2f, "
+                        "y %.2f), final rpm %.0f, pos %.1f %.1f %.1f\n",
+                        semi_max, car_payload->semi_shifts, semi_changes,
+                        (double)semi_vel, (double)semi_h, (double)root->vel.y,
+                        (double)semi_rpm, (double)root->pos.x, (double)root->pos.y,
+                        (double)root->pos.z);
+            c.check(car_payload->semi_shifts > 0,
+                    "semi-auto shifts while driving (0x4ad480, got " +
+                        std::to_string(car_payload->semi_shifts) + " shift(s))");
+            c.check(semi_max >= 2,
+                    "semi-auto reaches 2nd gear without a gear key (0x4ad480, got " +
+                        std::to_string(semi_max) + ")");
+            c.check(semi_bad_step == 0 &&
+                        semi_changes <= car_payload->semi_shifts,
+                    "every gear change is +-1 and no more changes than shifts (" +
+                        std::to_string(semi_changes) + " change(s), " +
+                        std::to_string(car_payload->semi_shifts) + " shift(s), " +
+                        std::to_string(semi_bad_step) + " bad step(s))");
+            c.check(semi_bad_gear == 0,
+                    "semi-auto never selects neutral or reverse while driving (got " +
+                        std::to_string(semi_bad_gear) + " frame(s))");
+            c.check(v_top > 0.0f && semi_vel <= v_top,
+                    "semi-auto final |vel| within v_top (" +
+                        std::to_string((double)semi_vel) + " <= " +
+                        std::to_string((double)v_top) + " m/s)");
+        }
+        // Check 5: restore the shipped transmission mode and its flags.
+        game::car_command(*rt, car_res, 0x10,
+                          Value::make_str("transmission " + std::to_string(tr)));
+        c.check((car_payload->flags & 0x70u) == tr_bits,
+                "transmission restored to " + std::to_string(tr) + " (flags " +
+                    std::to_string(car_payload->flags & 0x70u) + " == " +
+                    std::to_string(tr_bits) + ")");
     }
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());

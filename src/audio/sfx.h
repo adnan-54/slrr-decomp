@@ -95,8 +95,11 @@ struct EngineSfx {
     int32_t nitro_start_resource = 0;  // node e+0x818
     int32_t horn_resource[4] = {};     // nodes e+0x838 + id*0x10
     float horn_pitch[4] = {1.0f, 1.0f, 1.0f, 1.0f};  // e+0x878 + id*4
-    int32_t exhaust_resource[2] = {};  // car+0x1f84 / car+0x1f94
-    float exhaust_timer[2] = {0.0f, 0.0f};  // car+0x224c / car+0x2248
+    int32_t exhaust_resource[2] = {};  // M+0x1f84 / M+0x1f94 (car type)
+    // [0] car+0x224c one-shot (cleared by vf13); [1] car+0x2248 aero drag
+    // magnitude (Vehicle::update 0x49ff20), read by 0x494910 at 0x495193 as a
+    // wind-noise intensity.
+    float exhaust_timer[2] = {0.0f, 0.0f};
     float nitro_pitch_divisor = 1.0f;  // e+0x814
     float part_loop_volume = 1.0f;  // Part +0x144 (consumer unresolved)
     float part_loop_pitch = 1.0f;   // Part +0x148

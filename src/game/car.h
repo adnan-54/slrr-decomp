@@ -174,6 +174,7 @@ struct CarData {
     float shift_end = -1.0f;     // +0x1e68 shift completes at this world time
     float shift_t70 = -1.0f;     // +0x1e70 0x4b0190 timer
     float shift_t74 = -1.0f;     // +0x1e74 0x4b0190 timer
+    int32_t semi_shifts = 0;     // INVENTED: 0x4ad480 shifts started, vmboot only
     float horn_axis = 0.0f;      // previous ai(54), horn edge detect
     float gearset_last = 0.0f;   // +0x2280 last ai(51) gearset
     float prev_clutch = 0.0f;    // +0x1fa8 last clutch written by updateControls
