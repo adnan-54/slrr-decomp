@@ -1,7 +1,7 @@
 ---
 id: 122
-status: todo
-branch:
+status: implemented
+branch: card/122
 depends: [121]
 ---
 # vmboot: select the current main-menu item (CMD_MENU_SELECT) and report

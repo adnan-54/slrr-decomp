@@ -62,6 +62,31 @@ void install_synthetic_input()
     input::install_backend(g_input);  // 0x565fc0
 }
 
+bool actual_state(Boot &boot, Value *state, std::string *err)
+{
+    if (!boot.vm()->get_static_field("java.game.GameLogic", "actualState", state, err))
+        return false;
+    if (state->kind != Value::Obj || !state->obj) {
+        *err = "GameLogic.actualState is not an object";
+        return false;
+    }
+    return true;
+}
+
+// Class name of a runtime class state, through its declaring unit.
+const ClassUnit *unit_of(Boot &boot, ClassState *st)
+{
+    for (const ClassUnit *u : boot.classes()->units())
+        if (boot.vm()->find_class(u->class_name(u->self_class)) == st) return u;
+    return nullptr;
+}
+
+std::string object_class(Boot &boot, Object *o)
+{
+    const ClassUnit *u = o ? unit_of(boot, o->cls) : nullptr;
+    return u ? u->class_name(u->self_class) : "(unknown)";
+}
+
 // INVENTED instrumentation: reads the shipped script state.
 // GameLogic.actualState is the active MainMenu (GameLogic.java:164,896);
 // MainMenu.window is the shown Gates (MainMenu.java:14-20); showMenu is 0 while
@@ -69,12 +94,7 @@ void install_synthetic_input()
 bool menu_probe(Boot &boot, int *show, int *seek, std::string *err)
 {
     Value state;
-    if (!boot.vm()->get_static_field("java.game.GameLogic", "actualState", &state, err))
-        return false;
-    if (state.kind != Value::Obj || !state.obj) {
-        *err = "GameLogic.actualState is not an object";
-        return false;
-    }
+    if (!actual_state(boot, &state, err)) return false;
     Value window;
     if (!boot.vm()->get_instance_field(state.obj, "window", &window, err)) return false;
     if (window.kind != Value::Obj || !window.obj) {
@@ -95,6 +115,27 @@ bool menu_probe(Boot &boot, int *show, int *seek, std::string *err)
     }
     *seek = v.i;
     return true;
+}
+
+// MainMenu.java:144-145: the invisible ghost button sends CMD_MENU_SELECT
+// (0xB007); Gates.osdCommand (MainMenu.java:607) runs slider.execute(CMD_MENU_SEL).
+// Spawned like the runtime's THRD-CREATE threads so a dialog that sleeps or waits
+// inside the handler continues in the frame loop instead of blocking here.
+bool menu_select(Boot &boot, Object *window, std::string *err)
+{
+    // INVENTED: stands in for the Osd ghost-button click (no render hit test)
+    std::vector<Value> args{Value::make_int(0xB007)};
+    ClassState *decl = nullptr;
+    const MethodInfo *m = boot.vm()->find_method(window->cls, "osdCommand", "(I)V", 1,
+                                                 args, &decl, err);
+    if (!m) return false;
+    const ClassUnit *unit = unit_of(boot, decl);
+    if (!unit) {
+        *err = "osdCommand declaring unit not found";
+        return false;
+    }
+    return natives::spawn_untimed(*boot.vm(), boot.vm()->start(*unit, *m, window, args, err),
+                                  10, "THRD-MENU-SELECT");
 }
 
 struct Checker {
@@ -251,7 +292,7 @@ void game_init_check(Boot &boot, Checker &c)
     // 1 s hold so the 50 ms Frontend HotkeyWatcher tick samples it. Scan 0x1c is
     // ControlSet's MENUSET AXIS_SELECT bind (RCDIK_ENTER); 0x544830 reads the
     // raw key byte's high bit.
-    const int kFrames = 6000, kPress = 3000, kRelease = 3060;
+    const int kFrames = 6000, kPress = 3000, kRelease = 3060, kSelect = 3600;
     FrameLoop loop(0);
     for (int i = 1; i < kPress; i++) loop.frame(i * 16);
     int show_before = -1, seek_before = -1;
@@ -260,10 +301,40 @@ void game_init_check(Boot &boot, Checker &c)
     c.check(probed && show_before == 0,
             "main menu waits for input before the press (showMenu == 0, got " +
                 std::to_string(show_before) + (probed ? "" : ": " + perr) + ")");
-    for (int i = kPress; i <= kFrames; i++) {
+    for (int i = kPress; i <= kSelect; i++) {
         g_input->devices[0].raw.keys[0x1c] = i < kRelease ? 0x80 : 0;
         loop.frame(i * 16);
     }
+
+    // Click the current menu item, then let the handler and the menu animate.
+    Value state_before;
+    std::string serr;
+    bool have_state = actual_state(boot, &state_before, &serr);
+    const std::string class_before =
+        have_state ? object_class(boot, state_before.obj) : "(none)";
+    bool selected = false;
+    if (have_state) {
+        Value window;
+        if (boot.vm()->get_instance_field(state_before.obj, "window", &window, &serr) &&
+            window.kind == Value::Obj && window.obj)
+            selected = menu_select(boot, window.obj, &serr);
+        else if (serr.empty())
+            serr = "MainMenu.window is not an object";
+    }
+    for (int i = kSelect + 1; i <= kFrames; i++) {
+        g_input->devices[0].raw.keys[0x1c] = 0;
+        loop.frame(i * 16);
+    }
+
+    Value state_after;
+    serr.clear();
+    bool have_state_after = actual_state(boot, &state_after, &serr);
+    const std::string class_after =
+        have_state_after ? object_class(boot, state_after.obj) : "(none)";
+    std::printf("  menu select: actualState %s -> %s%s\n", class_before.c_str(),
+                class_after.c_str(),
+                selected ? "" : (" (invoke failed: " + serr + ")").c_str());
+
     int show_after = -1, seek_after = -1;
     perr.clear();
     bool probed_after = menu_probe(boot, &show_after, &seek_after, &perr);
