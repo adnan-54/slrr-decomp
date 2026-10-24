@@ -493,6 +493,10 @@ static void fill_frame(Frame *f, ClassState *decl, const MethodInfo *m, Object *
         // declared type of this argument is params[size - 1 - k].
         size_t pi = args.size() - 1 - k;
         Value v = args[pi];
+        if (pi < params.size() && (params[pi] == 'I' || params[pi] == 'F')) {
+            if (f->local_kind.size() < f->locals.size()) f->local_kind.resize(f->locals.size());
+            f->local_kind[base + k] = params[pi];
+        }
         if (pi < params.size() && params[pi] == 'F' && v.kind == Value::Int)
             v = Value::make_float((float)v.i);
         // INVENTED: truncation like a C cast; the exe's F->I conversion is not traced.
@@ -1336,8 +1340,12 @@ bool Thread::step()
         if (f.pending_decl >= 0) {
             // Type of a local declaration: the exe's locals are typed Variables,
             // so `float y;` without initializer reads as 0.0, not null.
-            if ((size_t)f.pending_decl < f.locals.size())
+            if ((size_t)f.pending_decl < f.locals.size()) {
                 f.locals[(size_t)f.pending_decl] = default_for_desc(desc);
+                if (f.local_kind.size() < f.locals.size()) f.local_kind.resize(f.locals.size());
+                f.local_kind[(size_t)f.pending_decl] =
+                    desc == "I" || desc == "F" ? desc[0] : 0;
+            }
             return true;
         }
         return fail("type token without a pending new/array/instanceof/cast/declaration");
@@ -1577,6 +1585,14 @@ bool Vm::store(const Ref &ref, const Value &value, std::string *err)
         if (!ref.frame || ref.slot >= ref.frame->locals.size()) {
             *err = "dangling local reference";
             return false;
+        }
+        // The exe's locals are typed Variables: an assignment converts to the
+        // declared I/F type (`int t = len * random();` truncates).
+        // INVENTED: truncation like a C cast (the exe's conversion is not traced).
+        if (ref.slot < ref.frame->local_kind.size()) {
+            char k = ref.frame->local_kind[ref.slot];
+            if (k == 'I' && v.kind == Value::Float) v = Value::make_int((int32_t)v.f);
+            else if (k == 'F' && v.kind == Value::Int) v = Value::make_float((float)v.i);
         }
         ref.frame->locals[ref.slot] = v;
         return true;
