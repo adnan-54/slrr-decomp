@@ -240,3 +240,29 @@ Not a solver-row constraint: it derives `constraint`/`controller`, lives in the 
 - `Collide__candidatesTOI` 0x4fc7e0: TOI search for `body_dummy_candidate` list `DAT_006028f8` (same 10-step bisection; if still penetrating picks the vertex with min distance along the normal) → `addContact`.
 - `PhysicsWorld__init` 0x4fffb0: dt `world+8 = world+0xc = 0.02`, gravity `world+0x1c4 = (0, −9.81, 0)`, `world+0x364 = 1.2935` (air density?), `+0x368 = (0,−7,0)`, `+0x374 = (0,−1,0)` (default ground plane point/normal for the 0x800 plane contact), `+0x394 = 300`, `+0x398 = 550`, two static root bodies `world+0x84` (all dynamic bodies are children of it, `PhysicsWorld__addBody` 0x4f7830) and `world+0x88`. Global world pointer `g_physWorld` 0x5dadf0.
 - `PhysicsWorld__purgeEvents` 0x5040f0 frees collision events whose body has flag 0x200000.
+
+## Voronoi error in vmboot (RE 2026-10-24, cards 165/166)
+- String + condition are the exe's: 0x50d230 loops `<= nfeatA + 2*nfeatB` steps, then prints
+  "Voronoi error (infinite loop)" (0x564ca0), writes the features back, returns 1e6. src `vclip_closest` matches.
+- vmboot (HEAD 42a210b, SunStrip pick): 248 lines, all from `consider_hull_pair` (car hull child, closed,
+  38..194 features, vs two-sided soup triangle, 8 features), all inside the INVENTED forced-drag run after
+  the car crashes near z -450..-497 at ~44 m/s. 0 during normal driving. Scratch walk trace: 2-cycles
+  `F(hull)/E(tri) <-> E(hull)/E(tri)` with the hull centre 0..0.6 m from the face plane (deep penetration).
+- Cause: src creates hull-vs-soup contacts only at step start pose (static filter, cold features), so a
+  fast hull is deep inside before V-Clip sees it. Exe: event phase after integrate, swept filters
+  (0x4feb20), 10-step TOI bisection prev->cur (0x4fc7e0, 0x506c00 interp: t=1 integrated, t=0 start),
+  features warm-started from the pair cache (0x4f6ea0). Card 165.
+- Exe walk stepping (src uses INVENTED Mirtich-like rules + "largest violated plane"):
+  `clipEdge 0x508fe0(seg[6], feat, &N[2], &lam[2], from, to)`: N cleared; per plane i: dt,dh = n.(p-pt);
+  dt>=0,dh<0: l=dt/(dt-dh), if l<hi {hi=l; Nhi=nb; if lo>hi return 0}; dt<0: dh<0 -> Nlo=Nhi=plane[from].nb, return 0;
+  else l, if l>lo {lo=l; Nlo=nb; if lo>hi return 0}; return 1.
+  `stepEE 0x50a410`: for each side s (2 passes): other edge in s frame; clip planes 0..2 (V-E): Nlo==Nhi!=0 -> step;
+  Nlo && (x(lo)-V).u > 0 -> step Nlo; Nhi && (x(hi)-V).u < 0 -> step Nhi; clip planes 2..n (E-F, lo/hi carried on):
+  same with D_F(x)*(n_F.u) (>0 lo, <0 hi); both passes clean -> 0 (valid; 0x50d230 returns sqrt(0x509130)).
+  `stepEF 0x50aa60`: edge in face frame; clip all face planes; ok: D(lo)*D(hi)<0 -> 2; D(lo)*(n.u)<0 -> Nhi or head V,
+  else Nlo or tail V; clip failed: walk the face boundary edges from the excluding plane (clip vs plane i, then vs
+  edge i's V-E planes, move to the neighbour edge sharing the clipped vertex) -> face side := that edge. Never 0.
+  Scratch port of stepEE+stepEF (rest unchanged) raised the count to 2552 (same cycles): the walk is not the fix
+  while hulls are deep inside a face.
+- Determinism: Math.randomize 0x4dee90 = srand((int)0x569730()) (QPC ms); src reads steady_clock -> dealer roll
+  varies with load. Card 166: vmboot-only switch to the scheduler's frame clock (INVENTED).
