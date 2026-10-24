@@ -176,3 +176,6 @@ W (+0x178) += (P + P0)/2 · (V − Vprev)        // trapezoidal p·dV
 ## Open points
 - `+0x08` (1.029) and `+0x18` (1.0) are set but never read by the model.
 - The torque/power inconsistency (`/8` vs `/60`) and `getTorque` ignoring its `nitro` argument are original behaviour; preserve them.
+
+## When the curve is built in src (2026-10-24, card 151 RE)
+No native recompute fills the curve: it is purely script-driven. `Vehicle(...)` ctor (sl/Scripts/game/Vehicle.java:115-119) runs `addStockParts` with `suspend_update = 1`, then `chassis.forceUpdate()` (0x4b5890 -> 0x4aebf0). That runs `Chassis.updatevariables` -> `engine.updatevariables()` (Block fills `dynodata`; the block subclass then calls `the_car.getSfxTable(0..2)`) -> `dyno.calcDyno(maxRPM/250)` -> refresh copies the dyno tables. In src the only missing link was the stub `Chassis.getSfxTable` (0x4b3890): it threw inside the block's updatevariables, calcDyno never ran, curve stayed 1 point 0 Nm (error swallowed by `ch_force_update`). With it implemented (scratch build): D18V RPM_limit 6750, maxRPM 8250, 33 points, max 159.05 Nm.
