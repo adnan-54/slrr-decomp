@@ -114,6 +114,7 @@ void fill_slots(Runtime &rt, const Package *pkg, PartData &p, const CfgFile &cfg
     for (const CfgSlot &cs : cfg.slots) {
         Slot s;
         s.id = cs.id;
+        s.slot_type = cs.slot_type;
         s.type_pos[0] = cs.xform.px;
         s.type_pos[1] = cs.xform.py;
         s.type_pos[2] = cs.xform.pz;
@@ -287,6 +288,27 @@ Runtime::Resource *slot_part(Runtime &rt, Object *o)
 {
     Runtime::Handle *h = rt.handle(o);
     return h ? h->target : nullptr;
+}
+
+// 0x4c8b10: the wheel a part belongs to. An installed part (runtime slot flag
+// 1) inherits the wheel of the slot it sits in on its host; otherwise the type
+// slot with this id carries the cfg `slottype`. 0 when nothing resolves.
+// INVENTED: depth guard, the exe chain is acyclic (flag 1 only on the child
+// side, as in part_locked 0x4cb0b0).
+uint32_t wheel_id_of(Runtime &rt, Runtime::Resource *r, int32_t slot_id, int depth)
+{
+    if (!r || depth > 64) return 0;
+    PartData *p = part_data(rt, r);
+    if (!p) return 0;
+    for (const Slot &s : p->slots) {
+        if (!(s.flags & 1u) || !s.attached) continue;
+        Runtime::Resource *t = slot_part(rt, s.attached);
+        if (!t) return 0;  // the exe returns 0 when the target does not resolve
+        return wheel_id_of(rt, t, s.mate_id, depth + 1);
+    }
+    for (const Slot &s : p->slots)
+        if (s.id == slot_id) return (uint16_t)s.slot_type;
+    return 0;
 }
 
 bool attach_has(const std::vector<CfgAttach> &list, uint32_t part, int32_t slot)
@@ -709,6 +731,8 @@ int part_attach(Runtime &rt, Runtime::Resource *P, int32_t my_slot,
         pp->car_ref = tp->car_ref;
         pp->car_id = tp->car_id;
     }
+    // 0x4c7d20: P+0xd0 = 0x4c8b10(P, 0) once the car ref is set.
+    pp->wheel_id = (int32_t)wheel_id_of(rt, P, 0, 0);
     // 0x4c7d20 physics tail: 0x501d00/0x4f7b20 put the part body under the
     // target and 0x5032d0 re-sums the compound through car_root.
     // shortcut: the exe wakes the two roots and re-sleeps car_root when it was
@@ -1364,6 +1388,31 @@ void drive_cars(float dt)
             e.torque_curve[i].rpm = i < c->torque_rpm.size() ? c->torque_rpm[i] : 0.0f;
             e.torque_curve[i].value = c->torque_nm[i];
         }
+        // INVENTED glue: the WheelRef natives write WheelData and the exe has one
+        // struct (every length/force setter reruns Suspension__configure
+        // 0x4f4280); src keeps a separate simulation wheel, so copy the wheel
+        // fields across before each update. Hub/mount are the compound's
+        // (0x5032d0, card 153).
+        if (sim.wheels.size() == c->wheels.size())
+            for (size_t i = 0; i < sim.wheels.size(); i++) {
+                const WheelData &w = c->wheels[i];
+                Wheel &sw = sim.wheels[i];
+                sw.spring = w.spring_k;
+                sw.bump = w.bump;
+                sw.rebound = w.rebound;
+                sw.rest_len = w.rest_len;
+                sw.max_len = w.max_len;
+                sw.min_len = w.min_len;
+                sw.radius = w.radius;
+                sw.friction = w.friction;
+                sw.friction_eff = w.friction_eff;
+                sw.rolling_resistance = w.roll_res;
+                for (int k = 0; k < kPacejkaSlots; k++) sw.pacejka.p[k] = w.pacejka[k];
+                sw.set_drive(w.drive_eff);
+                sw.set_brake(w.brake_eff);
+                sw.set_handbrake(w.hbrake_eff);
+                sw.steer_factor = w.steer;
+            }
         sim.ground = ground;
         sim.update(dt);
         c->rpm_raw = e.omega;

@@ -117,6 +117,7 @@ struct WheelData {
 // runtime pose starts as a copy and is what the damage/pose natives rewrite.
 struct Slot {
     int32_t id = 0;
+    int32_t slot_type = 0;       // type slot +0x64, cfg `slottype` (0x4c0190)
     uint32_t flags = 0;          // 0x1 present, 0x10 disabled, 0x20 override, 0x40 hard
     float type_pos[3] = {};
     Mat34 type_rot = {};

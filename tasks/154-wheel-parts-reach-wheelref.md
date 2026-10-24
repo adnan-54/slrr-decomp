@@ -1,6 +1,6 @@
 ---
 id: 154
-status: todo
+status: implemented
 branch: card/154
 depends: [152, 153]
 ---
@@ -73,3 +73,32 @@ No unit tests or synthetic inputs; cite exe addresses; no tuning constants; do n
 vehicle.cpp.
 
 ## Result
+
+Implemented on `card/154`. `make -C src check`: **100 checks, 0 failures**, 0 failed
+threads (30000 frames), 0.0 cfg-corpus failures.
+
+- `cfg.h/.cpp`: `CfgSlot::slot_type` and the `slottype N` keyword (0x4c0190) written to
+  the slot declared last; before any slot it is ignored (no shipped occurrence).
+- `car.h/.cpp`: `Slot::slot_type` filled in `fill_slots`; `wheel_id_of(rt, r, slot_id,
+  depth)` = 0x4c8b10 (runtime slot flag 1 -> host part at the mate slot, else the type
+  slot with this id returns its `slottype`); called in `part_attach` after the 0x4c7d20
+  car ref into `PartData::wheel_id`. INVENTED: depth guard (64).
+- `drive_cars`: INVENTED glue copying spring/bump/rebound/rest/max/min/radius/friction/
+  friction_eff/roll_res/pacejka/drive/brake/handbrake/steer from `WheelData` to
+  `sim.wheels[i]` before `Vehicle::update` (exe has one struct; the setters rerun
+  0x4f4280). Hub/mount left to card 153.
+- vmboot: start fixture = `floor_y + rest_ray - mount.y` of wheel 0; instant-center check
+  is now "written" (ic_h and ic_l non-zero, values printed); launch phase 900 frames with
+  the v1 speed check and last-60-frame driven kappa; new checks for done-when a and b.
+
+Measured (SunStrip 1.8 DVC): springs front 59841 N/m, rest 0.266, min 0.178 (rear 53955,
+rest 0.270); sim wheels match within 1e-4; getWheelID = 0..3 on chassis slots
+101/111/121/301/311+i; instant centres e.g. wheel 0 h (0.683,-0.380,-1.333). Launch: max
+gear 5, final 103.35 m/s vs v1 12.42 m/s, mean driven kappa 0.000 over the last 60 frames.
+
+Doubts:
+- `getWheelID` is checked through `Runtime::call_method` (VM native dispatch), not a script
+  method; the Part class name in the check is the `is_a` chain to
+  `java.game.parts.rgearpart.Spring` (the installed parts are subclasses).
+- The final speed (103 m/s in 14.4 s) looks high for the dyno curve but follows from the
+  sim with real script springs; no constant was tuned.

@@ -81,8 +81,8 @@ bool try_id(const std::string &s, uint32_t *out)
 bool known_key(const std::string &k)
 {
     return k == "render" || k == "mesh" || k == "texture" || k == "click" ||
-           k == "body" || k == "category" || k == "slot" || k == "attach" ||
-           k == "compatible" || k == "stockpart" || k == "eof";
+           k == "body" || k == "category" || k == "slot" || k == "slottype" ||
+           k == "attach" || k == "compatible" || k == "stockpart" || k == "eof";
 }
 
 struct Parser {
@@ -240,6 +240,15 @@ struct Parser {
             if (!transform(ln, 0, 6, &s.xform)) return false;
             if (!int_at(ln, 6, "slot id", &s.id)) return false;
             cfg->slots.push_back(s);
+            return true;
+        }
+
+        // 0x4c0190: slottype N -> the type slot declared last, +0x64.
+        if (k == "slottype") {
+            if (n != 1) return fail(ln, "slottype expects one int");
+            int32_t v;
+            if (!int_at(ln, 0, "slottype", &v)) return false;
+            if (!cfg->slots.empty()) cfg->slots.back().slot_type = v;
             return true;
         }
 

@@ -946,9 +946,13 @@ void game_init_check(Boot &boot, Checker &c)
         // Vehicle.java:111, which is 16.9 m above the A1Ring soup at the map
         // origin. A drop from there reaches the floor above the suspension
         // ray's speed and tunnels past it (no capsule sensor bodies yet, card
-        // 146 "Not this card"), so start the car on the soup and let the drive
-        // callback carry it on its springs.
-        if (floor_found) root->pos.y = floor_y + 1.0f;
+        // 146 "Not this card"), so start the car on the soup with the wheel 0
+        // ray just touching: the short part springs (rest 0.266, max_len =
+        // rest_len) cannot catch a 1 m drop.
+        if (floor_found && car_payload->sim && !car_payload->sim->wheels.empty()) {
+            const Wheel &w0 = car_payload->sim->wheels[0];
+            root->pos.y = floor_y + (w0.rest_ray() - w0.mount.y);
+        }
         const float y_before = root->pos.y;
         boot.runtime()->queue_event(car_res, nullptr, 0x10,
                                     Value::make_str("wakeup"));
@@ -1020,6 +1024,60 @@ void game_init_check(Boot &boot, Checker &c)
         c.check(!box_contact,
                 "no world contact has car_root or part_comp as a side");
         c.check(std::fabs(root->vel.y) < 0.1f, "car settles (|vel.y| < 0.1)");
+
+        // Card 154 done-when a: the part on chassis slot 311+i is a Spring and
+        // its updatevariables values reach the simulation wheel (0x4c8b10).
+        bool wheel_parts_ok = sim != nullptr && chassis_parts != nullptr;
+        for (int i = 0; chassis_parts && sim && i < (int)car_payload->wheels.size(); i++) {
+            game::Slot *s = nullptr;
+            for (game::Slot &cs : chassis_parts->slots)
+                if (cs.id == 311 + i) s = &cs;
+            Object *o = s ? s->attached : nullptr;
+            Value fv, rv, mv;
+            std::string ferr;
+            bool have = o && boot.vm()->get_instance_field(o, "force", &fv, &ferr) &&
+                        boot.vm()->get_instance_field(o, "restlength", &rv, &ferr) &&
+                        boot.vm()->get_instance_field(o, "minlength", &mv, &ferr);
+            bool spring = o && is_a(boot, o->cls, "java.game.parts.rgearpart.Spring");
+            const Wheel &sw = sim->wheels[(size_t)i];
+            std::printf("    wheel %d: slot %d part %s, force %.3f rest %.3f min %.3f; "
+                        "sim spring %.3f rest %.3f min %.3f\n",
+                        i, 311 + i, o ? object_class(boot, o).c_str() : "(none)",
+                        have ? (double)fv.f : 0.0, have ? (double)rv.f : 0.0,
+                        have ? (double)mv.f : 0.0, (double)sw.spring,
+                        (double)sw.rest_len, (double)sw.min_len);
+            if (!spring || !have || fv.kind != Value::Float || rv.kind != Value::Float ||
+                mv.kind != Value::Float || std::fabs(sw.spring - fv.f) > 1e-4f ||
+                std::fabs(sw.rest_len - rv.f) > 1e-4f ||
+                std::fabs(sw.min_len - mv.f) > 1e-4f)
+                wheel_parts_ok = false;
+        }
+        c.check(wheel_parts_ok, "the Spring on chassis slot 311+i drives sim wheel i "
+                                "(force/restlength/minlength, 0x4c8b10)");
+
+        // Card 154 done-when b: Part.getWheelID through the VM on every wheel
+        // family slot returns the wheel index ((v-101)%10, 0x4c8b10).
+        bool wheel_ids_ok = chassis_parts != nullptr;
+        if (chassis_parts) {
+            static const int families[5] = {101, 111, 121, 301, 311};
+            for (int f = 0; f < 5; f++)
+                for (int i = 0; i < 4; i++) {
+                    game::Slot *s = nullptr;
+                    for (game::Slot &cs : chassis_parts->slots)
+                        if (cs.id == families[f] + i) s = &cs;
+                    Object *o = s ? s->attached : nullptr;
+                    Value id;
+                    std::string ierr;
+                    bool ok = o && rt->call_method(o, "getWheelID", {}, &id, &ierr) &&
+                              id.kind == Value::Int && id.i == i;
+                    std::printf("    slot %d: %s getWheelID -> %d\n", families[f] + i,
+                                o ? object_class(boot, o).c_str() : "(none)",
+                                id.kind == Value::Int ? id.i : -999);
+                    if (!ok) wheel_ids_ok = false;
+                }
+        }
+        c.check(wheel_ids_ok, "Part.getWheelID via the VM returns i for the parts on "
+                              "chassis slots 101/111/121/301/311+i (0x4c8b10)");
     }
 
     // Card 147: Track.enter's "controllable" / "transmission" commands bind the
@@ -1059,16 +1117,22 @@ void game_init_check(Boot &boot, Checker &c)
     c.check(have_tr && car_payload && (car_payload->flags & 0x70u) == tr_bits,
             "transmission command sets the 0x4a37f0 flags (mode " +
                 std::to_string(tr) + ")");
-    // Chassis.java:346 setInstantCenter(10000 x6) runs in updatevariables, after
-    // the fixed getWheel loads WheelRef (0x4b4150).
+    // Card 154: the strut parts' updatevariables now reach WheelRef
+    // setInstantCenter (the Chassis.java:346 value was 10000 x6 before).
     bool ic_ok = car_payload && !car_payload->wheels.empty();
     if (car_payload)
-        for (const game::WheelData &w : car_payload->wheels)
-            if (std::fabs(w.ic_h[0] - w.hub[0] - 10000.0f) >= 0.01f ||
-                std::fabs(w.ic_l[2] - w.hub[2] - 10000.0f) >= 0.01f)
-                ic_ok = false;
-    c.check(ic_ok, "updatevariables reached setInstantCenter(10000) on every wheel "
-                   "(0x4b4150 getWheel loads WheelRef)");
+        for (size_t i = 0; i < car_payload->wheels.size(); i++) {
+            const game::WheelData &w = car_payload->wheels[i];
+            bool h = w.ic_h[0] != 0.0f || w.ic_h[1] != 0.0f || w.ic_h[2] != 0.0f;
+            bool l = w.ic_l[0] != 0.0f || w.ic_l[1] != 0.0f || w.ic_l[2] != 0.0f;
+            std::printf("    wheel %zu instant center: h %.3f %.3f %.3f, l %.3f %.3f "
+                        "%.3f\n",
+                        i, (double)w.ic_h[0], (double)w.ic_h[1], (double)w.ic_h[2],
+                        (double)w.ic_l[0], (double)w.ic_l[1], (double)w.ic_l[2]);
+            if (!h || !l) ic_ok = false;
+        }
+    c.check(ic_ok, "every wheel's instant center was written by its strut parts "
+                   "(WheelRef.setInstantCenter, 0x4c8b10)");
     if (car_payload) {
         std::printf("  player bind: slots %d driver %d, controller %p slot0 script %p, "
                     "flags 0x%x, transmission %d -> 0x%x\n",
@@ -1238,20 +1302,30 @@ void game_init_check(Boot &boot, Checker &c)
                     std::to_string((double)car_payload->shaft_speed) + ")");
         struct DriveSample {
             int gear;
-            float rpm, clutch, shaft, speed, ratio, thr;
+            float rpm, clutch, shaft, speed, ratio, thr, kappa;
         };
         std::vector<DriveSample> samples;
         float rpm_before = car_payload->rpm_smoothed;
         key(200, true);
-        for (int i = 0; i < 300; i++) {
+        for (int i = 0; i < 900; i++) {
             frames(1);
+            // 0x4b19a0 mean driven-wheel slip, one value per frame.
+            float ksum = 0.0f;
+            int kn = 0;
+            if (car_payload->sim)
+                for (const Wheel &w : car_payload->sim->wheels) {
+                    if (w.drive == 0.0f || !(w.load > 0.0f)) continue;
+                    ksum += w.kappa_prev;
+                    kn++;
+                }
             samples.push_back(DriveSample{car_payload->gear,
                                           car_payload->rpm_smoothed,
                                           car_payload->clutch_input,
                                           car_payload->shaft_speed,
                                           vec_length(root->vel),
                                           car_payload->gear_ratio,
-                                          car_payload->throttle});
+                                          car_payload->throttle,
+                                          kn ? ksum / (float)kn : 0.0f});
         }
         key(200, false);
         int engage_i = -1;
@@ -1292,19 +1366,32 @@ void game_init_check(Boot &boot, Checker &c)
         int max_gear = 0;
         for (const DriveSample &s : samples)
             max_gear = std::max(max_gear, s.gear);
-        // 0x4b19a0 mean driven-wheel kappa (print only; traction is card 153).
+        // 0x4b19a0 mean driven-wheel kappa over the last 60 frames.
         float kappa_sum = 0.0f;
         int kappa_n = 0;
-        if (car_payload->sim)
-            for (const Wheel &w : car_payload->sim->wheels) {
-                if (w.drive == 0.0f || !(w.load > 0.0f)) continue;
-                kappa_sum += w.kappa_prev;
-                kappa_n++;
-            }
-        std::printf("  auto drive: max gear %d, final speed %.2f m/s, mean driven "
-                    "kappa %.3f (0x4b19a0)\n",
-                    max_gear, samples.empty() ? 0.0 : (double)samples.back().speed,
-                    (double)(kappa_n ? kappa_sum / (float)kappa_n : 0.0f));
+        for (size_t i = samples.size() > 60 ? samples.size() - 60 : 0;
+             i < samples.size(); i++) {
+            kappa_sum += samples[i].kappa;
+            kappa_n++;
+        }
+        float final_speed = samples.empty() ? 0.0f : samples.back().speed;
+        // 1st-gear top speed at the 0x4b06b0 upshift threshold: w * R.
+        float v1 = 0.0f;
+        if (!car_payload->wheels.empty() && car_payload->ratio[1] != 0.0f &&
+            car_payload->rearend_ratio != 0.0f)
+            v1 = 0.95f * std::min(car_payload->max_rpm, car_payload->rpm_limit) *
+                 0.10471976f / (car_payload->ratio[1] * car_payload->rearend_ratio) *
+                 car_payload->wheels[0].radius;
+        std::printf("  auto drive: max gear %d, final speed %.2f m/s (v1 %.2f), mean "
+                    "driven kappa %.3f over the last %d frames (0x4b19a0)\n",
+                    max_gear, (double)final_speed, (double)v1,
+                    (double)(kappa_n ? kappa_sum / (float)kappa_n : 0.0f), kappa_n);
+        c.check(max_gear >= 2, "auto gearbox reaches 2nd gear without a gear key "
+                               "(0x497930, got " + std::to_string(max_gear) + ")");
+        c.check(v1 > 0.0f && final_speed > v1,
+                "final speed beats the 1st-gear top speed at the 0x4b06b0 threshold "
+                "(got " + std::to_string((double)final_speed) + " m/s, v1 " +
+                    std::to_string((double)v1) + ")");
     }
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
