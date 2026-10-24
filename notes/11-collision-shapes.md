@@ -273,3 +273,54 @@ Not a solver-row constraint: it derives `constraint`/`controller`, lives in the 
   face planes i -> i+1 / i-1 by which neighbour edge holds the clip vertex.
 - Determinism: Math.randomize 0x4dee90 = srand((int)0x569730()) (QPC ms); src reads steady_clock -> dealer roll
   varies with load. Card 166: vmboot-only switch to the scheduler's frame clock (INVENTED).
+
+## Script triggers: `native trigger` (system 0x34) and EVENT_TRIGGER_ON/OFF (RE 2026-10-24, cards 167/168)
+Race flow first (vmboot probe, scratch build): by the drive start the career race already ran its script
+countdown: `Gamemode.launch` `addTimer(0,3)` -> `CircuitRacing.handleEvent` p3 -> THOR method 4 -> `run()`
+`addTimer(1,4)` -> four EVENT_TIME p4 ticks (countDown 3..0, `lockCars` "start"+"stop"+"idle") -> `beginRace`
+-> `unlockCars` -> `unlockPlayerCar` = car "start" (0x4a3fa6 clears 0x40000|4). Probe: countDown 0,
+raceActive 1, car still asleep. Nothing in the shipped flow sends "wakeup" (`Gamemode.wakeUpCars` call is
+commented out, Track.java:1056); the exe wakes the placed car on the first control input (0x498599, notes/09),
+so vmboot's queued "wakeup" stays an INVENTED settle fixture. FIRST real blocker: src has no trigger type at all
+(no body, no event 0x20/0x40), so `handleCheckpoint`/`handleRacePos`/`handlePitStop` never run and no lap,
+position or finish can happen.
+
+Script side (game/Trigger.java, Gamemode.setupCheckpoints/setupRacePosCalc, CircuitRacing.applyTriggers):
+`new GameRef(gTrack.map, system:0x34, pos.toString()+",0,0,0,box,"+x+","+y+","+z, alias)`; Norisring (mod)
+makes 4 checkpoint boxes 30/30/5, 3 pit boxes 2/2/5, 39 race-position boxes 40/40/5, then
+`addNotification(trigger, EVENT_TRIGGER_ON(0x20), EVENT_SAME, null, "handleX")`. Handlers read
+`param.token(0).intValue()` and compare with `GameLogic.player.car.id()`.
+
+`type_trigger` (vtable 0x5a00e0) vf3 create 0x4d4700(type, params):
+```
+  T = alloc 0x38; ResRefLink__set(type+0xc);
+  sx = 10.0, sy = sz = 0; pos = ypr = 0; kind[0] = 0;
+  Str__scan(params, "%f,%f,%f,%f,%f,%f,%64s,%f,%f,%f", pos3, ypr3, kind, sx, sy, sz);
+  if (kind == "" || kind == "sphere") def = Physics__createBox(0, 1 /*sphere*/, sx /*radius*/, 0, 0, 0);
+  else if (kind == "box") def = createBox(0, 5, sx, sy, sz, 0);     // half extents (notes/11 §1)
+  else if (kind == "rod") def = createBox(0, 4, sx, sy, sz, 0);     // capsule along z
+  else                    def = createBox(0, 6, 1, 1, 1, kind);     // named .scx hull
+  def+0xb4 |= 0x20; def+0xb4 &= ~4;                                  // NOT the flag-4 static kind
+  R = Math__eulerToMat(ypr);
+  Physics__attachToResource 0x4e8a50(T, def, pos, R): World add 0x4f7830(def, pos, R) + bind to the instance
+  body = GameRef__getPhysBody(); body+0x58 = (body+0x58 & ~1) | 0x15040;   // 0x40 sensor, 0x1000 keep record
+  (render/LOD flag work on type+0xc follows; no physics effect)
+```
+mass 0 -> never integrated. vf4 0x4d4a60 destroy: 0x4e9450 detach + 0x4fb2a0 release the body.
+
+Pair test: `Collide__bodyPair` 0x4fb370 step 4 (flag 0x40 on one side) -> 0x4fd910 V-Clip, no physical
+contact; `d < rA+rB` -> `PhysicsWorld__addTriggerContact` 0x502d60(A = sensor body, B, ...):
+```
+  if (!(A+0x58 & 0x1000)) { c_collision tmp(A,B); queueEvent(A.res, 0, 0x20, tmp); return; }
+  B = root(B) (follow +0x20 while +0x58 & 4);
+  for rec in world+0x2bc: if (rec.A == A && rec.B == B && rec+0x50 == B+0x40) { rec+0x34 = world.time; return; }
+  rec = new (0x58): A, B, +0x34 = world.time; append world+0x2bc, world+0x64++;
+  queueEvent(A.res, 0, 0x20, rec); queueEvent(B.res, 0, 0x20, rec) (+ root's res if different)
+```
+Sweep `0x4fa900` (only caller PhysicsWorld__step 0x502060), every record:
+`if (!A) remove; else if (!B || rec+0x34 < world.time - 2*world.dt) { if (A && B && |posA-posB| < bA+bB+0.05) keep; else remove }`
+(pos = other-state +0x64, b = shape bound radius +0xc). Remove 0x4fb070: `queueEvent(A.res,0,0x40,rec)`,
+`queueEvent(B.res,0,0x40,rec)` (+root), unlink, world+0x64--, delete.
+Param string (dispatchScript 0x47c960 case 0x20/0x40): `sprintf("%d", other)` where `other = rec.A+0x40` (the
+body's resource id) unless that equals the dispatch object's id (sender ? sender : target), then `rec.B+0x40`.
+A notification forwards with sender = the trigger, so `handleCheckpoint(trigger, 0x20, "<car id>")`.
