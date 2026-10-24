@@ -127,7 +127,7 @@ calibration, part list). Fields confirmed by these natives:
 | +0xffc | int | index of the last body created by the cfg handler |
 | +0x1120 | int | manufacturer/logo id (`getLogo`) |
 | +0x1160 | int | slot count = `getSlots()` (max slot index+1) |
-| +0x116c | ptr | type-slot linked-list head; node `+0x4` next, `+0x24` pos Vector3, `+0x30..0x5c` 3×4 matrix, `+0x60` slot ID, `+0x64` part type id (low 16 bits), `+0x16c` per-slot condition/field |
+| +0x116c | ptr | type-slot linked-list head; node `+0x4` next, `+0x24` pos Vector3, `+0x30..0x5c` 3×4 matrix, `+0x60` slot ID, `+0x64` cfg `slottype N` (0x4c0190 writes the last-declared slot; read as the wheel id by 0x4c8b10), `+0x68` slot damage-mode word (low/high 16 bits override `P+0xb0` in 0x4c7d20, `slotdmgmode`?), `+0x16c` per-slot condition/field |
 | +0x121c | float | max wear source (`P+0xbc = 1/M+0x121c`) |
 | +0x1220 | int | part event id (`P+0x120`) |
 | +0x1b0c,+0x1b10,+0x1b14,+0x1b18 | float | OSD gauge base/gain slots 5..8 |
@@ -338,7 +338,7 @@ Runtime slot record (0x68):
 | +0x68 | end |
 
 Type-slot list node (`M+0x116c`): `+0x04` next, `+0x24` pos Vector3, `+0x30..+0x5c` 3×4 matrix,
-`+0x60` slot ID, `+0x64` part type id (low 16 bits), `+0x16c` per-slot condition/field. Lookup helpers:
+`+0x60` slot ID, `+0x64` cfg `slottype N` (0x4c0190 writes the last-declared slot; read as the wheel id by 0x4c8b10), `+0x68` slot damage-mode word (low/high 16 bits override `P+0xb0` in 0x4c7d20, `slotdmgmode`?), `+0x16c` per-slot condition/field. Lookup helpers:
 `PartType__findSlotByID 0x4c6f90` (ID → node), `PartType__findRuntimeSlot 0x4c6fd0` (ID → parallel
 runtime slot), `PartType__slotByIndex 0x4c7020` (index → node).
 
