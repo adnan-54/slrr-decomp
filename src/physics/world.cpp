@@ -7,6 +7,7 @@
 
 #include "physics/mesh.h"
 #include "physics/physics.h"
+#include "physics/vclip.h"
 
 namespace {
 
@@ -695,6 +696,247 @@ static void consider_pair(World &w, RigidBody &a, RigidBody &b, bool add_new,
     }
 }
 
+// ---- Car hulls vs the map soup (0x4feb20 / 0x4fc7e0, card 160) ----
+
+static float vec_axis(const Vec3 &v, int k) { return k == 0 ? v.x : k == 1 ? v.y : v.z; }
+
+// 0x4f9860: swept sphere (p0 -> p1, radius r) vs one triangle; true = may touch.
+static bool swept_sphere_face(const Vec3 &p0, const Vec3 &p1, float r, const Vec3 &v0,
+                              const Vec3 &v1, const Vec3 &v2, const Vec3 &n)
+{
+    float da = vec_dot(n, p0 - v0), db = vec_dot(n, p1 - v0);
+    if (!(da * db <= 0.0f || fabsf(da) <= r || fabsf(db) <= r))
+        return false;
+    const float r2 = r * r;
+    const Vec3 e0 = v1 - v0, e1 = v2 - v1, e2 = v0 - v2;
+    struct EdgeSide {
+        Vec3 m, origin;
+        float len2;
+    };
+    const EdgeSide sides[3] = {
+        {vec_cross(e0, n), v0, vec_dot(e0, e0)},
+        {vec_cross(e2, n), v0, vec_dot(e2, e2)},
+        {vec_cross(e1, n), v1, vec_dot(e1, e1)},
+    };
+    for (const EdgeSide &s : sides) {
+        float sa = vec_dot(s.m, p0 - s.origin);
+        float sb = vec_dot(s.m, p1 - s.origin);
+        if (sa > 0.0f && sb > 0.0f && sa * sa > s.len2 * r2 && sb * sb > s.len2 * r2)
+            return false;
+    }
+    return true;
+}
+
+// 0x4fc450: body-frame box (half extents h) vs one triangle, 4 axes; true = keep.
+static bool box_triangle(const Vec3 &h, const Vec3 &nb, const Vec3 tv[3])
+{
+    if (fabsf(vec_dot(nb, tv[0])) >
+        h.x * fabsf(nb.x) + h.y * fabsf(nb.y) + h.z * fabsf(nb.z))
+        return false;
+    for (int k = 0; k < 3; k++) {
+        float lo = vec_axis(tv[0], k), hi = lo;
+        for (int i = 1; i < 3; i++) {
+            float x = vec_axis(tv[i], k);
+            if (x < lo) lo = x;
+            if (x > hi) hi = x;
+        }
+        float hk = vec_axis(h, k);
+        if (hi < -hk || lo > hk)
+            return false;
+    }
+    return true;
+}
+
+// One child's world pose in the root frame (child -> parent -> world).
+static Pose child_world_pose(const RigidBody &a, const RigidBody::CollisionChild &c)
+{
+    Pose p;
+    p.pos = a.pos + mat_vec(a.rotation(), c.pose.pos);
+    quat_mul(&p.rot, &a.rot, &c.pose.rot);
+    return p;
+}
+
+// Signed distance of the lowest hull vertex along the face normal. INVENTED
+// analogue of the 0x4fc7e0 TOI: the two-face triangle Poly (0x50f000) measures
+// an unsigned distance, so a hull that crossed the face between two steps sits
+// on the far side and would never see a contact; the support vertex keeps the
+// sign (negative = below the face).
+static float hull_plane_distance(const Poly &poly, const Mat34 &rot, const Vec3 &pos,
+                                 const Vec3 &n, const Vec3 &v0, Vec3 *support)
+{
+    float lowest = 1e30f;
+    Vec3 point{0.0f, 0.0f, 0.0f};
+    for (const Vec3 &v : poly.verts) {
+        Vec3 world = pos + mat_vec(rot, v);
+        float d = vec_dot(n, world - v0);
+        if (d < lowest) {
+            lowest = d;
+            point = world;
+        }
+    }
+    if (support) *support = point;
+    return poly.verts.empty() ? 1e30f : lowest;
+}
+
+// 0x4feb20 walk over the merged soup: the map-node AABB test runs on the
+// CollisionMesh's tree nodes and the per-face filters are 0x4f9860/0x4fc450.
+// 0x4fc7e0 then keeps the minimum V-Clip distance and creates one contact.
+static void consider_hull_pair(RigidBody &a, RigidBody &g, std::vector<Contact> &next)
+{
+    const CollisionMesh &gm = *g.def.shape.mesh;
+    if (gm.nodes.empty())
+        return;
+    const Pose gp = g.pose();
+    const Mat34 gr = g.rotation();
+    const bool stored_normals = gm.face_normals.size() == gm.triangles.size();
+    float best = kAddSlop;  // accept-check: best.d <= 0.02 (0x4fc7e0)
+    int best_child = -1, best_tri = -1, best_fa = 0, best_fb = 0;
+    Vec3 best_pa{0.0f, 0.0f, 0.0f}, best_pb{0.0f, 0.0f, 0.0f};
+    Vec3 best_n{0.0f, 1.0f, 0.0f};
+
+    for (size_t ci = 0; ci < a.collision_children.size(); ci++) {
+        const RigidBody::CollisionChild &cc = a.collision_children[ci];
+        if (cc.shape.type != SHAPE_MESH || !cc.shape.mesh || !cc.poly)
+            continue;
+        const Pose cp = child_world_pose(a, cc);
+        const Mat34 cr = pose_rotation(cp);
+        const float br = cc.shape.bounding_radius();
+        // Face-cache AABB half extents (shape+0x14): raw mesh bounds + 0.05.
+        const CollisionMesh &cm = *cc.shape.mesh;
+        const Vec3 half{fmaxf(fabsf(cm.bounds_min.x), fabsf(cm.bounds_max.x)) + 0.05f,
+                        fmaxf(fabsf(cm.bounds_min.y), fabsf(cm.bounds_max.y)) + 0.05f,
+                        fmaxf(fabsf(cm.bounds_min.z), fabsf(cm.bounds_max.z)) + 0.05f};
+        uint32_t stack[64];
+        int sp = 0;
+        stack[sp++] = 0;
+        while (sp > 0) {
+            const CollisionMesh::Node &node = gm.nodes[stack[--sp]];
+            // 0x4feb20 node test: |child.pos - node.c|_k <= node.h_k + br.
+            bool miss = false;
+            for (int k = 0; k < 3; k++) {
+                float c = 0.5f * (vec_axis(node.min, k) + vec_axis(node.max, k));
+                float h = 0.5f * (vec_axis(node.max, k) - vec_axis(node.min, k));
+                if (fabsf(vec_axis(cp.pos, k) - c) > h + br) miss = true;
+            }
+            if (miss) continue;
+            if (node.count == 0) {
+                if (node.left >= 0 && sp < 64) stack[sp++] = (uint32_t)node.left;
+                if (node.right >= 0 && sp < 64) stack[sp++] = (uint32_t)node.right;
+                continue;
+            }
+            for (uint32_t k = 0; k < node.count; k++) {
+                const uint32_t ti = gm.order[node.first + k];
+                const CollisionMesh::Triangle &tri = gm.triangles[ti];
+                Vec3 vw[3];
+                for (int i = 0; i < 3; i++)
+                    vw[i] = gp.pos + mat_vec(gr, gm.vertices[tri.v[i]]);
+                Vec3 n = stored_normals ? mat_vec(gr, gm.face_normals[ti])
+                                        : vec_cross(vw[1] - vw[0], vw[2] - vw[0]);
+                n = vec_normalize(n, Vec3{0.0f, 1.0f, 0.0f});
+                if (!swept_sphere_face(cp.pos, cp.pos, br, vw[0], vw[1], vw[2], n))
+                    continue;
+                Vec3 tv[3];
+                for (int i = 0; i < 3; i++)
+                    tv[i] = mat_tvec(cr, vw[i] - cp.pos);
+                if (!box_triangle(half, mat_tvec(cr, n), tv))
+                    continue;
+                Poly face = poly_triangle(vw[0], vw[1], vw[2], n);
+                int fa = 0, fb = 0;
+                Vec3 pa{0.0f, 0.0f, 0.0f}, pb{0.0f, 0.0f, 0.0f};
+                Vec3 nn{0.0f, 1.0f, 0.0f};
+                Pose bpose;  // the face poly holds world vertices
+                float d = vclip_closest(cp, *cc.poly, bpose, face, &fa, &fb, &pa, &pb, &nn);
+                Vec3 support{0.0f, 0.0f, 0.0f};
+                float ds = hull_plane_distance(*cc.poly, cr, cp.pos, n, vw[0], &support);
+                bool use_support = ds < d;
+                float cand = use_support ? ds : d;
+                if (cand < best) {
+                    best = cand;
+                    best_child = (int)ci;
+                    best_tri = (int)ti;
+                    best_fa = fa;
+                    best_fb = fb;
+                    if (use_support) {
+                        best_n = n;
+                        best_pa = mat_tvec(cr, support - cp.pos);
+                        best_pb = support - n * ds;  // closest point on the face plane
+                    } else {
+                        best_n = nn;
+                        best_pa = pa;
+                        best_pb = pb;
+                    }
+                }
+            }
+        }
+    }
+    if (best_child < 0)
+        return;
+    const RigidBody::CollisionChild &cc = a.collision_children[best_child];
+    const Pose cp = child_world_pose(a, cc);
+    const Vec3 paw = cp.pos + mat_vec(pose_rotation(cp), best_pa);
+    Contact c;
+    c.a = &a;
+    c.b = &g;
+    c.normal = best_n;
+    c.separation = best;  // mesh margin (shape+0x10) is 0
+    c.world_point = (paw + best_pb) * 0.5f;  // best_pb is in world coords
+    // Lift the child witness into the root frame (notes/11 §4, child+0x1c).
+    c.local_a = cc.pose.pos + mat_vec(pose_rotation(cc.pose), best_pa);
+    c.local_b = mat_tvec(gr, best_pb - gp.pos);
+    c.friction = cc.shape.friction < g.def.shape.friction ? cc.shape.friction
+                                                          : g.def.shape.friction;
+    c.restitution = 0.5f * (cc.shape.restitution + g.def.shape.restitution);
+    c.feature_a = best_fa;
+    c.feature_b = best_fb;
+    c.child_index = best_child;
+    c.soup_triangle = best_tri;
+    next.push_back(c);
+}
+
+// Phys__shapeDistance 0x50d9d0 refresh of an existing hull contact: result 0
+// (invalid features) or a separation beyond 0.05 drops it (notes/11 §4).
+static void refresh_hull_contacts(const World &w, RigidBody &a, RigidBody &g,
+                                  std::vector<Contact> &next)
+{
+    const CollisionMesh &gm = *g.def.shape.mesh;
+    const Pose gp = g.pose();
+    const Mat34 gr = g.rotation();
+    for (const Contact &old : w.contacts) {
+        if (old.a != &a || old.b != &g || old.child_index < 0)
+            continue;
+        if (old.child_index >= (int)a.collision_children.size() ||
+            old.soup_triangle < 0 || old.soup_triangle >= (int)gm.triangles.size())
+            continue;
+        const RigidBody::CollisionChild &cc = a.collision_children[old.child_index];
+        if (cc.shape.type != SHAPE_MESH || !cc.shape.mesh || !cc.poly)
+            continue;
+        const CollisionMesh::Triangle &tri = gm.triangles[old.soup_triangle];
+        Vec3 vw[3];
+        for (int i = 0; i < 3; i++)
+            vw[i] = gp.pos + mat_vec(gr, gm.vertices[tri.v[i]]);
+        Vec3 n = gm.face_normals.size() == gm.triangles.size()
+                     ? mat_vec(gr, gm.face_normals[old.soup_triangle])
+                     : vec_cross(vw[1] - vw[0], vw[2] - vw[0]);
+        n = vec_normalize(n, Vec3{0.0f, 1.0f, 0.0f});
+        Poly face = poly_triangle(vw[0], vw[1], vw[2], n);
+        Pose cpose = child_world_pose(a, cc);
+        Pose bpose;
+        float d = vclip_check(cpose, *cc.poly, bpose, face, old.feature_a, old.feature_b);
+        // Signed fallback for a hull that crossed the face between steps; the
+        // cached V-F pair stays valid, but the face poly is two-sided.
+        Vec3 support{0.0f, 0.0f, 0.0f};
+        float ds = hull_plane_distance(*cc.poly, pose_rotation(cpose), cpose.pos, n,
+                                       vw[0], &support);
+        if (d == 0.0f || ds < d)
+            d = ds;
+        if (d > kKeepSlop)
+            continue;
+        Contact c = old;
+        c.separation = d;
+        next.push_back(c);
+    }
+}
+
 // PhysicsWorld__updateContacts 0x4f9af0 plus Collide__bodyPair 0x4fb370.
 // add_new: the broad phase pass at the start of a step may create pairs; later
 // sub-iteration refreshes only update pairs that already exist.
@@ -709,6 +951,18 @@ static void update_contacts(World &w, bool add_new)
         // with every active root. The shape 0/7 filter drops the ground itself.
         for (size_t j = 0; j < w.statics.size(); j++)
             consider_pair(w, a, *w.statics[j], add_new, next);
+        // Collide__bodyVsTriangles 0x4feb20: a compound root's child hulls
+        // collide with a static triangle soup. INVENTED: merged soup instead
+        // of the streamed resource nodes (notes/19).
+        if (is_dynamic(a) && !a.collision_children.empty())
+            for (RigidBody *g : w.statics) {
+                if (g->def.shape.type != SHAPE_MESH || !g->def.shape.mesh)
+                    continue;
+                if (add_new)
+                    consider_hull_pair(a, *g, next);
+                else
+                    refresh_hull_contacts(w, a, *g, next);
+            }
     }
     w.contacts.swap(next);
 }

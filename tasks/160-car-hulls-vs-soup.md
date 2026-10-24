@@ -1,6 +1,6 @@
 ---
 id: 160
-status: todo
+status: implemented
 branch: card/160
 depends: [159]
 ---
@@ -117,3 +117,36 @@ Aero drag §7 (0x49fb48..0x49ff40) and ground rolling resistance `gm+0x54` in p1
 vmboot car: C_drag = 0); body-vs-body hull pairs (0x4fb370); streamed node walk.
 
 ## Result
+Implemented on `card/160`.
+
+- `physics.h`: `RigidBody::CollisionChild {shape, pose, poly}` + `collision_children`
+  (INVENTED storage: the exe hangs real child bodies, 0x4feb20 descends them);
+  `Contact::child_index`/`soup_triangle` keep the 0x50d9d0 refresh data.
+- `world.cpp`: add_new pass walks the merged soup "tree" (node AABB test =
+  node bounds + child bounding sphere), per-face 0x4f9860 swept-sphere and
+  0x4fc450 box-triangle filters (AABB half = raw mesh bounds + 0.05), then
+  0x4fc7e0's minimum distance + one `addContact` per root. Sub-iteration
+  refresh runs the cached-feature `Phys__shapeDistance` 0x50d9d0 and drops on
+  0/invalid or > 0.05 m. INVENTED: merged soup instead of streamed nodes; the
+  signed support-vertex distance is added to the V-Clip distance because the
+  0x50f000 face Poly is two-sided and a hull that crossed the face between two
+  steps would otherwise only report a positive (unsigned) distance.
+- `car.cpp`: `rebuild_compound` copies every cfg body hull (kind 6 + installed
+  part meshes) into `collision_children` at the same parent-frame poses as the
+  mass children; `car_root` itself stays SHAPE_NONE.
+- `vmboot.cpp`: auto-drive checks (1) soup never above car_root over 900 frames,
+  (2) final |vel| within the rev-limiter/top-gear bound, (3) no hull contact at
+  rest.
+
+vmboot (`make -C src -j4 check`, log `src/build/check160.log`):
+`selfcheck: PASSED (112 checks, 0 failure(s))`, 0 failed threads.
+- check 1: `hull vs soup ... 0 frame(s) with the soup above car_root, min soup
+  margin 0.511 m`
+- check 2: `final |vel| 33.29 m/s, horizontal 33.29 m/s, v_top 43.86 m/s`
+- check 3: `48 hull(s)`, `no hull contact at rest (0 contact(s))`
+- auto drive: `final speed 33.29 m/s (v1 12.42), mean driven kappa 0.077`;
+  the 103.85 m/s free fall is gone and the car is held by the body hulls on the
+  flat.
+Doubt: the exe's TOI bisection (0x4fc7e0) is replaced by the signed support
+distance; behaviour matches on the shipped freeride/auto-drive corpus, but a
+multi-face corner case could differ.

@@ -1118,6 +1118,17 @@ void game_init_check(Boot &boot, Checker &c)
                 box_contact = true;
         c.check(!box_contact,
                 "no world contact has car_root or part_comp as a side");
+        // Card 160 done-when 3: the springs carry the car at rest, so no
+        // collision child hull touches the soup (0x4feb20 not triggered).
+        int hull_contacts_rest = 0;
+        for (const Contact &ct : process_world().contacts)
+            if (ct.child_index >= 0) hull_contacts_rest++;
+        c.check(root->collision_children.size() > 0,
+                "car_root has collision child hulls from the cfg body lines (0x4feb20, " +
+                    std::to_string(root->collision_children.size()) + " hull(s))");
+        c.check(hull_contacts_rest == 0,
+                "no hull contact at rest (" + std::to_string(hull_contacts_rest) +
+                    " contact(s), the springs carry the car)");
         c.check(std::fabs(root->vel.y) < 0.1f, "car settles (|vel.y| < 0.1)");
 
         // Card 159: every SunStrip cfg body-line hull as a V-Clip Poly
@@ -1593,9 +1604,27 @@ void game_init_check(Boot &boot, Checker &c)
         std::vector<DriveSample> samples;
         float rpm_before = car_payload->rpm_smoothed;
         unsigned launch_rejects0 = gate_rejects(sim);
+        // Card 160 done-when 1: a downward ray from 3 m over car_root must
+        // never find the soup above the root.
+        const CollisionMesh *soup = ground && ground->def.shape.mesh
+                                        ? ground->def.shape.mesh.get()
+                                        : nullptr;
+        const Pose soup_pose = ground ? ground->pose() : Pose{};
+        int soup_passed = 0;
+        float min_margin = 1e30f;
         key(200, true);
         for (int i = 0; i < 900; i++) {
             frames(1);
+            if (soup) {
+                MeshRayHit rh;
+                Vec3 origin = root->pos + Vec3{0.0f, 3.0f, 0.0f};
+                if (mesh_raycast(*soup, soup_pose, origin, Vec3{0.0f, -1.0f, 0.0f},
+                                 10.0f, &rh)) {
+                    float margin = root->pos.y - rh.point.y;
+                    if (margin < min_margin) min_margin = margin;
+                    if (!(rh.point.y < root->pos.y)) soup_passed++;
+                }
+            }
             // 0x4b19a0 mean driven-wheel slip, one value per frame.
             float ksum = 0.0f;
             int kn = 0;
@@ -1618,6 +1647,16 @@ void game_init_check(Boot &boot, Checker &c)
         std::printf("  sensor gate (0x4f3d70): %u crossing(s) rejected (prev - d > r) "
                     "over the 900 launch frames\n",
                     gate_rejects(sim) - launch_rejects0);
+        if (min_margin < 1e29f)
+            std::printf("  hull vs soup (0x4feb20/0x4fc7e0): %d frame(s) with the soup "
+                        "above car_root, min soup margin %.3f m\n",
+                        soup_passed, (double)min_margin);
+        else
+            std::printf("  hull vs soup (0x4feb20/0x4fc7e0): no soup hit under car_root "
+                        "over the 900 frames\n");
+        c.check(soup && soup_passed == 0,
+                "the car never crosses the soup (" + std::to_string(soup_passed) +
+                    " frame(s) with the soup above car_root over 900 auto-drive frames)");
         int engage_i = -1;
         for (size_t i = 0; i < samples.size(); i++)
             if (samples[i].gear == 1) {
@@ -1682,6 +1721,25 @@ void game_init_check(Boot &boot, Checker &c)
                 "final speed beats the 1st-gear top speed at the 0x4b06b0 threshold "
                 "(got " + std::to_string((double)final_speed) + " m/s, v1 " +
                     std::to_string((double)v1) + ")");
+        // Card 160 done-when 2: the rev limiter (torque 0 above RPM_limit,
+        // 0x49c8e0) and the top gear bound the car's speed.
+        float v_top = 0.0f;
+        if (!car_payload->wheels.empty() && car_payload->gears > 0 &&
+            car_payload->gears < 8 && car_payload->ratio[car_payload->gears] > 0.0f &&
+            car_payload->rearend_ratio > 0.0f)
+            v_top = car_payload->rpm_limit * 0.10471976f /
+                    (car_payload->ratio[car_payload->gears] *
+                     car_payload->rearend_ratio) *
+                    car_payload->wheels[0].radius;
+        float h_speed = sqrtf(root->vel.x * root->vel.x + root->vel.z * root->vel.z);
+        std::printf("  top-speed bound: final |vel| %.2f m/s, horizontal %.2f m/s, "
+                    "v_top %.2f m/s (RPM_limit %.0f, gear %d)\n",
+                    (double)final_speed, (double)h_speed, (double)v_top,
+                    (double)car_payload->rpm_limit, car_payload->gears);
+        c.check(v_top > 0.0f && final_speed <= v_top,
+                "final speed is within the rev-limiter/top-gear bound (|vel| " +
+                    std::to_string((double)final_speed) + " m/s <= v_top " +
+                    std::to_string((double)v_top) + " m/s)");
     }
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());

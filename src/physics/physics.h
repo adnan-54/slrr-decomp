@@ -62,6 +62,7 @@ static inline Mat34 pose_rotation(const Pose &p)
 }
 
 struct CollisionMesh;
+struct Poly;
 
 // Shape kinds (notes/11 §1, shape+0x08).
 // Kind 6 carries a triangle-soup CollisionMesh (physics/mesh.h); kind 7 keeps
@@ -118,6 +119,15 @@ struct BodyDef {
 void compute_mass_props(BodyDef *def, float mass, Vec3 *center = nullptr);
 
 struct RigidBody {
+    // INVENTED storage: the exe hangs real child bodies under part_comp and
+    // descends them in Collide__bodyVsTriangles 0x4feb20; the port keeps the
+    // child shapes and their parent-frame poses on the root instead.
+    struct CollisionChild {
+        Shape shape;
+        Pose pose;                         // child -> parent frame
+        std::shared_ptr<const Poly> poly;  // kind-6 V-Clip hull
+    };
+    std::vector<CollisionChild> collision_children;
     BodyDef def;
     Vec3 pos{0.0f, 0.0f, 0.0f};
     Quat rot{0.0f, 0.0f, 0.0f, 1.0f};  // state s[0x25..0x28]
@@ -197,6 +207,11 @@ struct Contact {
     float friction_force = 0.0f;      // +0xc0
     int feature_a = 0;
     int feature_b = 0;
+    // Hull-vs-soup contact (Collide__bodyVsTriangles 0x4feb20 /
+    // Collide__candidatesTOI 0x4fc7e0): the root's collision child and the
+    // soup triangle, kept for the Phys__shapeDistance 0x50d9d0 refresh.
+    int child_index = -1;
+    int soup_triangle = -1;
 };
 
 // PhysicsWorld (notes/08, World::step 0x502060). Fixed iteration order:

@@ -18,6 +18,7 @@
 #include "mesh/scx.h"
 #include "parts/cfg.h"
 #include "physics/mesh.h"
+#include "physics/vclip.h"
 #include "resource/manager.h"
 #include "script/natives.h"
 #include "script/vm.h"
@@ -532,6 +533,7 @@ struct CompoundChild {
     Vec3 pos{0.0f, 0.0f, 0.0f};  // car frame
     Mat34 rot{};                 // child -> car frame
     Mat34 inertia{};             // about the child's own COM, child frame
+    Shape shape;
 };
 
 // 0x5032d0 child: the body's mass and I_c (def+0x60 = inverse of its inv
@@ -548,6 +550,7 @@ void add_compound_child(std::vector<CompoundChild> &out, float mass, const Shape
     c.mass = mass;
     c.rot = rot;
     c.pos = pos + mat_vec(rot, center);
+    c.shape = shape;
     if (!invert3(def.inv_inertia, &c.inertia)) c.inertia = Mat34{};
     out.push_back(c);
 }
@@ -685,6 +688,19 @@ void rebuild_compound(Runtime &rt, Runtime::Resource *carres)
     } else {
         root->def.inv_mass = 0.0f;
         root->def.flags |= 4u;  // static
+    }
+    // Card 160: Collide__bodyVsTriangles 0x4feb20 recurses over the compound
+    // children. INVENTED storage: kind-6 hulls with their root-frame poses
+    // instead of real child bodies; car_root's own shape stays SHAPE_NONE.
+    root->collision_children.clear();
+    for (const CompoundChild &c : children) {
+        if (c.shape.type != SHAPE_MESH || !c.shape.mesh) continue;
+        RigidBody::CollisionChild child;
+        child.shape = c.shape;
+        child.pose.pos = c.pos - com;
+        mat_to_quat(&child.pose.rot, &c.rot);
+        child.poly = std::make_shared<const Poly>(poly_from_triangles(*c.shape.mesh));
+        root->collision_children.push_back(child);
     }
     // 0x5032d0 re-centres the children; the sim wheels are src's children.
     Car *sim = car->sim.get();
