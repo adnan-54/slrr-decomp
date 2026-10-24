@@ -492,3 +492,49 @@ Scratch debug build of HEAD c3c75ae (copy of src in the session scratchpad, prin
 - What does limit speed in the exe for this car: the rev limiter (§1, `L = 0` once `rpm` and the predicted `2rpm - last` exceed `RPM_limit` e+0x1c) and the gearing: top gear 5 (`ratio[5]` 0.963, `rearend_ratio` 5.5, `RPM_limit` 6750, tyre r 0.329) -> `v_top = 6750·π/30 / (0.963·5.5) · 0.329 = 43.9 m/s` (158 km/h) wheel-surface speed; body linear drag `-0.005·m·v` (0x4f8460, ported), rolling resistance `p13·Fz·vz·0.01` (ported), engine friction 0x4a1510 (ported) only lower it. Drivetrain efficiency: no such term in 0x49c8e0 (the clutch coupling §3 is lossless up to the `k·0.999` factor, ported).
 - Small gaps found on the way (not the cause): `p13` in src is `W+0x74` only; the exe adds the ground material's rolling resistance `gm+0x54` (src `Shape::rolling_resistance` exists, vehicle.cpp comment "ground material has no rollres" is stale). Engine block `e+0xe8` drivetrain inertia 1000 / `e+0xec` wheel inertia 50 are template constants (clone 0x4b0910, "Engine-block template writers"); src defaults match.
 - Cards: 159 (Poly build + V-Clip closest features for kind-6 hulls vs a triangle, real-data distance check), 160 (car hull children vs soup: 0x4feb20 + 0x4fc7e0 -> contacts; Done when the auto drive stays on the ground and |vel| <= v_top). Drag §7 + ground rollres: card 161 (written; gm = S+0xac is the per-face material `shape+0xb0 + idx·0xc4` when `idx < shape+0xac`, else the shape itself, 0x4f3d70).
+
+## Script placement of a car: GameRef.setMatrix -> type_car vf7 0x4a99b0 (2026-10-24, card 164)
+Why it matters: the career race (Garage CMD_EVENTLIST 133 -> EventList(MODE_AMATEUR) -> eGen CMD_RACE ->
+`java.game.Track` + `java.game.CircuitRacing`) places every car with `GameRef.setMatrix` from the map's
+`TrackData.getGrid()` data (`Track.applyStartGrid`, Track.java:2901-2941; freeride: `Track.lockCar`
+setMatrix(posStart, oriStart), Track.java:1688-1697, then "reset"). The grid is script data of the map
+mod (TrackData subclass), not exe. The exe only provides the native below.
+
+Scratch probe (cmd 133 instead of 134, run 2026-10-24): the player car's Resource pos became the grid slot
+(40.067 -4.301 22.549) but `car_root` stayed at (0.010 -0.208 -0.061), stacked with 9 other sleeping cars at
+the origin; 4 other root bodies fell to y -219 .. -32956. The woken car overlapped the stacked hulls
+("Voronoi error (infinite loop)" x105 on stderr), was thrown up (pos.y 51, vel.y -44.5, 0 wheel hits):
+the 12 drive-check failures. Cause: src `gr_set_matrix` (natives.cpp) only writes `Resource::pos/ori`.
+
+Exe chain (asm/Ghidra 12.1.4):
+- `0x4db950` vm_gameref_setmatrix: reads Vector3 x/y/z, Ypr y/p/r (null -> 0), formats `"ffffff"` (0x56a000)
+  and calls `0x4eb3f0`(str) on the GameRef handle.
+- `0x4eb3f0`: typed object (0xa0000000 lookup 0x51f4f0) -> its type manager -> `vtable+0x1c` (vf7)
+  `(typed+0x4c, str)`. For cars that is `type_car__vf7 0x4a99b0` (vtable 0x59dcd8 slot 7).
+- `0x4a99b0`(car, str), ECX = M: `Str__scan(str, "fffffffffffffffi")` = pos3, ypr3, vel3, angvel3,
+  steer, wheelspin delta, pitch-add, int dir; setMatrix sends only 6, the rest stay 0.
+  - M wheel count `M+0x1fb4` < 4: `pos += R(ypr) * M+0x1f1c` (cfg keyword `center`, handler 0x48de60;
+    no shipped cfg uses it, so 0).
+  - else, per wheel i<4 (W = car+0x1414 + i*0x2e4): contact point `c_i = (W+0x78, W+0x7c - ((W+0x60 +
+    W+0x50) - (|g|*m/n)/W+0x44), W+0x80)` (hub minus rest ray at static compression; |g| =
+    |DAT_5dadf0+0x1c4|, m = 1/(def+0x2c) of the car+0x13ec body, which vf7 walks up to its root,
+    so it is part_comp, not car_root: UNVERIFIED which mass src keeps there, check card 153 notes). pitch += atan2((y2+y3-y0-y1)/2, (z2+z3-z0-z1)/2);
+    roll -= atan2((y1+y3-y0-y2)/2, (x1+x3-x0-x2)/2) (fpatan order checked in asm 0x4a9db6..0x4a9dcd).
+    R = ypr matrix (0x5666d0); v = R * mean(c_i); `pos.x -= v.x; pos.z -= v.z;
+    pos.y -= min(v.y, -(R*M_center).y)`. So the given pos is where the tyres touch.
+  - flaps (car+0x1518, 0x8c records): their offsets to the chassis are kept across the move.
+  - `0x4eac50`(pos, R) on the car's body (part_comp, car+0x13ec): `0x4e9730` walks the compound to the
+    root and returns the child offset `off` in root frame; root pos = pos - R*off (src: root->pos =
+    pos + R*com, part_comp sits at -com), root orientation = R (0x567ea0), copied to both state buffers;
+    `0x5030b0` refreshes child poses. Returns nonzero when pos or rotation changed.
+  - if moved: root vel (+0x70) = vel arg and angular (0x506ce0) = angvel arg in both buffers (0 here);
+    car+0x12c = pos + vel*0.02, car+0x138 = vel; 0x4c6d30 copies vel to the part renders.
+  - always: car+0x1e5c/0x1e60 (gear state) = 0, +0x1ddc steer = arg (0), +0x1de4/1de8/1dec/1df4 = 0,
+    +0x1e7c (engine omega) = +0x1e78 (shaft) = +0x1e80 = 0; if |+0x1de0 - steer| > 0.001: 0x4aa830 +
+    `+0x1de0 = steer`.
+  - if moved: per wheel W+0xc0 = 0; sensor S = W+0x30: pose refresh (0x4f4360/0x4f4310), S+0xf4 = 0,
+    `S+0xf0 = (W+0x60 + W+0x50) - (|g|*m/n)/W+0x44 - W+0x80*(pitchadd/...)` (pitch-add 0 here) -> the
+    gate's previous ray length starts at the static length; car+0x70 |= 0x100000.
+  - `if (!(root+0x58 & 0x80)) PhysBody__sleep 0x506d90(root)`: a placed car sleeps until "wakeup"
+    (Gamemode.unlockCars, Gamemode.java:774-800, after the countdown).
+  - car+0x70 &= ~0x30000 (| 0x10000 / 0x20000 for dir -1 / 1).
