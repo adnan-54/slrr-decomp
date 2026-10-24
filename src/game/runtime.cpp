@@ -632,10 +632,16 @@ void Runtime::queue_event(Resource *target, Resource *sender, uint32_t code,
                           const Value &param, const char *method)
 {
     if (!target) return;
-    // shortcut: no native type handlers (typed+0x4c) or streaming checks;
-    // upgrade when engine types exist.
-    if ((target->event_mask & code) && target->script)
-        dispatch_script(*this, target, sender, code, param, method);
+    // 0x47c760 step 2: the native type handler (typed+0x4c vf14) runs before
+    // the script and a non-zero return suppresses handleEvent. Only the car
+    // command handler is ported.
+    // shortcut: other native kinds and the streaming check (typed+0x4c == 0
+    // path) are not modelled; upgrade when engine types exist.
+    if (target->event_mask & code) {
+        uint32_t ev = code & 0x0fffffffu;  // vf14 gets the masked code
+        if (!game::car_command(*this, target, ev, param) && target->script)
+            dispatch_script(*this, target, sender, code, param, method);
+    }
 
     // INVENTED: snapshot iteration; the exe walks the live list.
     std::vector<Resource::Notification> list = target->notifications;

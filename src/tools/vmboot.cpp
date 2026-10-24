@@ -592,6 +592,7 @@ void game_init_check(Boot &boot, Checker &c)
     // Vehicle.java:49 holds the Chassis script object; its handle target is the
     // instance create_car_bodies bound the payload to (0x4c1f90/0x4992e0).
     game::CarData *car_payload = nullptr;
+    Runtime::Resource *car_res = nullptr;
     {
         Value chv;
         std::string cherr;
@@ -600,7 +601,8 @@ void game_init_check(Boot &boot, Checker &c)
             boot.vm()->get_instance_field(player_car, "chassis", &chv, &cherr) &&
             chv.kind == Value::Obj && chv.obj)
             ch = boot.runtime()->handle(chv.obj);
-        if (ch && ch->target) car_payload = game::car_data(*boot.runtime(), ch->target);
+        if (ch && ch->target) car_res = ch->target;
+        if (car_res) car_payload = game::car_data(*boot.runtime(), car_res);
     }
     bool root_sleeping = false;
     if (car_payload && car_payload->root_body)
@@ -636,6 +638,28 @@ void game_init_check(Boot &boot, Checker &c)
             "Track.game is the freeride gamemode (got " + game_after + ")");
     c.check(map_after == "java.util.resource.GroundRef",
             "Track.map is a non-null GroundRef (got " + map_after + ")");
+
+    // INVENTED: Gamemode.wakeUpCars (Gamemode.java:799) is not called -- its
+    // Track.java:1056 call is commented out; in the exe the freeride car wakes
+    // from player input (Vehicle__updateControls 0x498300 at 0x498599). Queue
+    // the same command Vehicle.wakeUp (Vehicle.java:187) sends.
+    if (car_res && car_payload && car_payload->root_body) {
+        RigidBody *root = car_payload->root_body;
+        const float y_before = root->pos.y;
+        boot.runtime()->queue_event(car_res, nullptr, 0x10,
+                                    Value::make_str("wakeup"));
+        for (int i = kFrames + 1; i <= kFrames + 300; i++) loop.frame(i * 16);
+        bool awake = false;
+        for (RigidBody *b : process_world().bodies)
+            if (b == root) awake = true;
+        std::printf("  car wakeup (0x4a4023): car_root pos.y %.3f -> %.3f "
+                    "after 300 frames\n",
+                    (double)y_before, (double)root->pos.y);
+        c.check(awake,
+                "queued \"wakeup\" puts car_root back in the active body list (0x507060)");
+        c.check(root->pos.y < y_before,
+                "woken car_root falls under gravity (no ground yet)");
+    }
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
     if (dealer_at_garage) {

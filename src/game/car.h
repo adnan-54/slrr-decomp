@@ -145,11 +145,14 @@ struct CarData {
     float brake_input = 0.0f;    // +0x1de8
     float handbrake_input = 0.0f;   // +0x1df4
     float steer_input = 0.0f;    // +0x1ddc
+    float steer_copy = 0.0f;     // +0x1de0 (written when the body falls asleep)
     float clutch_input = 0.0f;   // +0x1df0
     float nitro_input = 0.0f;    // +0x1df8
     int32_t gear = 0;            // +0x1e5c
     int32_t gear_copy = 0;       // +0x1e60
     int32_t horn_id = 0;         // +0x1e00
+    float gear_ratio = 0.0f;     // +0x1e0c ratio[gear] (Vehicle__update 0x498b40)
+    float shaft_speed = 0.0f;    // +0x1e78 driveshaft / wheel-average speed
     float rpm_raw = 0.0f;        // +0x1e7c
     float rpm_smoothed = 0.0f;   // +0x1e80
     float engine_temp = 20.0f;   // +0x1ec0  0x4992e0 writes 0x41a00000
@@ -226,6 +229,11 @@ CarData *car_data(Runtime &rt, Runtime::Resource *r);
 // (0x4bf4e0 sets M+0xff0; -1 = no body line).
 void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
                        Runtime::Resource *type, const std::string &params);
+// 0x4a2e60 type_car__vf14 EVENT_COMMAND (0x10) branch: "brake", "start",
+// "suspend", "wakeup", "reset". Returns 1 when the command was consumed (the
+// script handleEvent is then suppressed), 0 for anything else.
+int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
+                const Value &param);
 // Number of CarData payloads that own car bodies (vmboot body_count check).
 int car_body_instances();
 void bind_wheel(Object *wrapper, WheelData *w);

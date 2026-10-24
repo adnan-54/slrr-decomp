@@ -14,6 +14,7 @@
 
 #include "parts/cfg.h"
 #include "resource/manager.h"
+#include "script/vm.h"
 #include "vehicle/dyno.h"
 
 namespace game {
@@ -398,6 +399,10 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
     if (!type || !load_native_cfg(rt, type, "car", &cfg) || cfg.bodies.empty()) return;
     CarData *car = car_data(rt, inst);
     if (!car) return;
+    // INVENTED: the typed-object event mask default is not traced (card 040);
+    // the car's native vf14 must be reachable from Vehicle.wakeUp/command, which
+    // no script enables with setEventMask. EVENT_COMMAND = 0x10 (GameRef.class).
+    inst->event_mask |= 0x10u;
     World &world = process_world();
 
     // Str__scan(params, "%f,%f,%f,%f,%f,%f,%d"); Vehicle.java:111 passes
@@ -445,6 +450,58 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
     // 0x5032d0 compound mass refresh: NOT this card.
     root = car->root_body ? car->root_body : car->chassis_body; // PhysBody__root
     if (root && !root->asleep) world.sleep(root);               // 0x506d90
+}
+
+int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
+                const Value &param)
+{
+    if (code != 0x10 || param.kind != Value::Str) return 0; // EVENT_COMMAND
+    if (g_rt != &rt || !car) return 0;
+    auto it = g_cars.find(car);
+    if (it == g_cars.end()) return 0;
+    CarData *c = it->second.get();
+
+    // PhysBody__root 0x480700: follow the compound parent chain.
+    RigidBody *root = c->chassis_body;
+    while (root && root->parent) root = root->parent;
+    World &world = process_world();
+    const std::string &cmd = param.s;
+
+    if (cmd == "brake") {  // 0x4a3f6d
+        c->flags |= 0x40000u;
+        return 1;
+    }
+    if (cmd == "start") {  // 0x4a3fa6
+        c->flags &= ~(0x40000u | 0x4u);
+        return 1;
+    }
+    if (cmd == "suspend") {  // 0x4a3fdf PhysBody__sleepRoot 0x4ae5a0
+        if (root) world.sleep(root);
+        return 1;
+    }
+    if (cmd == "wakeup") {  // 0x4a4023 PhysBody__wakeRoot 0x48ca50
+        if (root) world.wake(root);
+        return 1;
+    }
+    if (cmd == "reset") {  // 0x4a4067
+        if (root && !root->asleep) {
+            root->vel = Vec3{0.0f, 0.0f, 0.0f};
+            root->angular_momentum = Vec3{0.0f, 0.0f, 0.0f};
+        }
+        c->gear = 0;
+        c->gear_ratio = c->ratio[0];
+        c->steer_input = 0.0f;
+        c->steer_copy = 0.0f;
+        c->throttle = 0.0f;
+        c->brake_input = 0.0f;
+        c->handbrake_input = 0.0f;
+        c->rpm_raw = 0.0f;
+        c->shaft_speed = 0.0f;
+        return 1;
+    }
+    // INVENTED: the rest of the 0x4a2e60 chain (cfg keys such as abs, filter,
+    // render, reload) is not ported; returning 0 lets the script see it.
+    return 0;
 }
 
 int car_body_instances()
