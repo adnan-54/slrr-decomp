@@ -38,6 +38,7 @@ struct ThreadInfo {
     bool started = false, done = false, sleeping = false, waiting = false,
          suspended = false;
     std::string error;  // runner->error() when the thread Failed
+    std::string where;  // innermost frame of a live thread
 };
 std::vector<ThreadInfo> thread_report(Vm &vm);
 

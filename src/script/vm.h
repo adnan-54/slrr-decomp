@@ -124,6 +124,8 @@ class Thread {
     const Value &result() const { return result_; }
     const std::string &error() const { return error_; }
     Status status() const { return status_; }
+    // "Class.method line N" of the innermost frame (also the error prefix)
+    std::string where() const;
 
   private:
     friend class Vm;

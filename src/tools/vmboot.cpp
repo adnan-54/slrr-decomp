@@ -121,10 +121,11 @@ std::string thread_state(const natives::ThreadInfo &t)
 {
     if (!t.error.empty()) return "failed: " + t.error;
     if (t.done) return "done";
-    if (t.sleeping) return "stopped (sleeping)";
-    if (t.waiting) return "stopped (waiting)";
-    if (t.suspended) return "stopped (suspended)";
-    return "running (yielded)";
+    std::string at = t.where.empty() ? std::string() : " at " + t.where;
+    if (t.sleeping) return "stopped (sleeping)" + at;
+    if (t.waiting) return "stopped (waiting)" + at;
+    if (t.suspended) return "stopped (suspended)" + at;
+    return "running (yielded)" + at;
 }
 
 // 0x47d760 init step: Config.init -> type record "Init" (sl.rpk, type 8) ->
@@ -173,7 +174,7 @@ void game_init_check(Boot &boot, Checker &c)
 
     // Drive the game like the exe's main loop after boot, on a simulated clock:
     // kFrames 16 ms steps (~10 s of game time), never the wall clock.
-    const int kFrames = 600;
+    const int kFrames = 6000;
     FrameLoop loop(0);
     for (int i = 1; i <= kFrames; i++) loop.frame(i * 16);
 

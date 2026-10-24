@@ -501,16 +501,22 @@ static void fill_frame(Frame *f, ClassState *decl, const MethodInfo *m, Object *
 // ---------------------------------------------------------------------------
 // Thread
 
-bool Thread::fail(const std::string &msg)
+std::string Thread::where() const
 {
-    std::string where;
+    std::string w;
     if (!frames_.empty() && frames_.back()->unit) {
         const Frame &f = *frames_.back();
-        where = f.unit->class_name(f.unit->self_class);
+        w = f.unit->class_name(f.unit->self_class);
         const char *mn = f.method ? f.unit->str(f.method->name) : nullptr;
-        where += "." + std::string(mn ? mn : "<field init>") + " ";
+        w += "." + std::string(mn ? mn : "<field init>") + " ";
     }
-    error_ = where + (line_ ? "line " + std::to_string(line_) + ": " : "") + msg;
+    return w + (line_ ? "line " + std::to_string(line_) : std::string());
+}
+
+bool Thread::fail(const std::string &msg)
+{
+    std::string w = where();
+    error_ = w + (w.empty() ? "" : ": ") + msg;
     return false;
 }
 

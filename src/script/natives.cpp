@@ -7499,6 +7499,8 @@ std::vector<ThreadInfo> thread_report(Vm &vm)
         info.suspended = t->suspended;
         if (t->runner && t->runner->status() == Thread::Failed)
             info.error = t->runner->error();
+        else if (t->runner && !t->done)
+            info.where = t->runner->where();
         out.push_back(std::move(info));
     }
     return out;
