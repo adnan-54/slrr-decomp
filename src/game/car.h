@@ -162,6 +162,7 @@ struct CarData {
     float nitro_input = 0.0f;    // +0x1df8
     int32_t gear = 0;            // +0x1e5c
     int32_t gear_copy = 0;       // +0x1e60
+    int32_t brake_latch = 0;     // +0x1e64 0x497930 brake-to-reverse latch
     int32_t horn_id = 0;         // +0x1e00
     // Control slots / driver slot from the car cfg (M+0x17ec / M+0x17f0,
     // 0x48dee0); slot_player[s] is R_s's player ref (car+0x150 + s*0x4a8).
@@ -175,6 +176,7 @@ struct CarData {
     float horn_axis = 0.0f;      // previous ai(54), horn edge detect
     float gearset_last = 0.0f;   // +0x2280 last ai(51) gearset
     float prev_clutch = 0.0f;    // +0x1fa8 last clutch written by updateControls
+    float prev_rpm = 0.0f;       // +0x1fac 0x4977a0 previous smoothed rpm
     float gear_ratio = 0.0f;     // +0x1e0c ratio[gear] (Vehicle__update 0x498b40)
     float shaft_speed = 0.0f;    // +0x1e78 driveshaft / wheel-average speed
     float rpm_raw = 0.0f;        // +0x1e7c

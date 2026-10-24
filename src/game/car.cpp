@@ -974,6 +974,12 @@ int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
         c->handbrake_input = 0.0f;
         c->rpm_raw = 0.0f;
         c->shaft_speed = 0.0f;
+        // +0x1e7c/+0x1e78 are the engine and shaft state in the exe's single
+        // struct; src keeps them in the simulation (drive_cars copies back).
+        if (c->sim) {
+            c->sim->engine.omega = 0.0f;
+            c->sim->shaft_speed = 0.0f;
+        }
         return 1;
     }
     // 0x4a3360: "activate 0x<player> 0x<camera> 0x<render>" (0x4a1470 slot
@@ -1158,6 +1164,202 @@ static void shift_timers(CarData &c, bool up, float now)
     }
 }
 
+// 0x4b06b0: upshift when the next gear keeps the engine inside the torque
+// band. Returns 1 when a shift started. (e, car, r, T, w).
+static int upshift(CarData &c, float r, float T, float w, float now)
+{
+    if (c.shift_t70 > 0.0f) return 0;
+    float G = c.gear_ratio;
+    if (std::fabs(G) <= 0.01f ||
+        std::fabs(c.rpm_smoothed - w) <= c.rpm_smoothed * 0.1f) {
+        int g = c.gear;
+        if (g < c.gears) {
+            float Gn = c.ratio[g + 1];
+            float rn = r / G * Gn;
+            float Tn = rn < c.rpm_limit ? c.torque_at(rn) : 0.0f;
+            float th = std::min(c.max_rpm * 0.95f, c.rpm_limit * 0.95f);
+            if (th < r || G * T < Gn * Tn) {
+                c.gear = g + 1;
+                c.shift_end = now + 0.3f;
+                shift_timers(c, true, now);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+// 0x4b05a0: downshift when the lower gear pulls harder inside the rev band.
+// Returns 1 when a shift started. (e, car, r, T).
+static int downshift(CarData &c, float r, float T, float now)
+{
+    if (c.shift_t74 > 0.0f || c.gear <= 1) return 0;
+    float G = c.gear_ratio;
+    float Gp = c.ratio[c.gear - 1];
+    float rp = r / G * Gp;
+    float Tp = rp < c.rpm_limit ? c.torque_at(rp) : 0.0f;
+    float th = std::min(c.max_rpm * 0.95f, c.rpm_limit * 0.95f);
+    if (rp < th && G * T * 1.15f < Gp * Tp) {
+        c.gear--;
+        c.shift_end = now + 0.2f;
+        shift_timers(c, false, now);
+        return 1;
+    }
+    return 0;
+}
+
+// 0x4b19a0: mean kappa of the driven wheels that carry suspension load; 0
+// when none. shortcut: the render-object veto (W+0x1e0) is not ported, and
+// src has no wheel without a suspension (W+0x30), as in the drive-wheel pass.
+static float drive_slip(CarData &c)
+{
+    if (!c.sim) return 0.0f;
+    float sum = 0.0f;
+    int n = 0;
+    for (const Wheel &w : c.sim->wheels) {
+        if (w.drive == 0.0f || !(w.load > 0.0f)) continue;
+        sum += w.kappa_prev;
+        n++;
+    }
+    return n ? sum / (float)n : 0.0f;
+}
+
+// 0x497930: automatic gearbox (dt unused). Shifts from the shaft speed, the
+// throttle/brake difference and the driven-wheel slip.
+static void auto_gearbox(CarData &c, float tear, float now)
+{
+    if (tear <= 0.0f || !(c.flags & 0x4000u) || (c.flags & 0x40004u) ||
+        c.shift_end > 0.0f)
+        return;
+    float lo = c.idle_omega * 1.2f;
+    float hi = c.idle_omega * 3.0f;
+    float s = c.shaft_speed;
+    float thr = c.throttle, brk = c.brake_input;
+    float d = thr - brk;
+    auto engage = [&] {
+        if (c.rpm_smoothed > hi) {
+            c.gear = 1;
+            shift_timers(c, true, now);
+        }
+    };
+    auto move = [&] {
+        float w = c.gear_ratio * s * c.rearend_ratio;
+        float r = w * 9.549296f;
+        float T = c.rpm_limit <= r ? 0.0f : c.torque_at(r);
+        if (r < 0.0f) {
+            if (c.shift_t74 > 0.0f) return;
+            c.gear = 0;
+            c.shift_end = now + 0.2f;
+            shift_timers(c, false, now);
+            return;
+        }
+        upshift(c, r, T, w, now);
+        downshift(c, r, T, now);
+    };
+    if (std::fabs(s) <= 1.0f) {  // standstill
+        if (c.brake_latch == 0) {
+            if (d > 0.1f) {
+                if (!c.gears || c.gear != 0) return;
+                engage();
+                return;
+            }
+            if (d < -0.1f) {
+                if (!c.gears) return;
+                c.brake_input = thr;
+                c.throttle = brk;
+                if (c.gear != 0 || c.rpm_smoothed <= hi) return;
+                c.gear = 7;
+                shift_timers(c, true, now);
+                return;
+            }
+            if (c.gear == 0 || c.rpm_smoothed >= lo) return;
+        } else {
+            if (d <= -0.5f) return;
+            c.brake_latch = 0;
+        }
+        c.gear = 0;
+        shift_timers(c, false, now);
+        return;
+    }
+    int g = c.gear;
+    if (g != 7 && g != 0 && d < 0.0f) {  // braking in a forward gear
+        c.brake_latch = 1;
+        if (g == 1) return;  // exe: -1 < g && g < 2
+        float r = c.gear_ratio * s * c.rearend_ratio * 9.549296f;
+        float T = r < c.rpm_limit ? c.torque_at(r) : 0.0f;
+        downshift(c, r, T, now);
+        return;
+    }
+    if (d <= 0.1f) {
+        if (d < -0.1f) {
+            if (!c.gears) return;
+            c.brake_input = thr;
+            c.throttle = brk;
+            if (g == 7 || c.shift_t70 > 0.0f || c.rpm_smoothed <= hi) return;
+            c.gear = 7;
+            shift_timers(c, true, now);
+            return;
+        }
+        if (c.shift_t74 > 0.0f) return;
+        if (g >= 0 && (g < 2 || g == 7)) return;
+        move();
+        return;
+    }
+    if (g == 0) {
+        if (!c.gears || c.shift_t70 > 0.0f) return;
+        engage();
+        return;
+    }
+    if (g == 7) {
+        if (c.shift_t74 <= 0.0f) {
+            c.gear = 0;
+            shift_timers(c, true, now);
+            return;
+        }
+        c.brake_input = thr;
+        c.throttle = brk;
+        return;
+    }
+    if (std::fabs(drive_slip(c)) >= 0.2f) return;  // driven-wheel slip too high
+    move();
+}
+
+// 0x4977a0 (e, car, dt): automatic clutch. Moves clutch_input toward the
+// launch target: 1 (open) above the 1.2*limiter shaft speed, else the launch
+// curve between idle and the launch rpm.
+static void auto_clutch(CarData &c, float tear, float dt)
+{
+    if (tear <= 0.0f || !(c.flags & 0x4000u)) return;
+    float G = c.gear_ratio;
+    if (std::fabs(G) < 0.01f) return;
+    float rpm = c.rpm_smoothed;
+    float pred = (rpm - c.prev_rpm) + rpm;
+    c.prev_rpm = rpm;
+    float launch = (std::fabs(G / c.ratio[1]) * c.throttle * 0.56f + 0.24000001f) *
+                       (c.rpm_max_torque * 0.10471976f - c.idle_omega) +
+                   c.idle_omega;
+    float ws = c.shaft_speed * G;
+    float lim = std::min(c.max_rpm, c.rpm_limit);
+    float target = 1.0f;
+    if (ws * c.rearend_ratio <= lim * 0.12566371f) {  // 1.2*lim in rad/s
+        target = c.clutch_input;
+        if (!(rpm < ws * c.rearend_ratio || launch <= pred)) {
+            if (c.idle_omega < pred) {
+                target = 1.0f - (pred - c.idle_omega) / (launch - c.idle_omega);
+                if (target <= c.clutch_input) target = c.clutch_input;
+            } else {
+                target = 1.0f;
+            }
+        }
+    }
+    if (c.clutch_input <= target) {
+        float p = c.prev_clutch;
+        float k = std::min(dt * (target <= p ? 33.333336f : 200.0f), 1.0f);
+        c.clutch_input = k * (target - p) + p;
+    }
+    c.prev_clutch = c.clutch_input;
+}
+
 // 0x498300 _type_car vf11 Vehicle__updateControls: the mode-8 control list
 // 0x47bc20 calls it for every car once per physics tick, before the sub-steps.
 // Reads the driver slot's Controller axes into CarData, shifts gears and wakes
@@ -1268,6 +1470,10 @@ void control_cars(float dt)
             c->gear = 0;
             c->throttle = 0.0f;
         }
+        // 0x497930 auto gearbox, 0x4977a0 auto clutch (transmission flags 0x10
+        // and 0x40, set by player_transmission 0x4a37f0).
+        if (c->flags & 0x10u) auto_gearbox(*c, tear, now);
+        if (c->flags & 0x40u) auto_clutch(*c, tear, dt);
         // 0x4b04a0 shift timers.
         if (c->starter_timer >= 0.0f) c->throttle = 0.0f;
         if (c->shift_end > 0.0f) {
@@ -1287,10 +1493,9 @@ void control_cars(float dt)
         if (c->shift_t70 > 0.0f && c->shift_t70 <= now) c->shift_t70 = -1.0f;
         if (c->shift_t74 > 0.0f && c->shift_t74 <= now) c->shift_t74 = -1.0f;
         if (c->shift_t70 < 0.0f && c->shift_t74 < 0.0f) c->shifting = 0;
-        // shortcut: auto gearbox/semi-auto/auto clutch (0x497930/0x4ad480/
-        // 0x4977a0, flags 0x10/0x20/0x40), speed limiter 0x1000, steer assist
-        // 0x2000, flags 0x80/0x100/0x4000000 helpers and the aero/slot-object
-        // axis lists are later cards.
+        // shortcut: semi-auto 0x4ad480 (flags 0x20), speed limiter 0x1000,
+        // steer assist 0x2000, flags 0x80/0x100/0x4000000 helpers and the
+        // aero/slot-object axis lists are later cards.
         c->flags &= ~0x03000000u;
         float k = std::min(10.0f * dt, 1.0f);
         c->throttle = old_thr + (c->throttle - old_thr) * k;

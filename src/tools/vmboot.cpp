@@ -1118,15 +1118,22 @@ void game_init_check(Boot &boot, Checker &c)
             for (int i = 0; i < n; i++) loop.frame(++fr * 16);
         };
         auto report = [car_payload, root](const char *phase) {
+            // car+0x1e7c is rad/s; getRPM reports it * 9.549296.
             std::printf("  control %s: gear %d, throttle %.3f, steer %.3f, "
                         "speed %.2f m/s, rpm %.0f\n",
                         phase, car_payload->gear, (double)car_payload->throttle,
                         (double)car_payload->steer_input,
-                        (double)vec_length(root->vel), (double)car_payload->rpm_raw);
+                        (double)vec_length(root->vel),
+                        (double)(car_payload->rpm_raw * 9.549296f));
         };
         key(0x1e, true);
         frames(10);
         report("A held");
+        // 0x498300's shift block shifts at once, but the 0x497930 auto box
+        // returns while shift_end is live, so read the manual shift inside the
+        // 0.3 s window (after it, neutral is allowed again).
+        int shift_gear = car_payload->gear;
+        float shift_ratio = car_payload->gear_ratio;
         key(0x1e, false);
         frames(10);
         report("A released");
@@ -1134,14 +1141,13 @@ void game_init_check(Boot &boot, Checker &c)
         // installed transmission's cfg/script (0x4aebf0), so neutral stays when
         // the car has none.
         int want_gear = car_payload->gears > 0 ? 1 : 0;
-        c.check(car_payload->gear == want_gear,
+        c.check(shift_gear == want_gear,
                 "A (axis 50) shifts neutral -> 1st when the car has gears (got gear " +
-                    std::to_string(car_payload->gear) + ", gears " +
+                    std::to_string(shift_gear) + ", gears " +
                     std::to_string(car_payload->gears) + ")");
-        c.check(std::fabs(car_payload->gear_ratio -
-                          car_payload->ratio[car_payload->gear]) < 1e-6f,
+        c.check(std::fabs(shift_ratio - car_payload->ratio[shift_gear]) < 1e-6f,
                 "gear_ratio follows ratio[gear] after the shift (got " +
-                    std::to_string((double)car_payload->gear_ratio) + ")");
+                    std::to_string((double)shift_ratio) + ")");
         // INVENTED (fixture): a resting car sleeps (0x506d90); sleeping it here
         // exercises the input wake path 0x498599.
         process_world().sleep(root);
@@ -1171,6 +1177,89 @@ void game_init_check(Boot &boot, Checker &c)
         key(205, false);
         key(200, false);
         frames(1);
+
+        // Card 152: auto gearbox + auto clutch from standstill (0x497930 /
+        // 0x4977a0). INVENTED fixture: 0x4a4067 "reset" clears the gear and
+        // the shaft speed, like the command Track.enter sends.
+        game::car_command(*rt, car_res, 0x10, Value::make_str("reset"));
+        int settle = 0;
+        while (std::fabs(car_payload->shaft_speed) > 1.0f && settle < 300) {
+            frames(1);
+            settle++;
+        }
+        c.check(std::fabs(car_payload->shaft_speed) <= 1.0f,
+                "reset reaches standstill (|shaft speed| <= 1 after " +
+                    std::to_string(settle) + " frame(s), got " +
+                    std::to_string((double)car_payload->shaft_speed) + ")");
+        struct DriveSample {
+            int gear;
+            float rpm, clutch, shaft, speed, ratio, thr;
+        };
+        std::vector<DriveSample> samples;
+        float rpm_before = car_payload->rpm_smoothed;
+        key(200, true);
+        for (int i = 0; i < 300; i++) {
+            frames(1);
+            samples.push_back(DriveSample{car_payload->gear,
+                                          car_payload->rpm_smoothed,
+                                          car_payload->clutch_input,
+                                          car_payload->shaft_speed,
+                                          vec_length(root->vel),
+                                          car_payload->gear_ratio,
+                                          car_payload->throttle});
+        }
+        key(200, false);
+        int engage_i = -1;
+        for (size_t i = 0; i < samples.size(); i++)
+            if (samples[i].gear == 1) {
+                engage_i = (int)i;
+                break;
+            }
+        float before = engage_i > 0 ? samples[(size_t)engage_i - 1].rpm : rpm_before;
+        c.check(engage_i >= 0 &&
+                    (engage_i == 0 || samples[(size_t)engage_i - 1].gear == 0) &&
+                    before > 3.0f * car_payload->idle_omega,
+                "auto gearbox engages 1st from standstill (0x497930): rpm before " +
+                    std::to_string((double)before) + " rad/s > 3*idle " +
+                    std::to_string((double)(3.0f * car_payload->idle_omega)));
+        float max_clutch = 0.0f;
+        int n30 = 0;
+        if (engage_i >= 0)
+            for (int i = engage_i; i < engage_i + 30 && i < (int)samples.size(); i++) {
+                max_clutch = std::max(max_clutch, samples[(size_t)i].clutch);
+                n30++;
+            }
+        float launch = 0.0f;
+        if (engage_i >= 0 && car_payload->ratio[1] != 0.0f)
+            launch =
+                (std::fabs(samples[(size_t)engage_i].ratio / car_payload->ratio[1]) *
+                         samples[(size_t)engage_i].thr * 0.56f +
+                     0.24000001f) *
+                    (car_payload->rpm_max_torque * 0.10471976f -
+                     car_payload->idle_omega) +
+                car_payload->idle_omega;
+        std::printf("  auto clutch: max %.3f over %d frame(s) after engage, "
+                    "launch %.1f rad/s\n",
+                    (double)max_clutch, n30, (double)launch);
+        c.check(engage_i >= 0 && max_clutch > 0.0f,
+                "auto clutch slips at launch (0x4977a0): max clutch_input " +
+                    std::to_string((double)max_clutch) + " (key C never pressed)");
+        int max_gear = 0;
+        for (const DriveSample &s : samples)
+            max_gear = std::max(max_gear, s.gear);
+        // 0x4b19a0 mean driven-wheel kappa (print only; traction is card 153).
+        float kappa_sum = 0.0f;
+        int kappa_n = 0;
+        if (car_payload->sim)
+            for (const Wheel &w : car_payload->sim->wheels) {
+                if (w.drive == 0.0f || !(w.load > 0.0f)) continue;
+                kappa_sum += w.kappa_prev;
+                kappa_n++;
+            }
+        std::printf("  auto drive: max gear %d, final speed %.2f m/s, mean driven "
+                    "kappa %.3f (0x4b19a0)\n",
+                    max_gear, samples.empty() ? 0.0 : (double)samples.back().speed,
+                    (double)(kappa_n ? kappa_sum / (float)kappa_n : 0.0f));
     }
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());

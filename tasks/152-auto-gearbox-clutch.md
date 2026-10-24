@@ -1,6 +1,6 @@
 ---
 id: 152
-status: todo
+status: implemented
 branch: card/152
 depends: [151]
 ---
@@ -148,3 +148,14 @@ checks stay green, 0 failed threads, `make -C src` builds clean without warnings
   any constant; do not touch vehicle.cpp (traction is card 153).
 
 ## Result
+
+Implemented. `make -C src clean check` passes (95 checks, 0 failures).
+New checks: "reset reaches standstill" (settle 0 frames), "auto gearbox engages 1st
+from standstill" (rpm before ~717 rad/s > 3*idle 282.7), "auto clutch slips at launch"
+(max clutch_input 0.556 over 30 frames, launch 218.5 rad/s). Print only: max gear 2,
+final speed 13.59 m/s, mean driven kappa 0.429 (wheelspin, card 153).
+
+`"reset"` (0x4a4067) also zeroes the engine omega and shaft speed on the simulation:
+the exe has one struct (+0x1e7c/+0x1e78), src keeps them in `vehicle::Car` and the
+drive bridge copies back, so the CarData writes alone were overwritten. Without it
+the car kept the pre-reset rpm and check b could not enter the launch branch.
