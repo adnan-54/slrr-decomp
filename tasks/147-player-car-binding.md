@@ -4,87 +4,97 @@ status: todo
 branch:
 depends: [146]
 ---
-# Player controller binds the car; engine on at create; car inputs/engine block reach vehicle::Car
+# Player controller binds the car; engine on at create; getWheel loads WheelRef
 
-## Why
-Track.enter (Track.java:814) sends `player.controller.command("controllable " + car.id())`
-(:872) and `car.command("transmission " + Config.player_transmission)` (Vehicle.java:197-205).
-src drops both (only `game::car_command` runs in `Runtime::queue_event`), so the car has no
-driving player. createCar also turns the engine on for cars with a driver slot (card 146 left it
-off as INVENTED). And `vehicle::Car` never sees CarData's inputs or engine block: its
-`Engine::torque_curve` is empty and `ratios[]` are placeholders, so throttle could not move the
-car even once card 148 writes the inputs. notes/09 "Control path" has the full trace.
+Rewritten 2026-10-24 after the first Flash run hit max turns. Every step below was run by Claude in
+a scratch worktree on top of cf43df7: with exactly these changes vmboot binds the controller and
+the checks below pass. Do NOT port the CarData -> vehicle::Car bridge here (card 149) and do NOT
+check the torque curve (empty until parts are installed, card 150).
 
-## Exe functions (behaviour to match)
-- `type_player__vf14` 0x4d2d20, code 0x10 `"controllable %d"` -> 0x4d2ab0:
-```
-id = scan("%*s %d"); if id already in player+0x2310 list -> return 1
-Game__queueEvent(car(id), 0, 0x10, "activate 0x%x 0x%x 0x%x" % (player id, player+0x218c, player+0x219c))
-Game__queueEvent(car, 0, 0x10, "damage_multiplier %.3f" % player+0x21c4)
-Game__queueEvent(player, 0, 0x10, "control 0x%x" % car id)
-return 1            // vf14 returns 1 for EVERY code: the Controller script never gets events
-```
-- `type_car__vf14` 0x4a2e60, `"activate"` (0x4a3360) with slot search 0x4a1470:
-```
-pid = scan("%*s %d %d %d")[0]     // custom scanner: "0x..." ids parse (use strtol base 0)
-s = first slot in [0, M+0x17ec) with R_s.player_id == pid, else first with id 0, else return
-R_s (car+0x150 + s*0x4a8).player = ref(pid)     // +0x158 = id
-```
-- `"transmission %d"` (0x4a37f0): `flags &= ~0x30; if (tr&1) { flags = (tr&2) ? flags&~0x40 :
-  flags|0x40; flags |= (tr&4) ? 0x20 : 0x10; car+0x1fa8 = clutch }` (tr&1 == 0: manual branch;
-  `INVENTED:` only `flags &= ~0x30` is ported there, rest not read).
-- car cfg `controller`/`driver` lines -> 0x48dee0 (`M+0x120` taken as 0, UNRESOLVED):
-  `if (slots < 4) { if (slots == 0) driver_slot = 0; if (key == "driver") driver_slot = slots-1; slots++ }`;
-  `nodriver` 0x48e070: `driver_slot = -1`. Defaults (0x49b34e): `slots = 0, driver_slot = -1`.
-- createCar 0x4992e0 at 0x49a4ef: `if (driver_slot >= 0) { if (!steam_neutralized /*0x7a75df*/)
-  flags |= 0x4000 else flags &= ~0x4000 }`; `car+0x1e6c = -1.0` (0x499511).
+## Root causes found (do not re-investigate)
+1. `Chassis.updatevariables line 340: Chassis.getWheel: java.game.parts.WheelRef is not loaded`
+   is PRE-EXISTING on main (forceUpdate ignores the error, so every updatevariables aborted at its
+   first getWheel). Exe `Chassis.getWheel` 0x4b4150 calls `JVM__getClass("java.game.parts.WheelRef")`
+   (0x55add0, loads on miss); src calls `vm.find_class` (no load). Fix: `vm.get_class`.
+2. `player_command` never fired because `g_players.insert(inst)` ran while `g_rt` was still
+   unset; the next `car_data()` call saw `g_rt != &rt` and `reset()` cleared `g_players`.
+   Fix: `if (g_rt != &rt) reset(&rt);` before the insert.
+3. `Class not found: ...` lines are import probes (packages.cpp:272). Ignore them.
 
-## Files (3 + check)
-- src/game/car.h / src/game/car.cpp:
-  - CarData: `int control_slots = 0, driver_slot = -1;` `Runtime::Resource *slot_player[4] = {};`
-    `float starter_timer = -1.0f; // +0x1e6c`, `float prev_clutch = 0; // +0x1fa8`.
-  - fill_car: count `controller`/`driver`/`nodriver` cfg lines as above (Axis `_main_*.cfg:105`
-    `controller 0 1 2 3 4 5` -> 1 slot, driver 0). Camera records M+0x1858 not parsed.
-  - create_car_bodies: replace the INVENTED `engine.running = false` with the 0x49a4ef rule
-    (`extern bool steam_neutralized` from natives.cpp:560) on `c->flags`; `sim->gear = 0` stays.
-  - car_command: `"activate"` (slot rule above, resolve the id with `rt.resolve`) and
-    `"transmission"`; `"damage_multiplier"` -> return 1, no effect (shortcut).
-  - `game::player_command(rt, res, code, param)`: returns 1 for every code when `res`'s record
-    chain has the `native player` ref (same walk as `load_native_cfg`, `DataRef::Native`,
-    `native == "player"`, no cfg), else 0. `"controllable"` queues `"activate 0x<pid> 0x0 0x0"`
-    to the car resource (`INVENTED:` camera/render ids 0, player+0x2310 list and `"control"`
-    reply not kept: no consumer in src). Other commands: no-op (shortcut: osd, viewport,
-    camera, renderinstance, device, leave, control).
-  - bridge in `drive_cars` (INVENTED glue: the exe has one struct; src has CarData + Car):
-    before `sim->update`: `sim->engine.running = flags & 0x4000`; inputs throttle/brake_input/
-    handbrake_input/steer_input/clutch_input/nitro_input/gear -> sim; engine block
-    `torque_rpm/torque_nm` -> `engine.torque_curve`, idle_omega, inertia, starter_torque,
-    friction_fwd/rev, max_rpm, rpm_limit, `torque_health` (+0x1e04, notes/09 §1 T_max),
-    `ratio[0..7]` -> `ratios`, `rearend_ratio` -> `final_drive`, `max_steer`.
-    After: `rpm_raw = engine.omega`, `rpm_smoothed = engine.smoothed_omega`, `shaft_speed`,
-    `gear_ratio = ratio[gear]`. Do not change src/vehicle.
-- src/game/runtime.cpp `queue_event`: try `game::player_command` after `car_command`.
-  `INVENTED:` the Controller resource needs `event_mask |= 0x10` like card 141's car (default
-  mask not traced): set it where the native player is created (or in player_command's caller
-  path, whichever keeps the mask gate of 0x47c760 step 2).
-- src/tools/vmboot.cpp: checks below, after the card-146 resting checks.
+## Changes (copy; exe citations in notes/09 "Control path")
+Base: the hunks of `/tmp/claude-0/-root-slrr-re/a4e760fe-f689-48e3-a3bd-ff9290332a02/scratchpad/card147-partial.patch`
+if it still exists, MINUS every `DBG` fprintf and MINUS the whole `drive_cars` hunk (car.cpp
+`@@ -658`) and MINUS the vmboot hunk (rewrite per below). If the file is gone, write it from this list:
 
-## vmboot check (real data, hard)
-On the freeride Track after the existing flow:
-- `car_payload->control_slots == 1`, `driver_slot == 0` (Axis cfg) and
-  `slot_player[0]` == the resource of `GameLogic.player.controller` (script object -> resource).
-- `flags & 0x4000` set; `flags & 0x70` == the 0x4a37f0 bits for the VM's
-  `java.util.Config.player_transmission` (read the static, compute 1 -> 0x50, 5 -> 0x60, ...).
-- `sim->engine.torque_curve` has `torque_nm.size()` points equal to CarData's, max > 0;
-  `sim->ratios[i] == CarData.ratio[i]` for i 0..7 and `ratio[7] < 0` (reverse).
-- card 146 checks still pass (car rests; engine idles in neutral). Print the slot, flags,
-  transmission, curve max, ratios.
+- src/script/natives.cpp
+  - `ch_get_wheel`: `vm.find_class("java.game.parts.WheelRef")` -> `vm.get_class(...)`; comment
+    `// 0x4b4150: JVM__getClass loads the class on a miss`.
+  - move `bool steam_neutralized = false;` (0x7a75df) out of the anonymous namespace to file scope
+    (car.cpp declares `extern bool steam_neutralized;`).
+- src/game/car.h: CarData `int control_slots = 0; int driver_slot = -1;` (M+0x17ec / M+0x17f0),
+  `Runtime::Resource *slot_player[4] = {};` (R_s player ref, car+0x150+s*0x4a8),
+  `float starter_timer = -1.0f; // +0x1e6c (0x499511)`, `float prev_clutch = 0.0f; // +0x1fa8`.
+  Declare `int player_command(Runtime &, Runtime::Resource *, uint32_t code, const Value &param);`
+- src/game/car.cpp
+  - `std::set<Runtime::Resource *> g_players;` cleared in `reset()`.
+  - `has_native_ref(rt, r, native)`: same parent walk as `load_native_cfg`, true when a ref has
+    `kind == DataRef::Native && native == name && !is_cfg`.
+  - `fill_car`: 0x48dee0 / 0x48e070:
+    ```
+    if key == "controller" || key == "driver":
+        if control_slots < 4: { if control_slots == 0: driver_slot = 0
+                                if key == "driver": driver_slot = control_slots - 1
+                                control_slots++ }
+        continue
+    if key == "nodriver": driver_slot = -1; continue
+    ```
+  - `scan_id(cmd, word, &id)`: skip word + blanks, `strtol(p, &end, 0)` (both "0x.." and negative
+    decimal ids occur: Track sends `controllable -2147482363`), fail if no digits.
+  - `create_car_bodies`, first lines:
+    ```
+    if (type && has_native_ref(rt, type, "player")) {   // 0x523c80 -> 0x5240e0 native player
+        inst->event_mask |= 0x10u;    // INVENTED: default mask not traced (card 040)
+        if (g_rt != &rt) reset(&rt);  // else the first car_data() wipes g_players
+        g_players.insert(inst);
+    }
+    ```
+    and replace the INVENTED `sim->engine.running = false` with 0x49a4ef:
+    `if (car->driver_slot >= 0) car->flags = steam_neutralized ? flags & ~0x4000 : flags | 0x4000;`
+    (keep `sim->gear = 0`). Do not touch `sim->engine.running` (card 149 copies the flag).
+  - `car_command`: `"activate "` (0x4a3360, slot search 0x4a1470: first slot whose player id ==
+    pid, else first empty slot, both within `control_slots`; `rt.resolve(pid)`; return 1 when
+    bound, 0 if no player/slot), `"transmission "` (0x4a37f0: `flags &= ~0x30; if (tr&1) {
+    tr&2 ? flags &= ~0x40 : flags |= 0x40; flags |= tr&4 ? 0x20 : 0x10; prev_clutch =
+    clutch_input; }`, INVENTED comment for the tr&1==0 branch), `"damage_multiplier "` -> return 1.
+  - `player_command` (0x4d2d20 -> 0x4d2ab0): `if (!g_players.count(player)) return 0;` on code 0x10
+    with `"controllable <id>"`: `rt.queue_event(car, nullptr, 0x10, "activate 0x<player->id> 0x0 0x0")`
+    (INVENTED: camera/render ids 0, +0x2310 list and "control" reply not kept). Return 1 for every
+    code (the Controller script never sees commands).
+- src/game/runtime.cpp
+  - `Runtime::resolve`: before the registry lookup, ids with high word 0x8000 or 0xffff are looked
+    up in `instances_` by `id` (from the patch; keep its comment).
+  - `queue_event`: `if (!game::car_command(...) && !game::player_command(...) && target->script)`.
+
+## vmboot check (src/tools/vmboot.cpp, after the card-146 "car settles" check)
+Get `GameLogic.player` like line ~576, then its `controller` field object `ctrl_obj`.
+- `car_payload->control_slots == 1 && driver_slot == 0` (Axis `_main_*.cfg` one `controller` line).
+- `car_payload->slot_player[0] && car_payload->slot_player[0]->script == ctrl_obj`
+  (do NOT use `runtime()->handle(ctrl_obj)`: it is null for the Controller).
+- `flags & 0x4000` set.
+- `flags & 0x70` == bits from static `java.util.Config.player_transmission`
+  (`tr&1 ? ((tr&2)?0:0x40) | ((tr&4)?0x20:0x10) : 0`); shipped value gives 0x50.
+- every `car_payload->wheels[i]`: `fabs(ic_h[0]-hub[0]-10000) < 0.01 && fabs(ic_l[2]-hub[2]-10000) < 0.01`
+  (Chassis.java:346 `setInstantCenter(10000 x6)` now runs in updatevariables; proves fix 1).
+Print slots, driver, flags, transmission. Expected run: 75-ish checks, all pass.
 
 ## Done when
-- `make -C src -j4 check` green.
-- `(ulimit -v 4000000; timeout 300 src/build/vmboot --selfcheck)`: `selfcheck: PASSED`; report
-  the printed numbers. If a check fails on shipped data, report it, do not bend the check.
+- `make -C src -j4 check` green; `(ulimit -v 4000000; timeout 300 src/build/vmboot --selfcheck)`
+  prints `selfcheck: PASSED`. No DBG prints left (`git diff | grep -c DBG` == 0).
+
+## Stop rule
+Max 2 build+vmboot runs to fix a failing check. If a check above still fails, stop and report the
+printed numbers and the failing line; do not add debug tracing, do not touch vm.cpp/packages.cpp,
+do not bend checks.
 
 ## Not this card
-Reading the axes / `Vehicle__updateControls` 0x498300 (card 148), auto gearbox/clutch
-(0x497930/0x4977a0), camera/HUD slot records (0x4ad770, 0x49c800), `"steerhelp"`.
+CarData -> vehicle::Car bridge (149), part install / engine torque curve (150), reading axes (148).

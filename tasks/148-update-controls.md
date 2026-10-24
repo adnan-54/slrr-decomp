@@ -2,7 +2,7 @@
 id: 148
 status: todo
 branch:
-depends: [147]
+depends: [147, 149]
 ---
 # Control list: Vehicle__updateControls reads the player's axes once per physics tick
 
@@ -58,7 +58,7 @@ steer_copy = steer        // 0x4aa830 wheel steer geometry: vehicle::Car does it
   where sleeping roots are skipped (before the `continue`).
 
 Not ported (each a `shortcut:` comment): flags 0x1000 speed limiter, 0x2000 / e+0xa34 steer
-help, 0x10/0x20/0x40 auto gearbox / semi-auto / auto clutch (card 149), 0x80/0x100/0x4000000
+help, 0x10/0x20/0x40 auto gearbox / semi-auto / auto clutch (later card), 0x80/0x100/0x4000000
 helpers, aero/slot-object axis lists (+0x2144/+0x2190), wheel slip average +0x2278, force
 feedback getInfo 0x44, look axis 7, cheats 39/40, hinged-part release.
 
@@ -72,19 +72,21 @@ feedback getInfo 0x44, look axis 7, cheats 39/40, hinged-part release.
 - src/tools/vmboot.cpp: the drive check below.
 
 ## vmboot check (real data, hard)
-After the card-146/147 checks, drive the freeride car with the synthetic SysKeyboard
+After the card-146/147/149 checks, drive the freeride car with the synthetic SysKeyboard
 (`g_input->devices[0].raw.keys[dik] = 0x80`; DIK codes from the shipped
 `save/controls/active_control_set` group 1: Up 200 throttle, A 30 gear up, Left 203 / Right 205
 steer). Each phase runs `loop.frame` like the existing code:
 1. A held 10 frames, released 10 frames: `gear == 1`, `gear_ratio == ratio[1]`.
-2. Up held 300 frames: `throttle_input > 0.9` while held; car_root forward speed
-   (velocity projected on the root's local z axis) `> 2 m/s` (record the sign it has);
-   `rpm_smoothed*9.549296 > 1.5 * idle_omega*9.549296`; the car is awake.
-3. Up + Left 120 frames, then Up + Right 120 frames: `steer_input > 0.9` / `< -0.9`; yaw change
-   (heading from the root rotation) in each phase `|d| > 0.02 rad` and opposite signs.
-Print gear, speed, rpm, steer, yaw per phase. Release all keys afterwards.
-If the car does not move (e.g. the clutch/engine coupling stalls without the auto clutch),
-report the numbers and stop; do not tune constants or add invented control logic.
+2. Up held 60 frames: `throttle_input > 0.9` while held; the car root is awake (input wake path).
+3. Up + Left 60 frames, then Up + Right 60 frames: `steer_input > 0.9` / `< -0.9`.
+Print gear, throttle, steer, car speed and rpm per phase (print only: no speed/rpm/yaw check,
+the engine has 0 Nm until parts are installed, card 150; a drive check is a later card).
+Release all keys afterwards.
+
+## Stop rule
+Max 2 build+vmboot runs per failing check. If an axis reads 0 (binding/ControlSet issue) or
+the car stays asleep, report the numbers and stop; do not add invented control logic, do not
+tune constants, do not debug the input layer beyond printing `get_axis_val(1/28/29)`.
 
 ## Done when
 - `make -C src -j4 check` green.
@@ -92,4 +94,4 @@ report the numbers and stop; do not tune constants or add invented control logic
   the per-phase numbers.
 
 ## Not this card
-Auto gearbox/clutch 0x497930/0x4977a0 (+0x4b05a0/0x4b06b0) = card 149; steer help; camera.
+Auto gearbox/clutch 0x497930/0x4977a0 (+0x4b05a0/0x4b06b0) = later card (unnumbered); steer help; camera.
