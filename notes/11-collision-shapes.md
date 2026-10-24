@@ -262,7 +262,14 @@ Not a solver-row constraint: it derives `constraint`/`controller`, lives in the 
   `stepEF 0x50aa60`: edge in face frame; clip all face planes; ok: D(lo)*D(hi)<0 -> 2; D(lo)*(n.u)<0 -> Nhi or head V,
   else Nlo or tail V; clip failed: walk the face boundary edges from the excluding plane (clip vs plane i, then vs
   edge i's V-E planes, move to the neighbour edge sharing the clipped vertex) -> face side := that edge. Never 0.
-  Scratch port of stepEE+stepEF (rest unchanged) raised the count to 2552 (same cycles): the walk is not the fix
-  while hulls are deep inside a face.
+  Scratch port of stepEE+stepEF alone raised the count to 2552; the full 1:1 port (card 165 follow-up) gives 0.
+- Full walk (ported in src/physics/vclip.cpp): 0x50d230 dispatches kind[side]*0x100+kind[side^1] with
+  side = global DAT_006060e0 (never reset; persists between queries). 0x102/0x201 stepVE, 0x103/0x301 stepVF,
+  0x203/0x302 stepEF (side flipped so it names V resp. E), 0x202 stepEE, 0x101 checkVV, 0x303 A := A.planes[0].nb.
+  stepVE: V vs E planes in order (first violated -> E steps), then clip E vs V planes (lo/hi derivative test).
+  stepVF: F planes min (start 1.0) < 0 -> F steps; else for each V plane edge, far endpoint e:
+  |d_e| < |d_V| or d_e*d_V < 0 -> V steps to that edge; else d_V <= 0 -> handleLocalMin (max face over all
+  faces from -1e8, > 0 step else penetration 2). checkVV: both sides, first violated plane. stepEF fail path walks
+  face planes i -> i+1 / i-1 by which neighbour edge holds the clip vertex.
 - Determinism: Math.randomize 0x4dee90 = srand((int)0x569730()) (QPC ms); src reads steady_clock -> dealer roll
   varies with load. Card 166: vmboot-only switch to the scheduler's frame clock (INVENTED).

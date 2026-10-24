@@ -220,106 +220,6 @@ int outside_region(const Pose &pose, const PolyFeature &f, Vec3 world_point)
     return step;
 }
 
-// Signed distance of a world point to a face feature (world).
-float face_distance(const Poly &poly, const Pose &pose, const PolyFeature &f, Vec3 world_point)
-{
-    Vec3 q = to_world(pose, poly.verts[f.vertex]);
-    Mat34 r = pose_rotation(pose);
-    return vec_dot(mat_vec(r, f.normal), world_point - q);
-}
-
-int vertex_feature_of(const Poly &poly, int vertex)
-{
-    for (int i = 0; i < static_cast<int>(poly.features.size()); i++)
-        if (poly.features[i].kind == POLY_V && poly.features[i].vertex == vertex)
-            return i;
-    return -1;
-}
-
-// checkEE 0x509f10: the other edge's closest point must be inside this edge's
-// two V-E planes (planes[0] tail, planes[1] head). Returns the V to step to.
-int edge_vertex_step(const Pose &pose, const PolyFeature &e, Vec3 world_point)
-{
-    Vec3 p = to_local(pose, world_point);
-    int step = -1;
-    float worst = 0.0f;
-    for (size_t i = 0; i < e.planes.size() && i < 2; i++) {
-        float v = vec_dot(e.planes[i].normal, p - e.planes[i].point);
-        if (v < 0.0f && v < worst) {
-            worst = v;
-            step = e.planes[i].neighbour;
-        }
-    }
-    return step;
-}
-
-// VClip__stepEF 0x50aa60 + VClip__clipEdge 0x508fe0. Clip the edge to the
-// face's Voronoi region, then either step the edge to the closest original
-// endpoint (V-F next), step the face to the boundary edge the clip hit
-// (E-E/V-E next), report penetration, or leave the E-F pair valid.
-// INVENTED: the notes give clipEdge's lambda interval and entering/leaving
-// neighbours and stepEF's opposite-side test, not the exact branch order;
-// this follows Mirtich's stepEF.
-struct EStep {
-    int edge_feature = -1; // V feature on the edge's poly
-    int face_feature = -1; // E feature on the face's poly
-    bool penetration = false;
-};
-
-EStep step_ef(const Poly &edge_poly, const Pose &edge_pose, const PolyFeature &e,
-              const Poly &face_poly, const Pose &face_pose, const PolyFeature &f)
-{
-    EStep s;
-    FeatureGeom eg = feature_geom(edge_poly, edge_pose, e);
-    FeatureGeom fg = feature_geom(face_poly, face_pose, f);
-    Mat34 fr = pose_rotation(face_pose);
-    float lo = 0.0f, hi = 1.0f;
-    int enter = -1, leave = -1;
-    for (const PolyPlane &pl : f.planes) {
-        Vec3 pw = face_pose.pos + mat_vec(fr, pl.point);
-        Vec3 nw = mat_vec(fr, pl.normal);
-        float d0 = vec_dot(nw, eg.p - pw);
-        float d1 = vec_dot(nw, eg.h - pw);
-        if (d0 < 0.0f && d1 < 0.0f) {
-            s.face_feature = pl.neighbour;
-            return s;
-        }
-        if (d0 < 0.0f) {
-            float t = d0 / (d0 - d1);
-            if (t > lo) {
-                lo = t;
-                enter = pl.neighbour;
-            }
-        } else if (d1 < 0.0f) {
-            float t = d0 / (d0 - d1);
-            if (t < hi) {
-                hi = t;
-                leave = pl.neighbour;
-            }
-        }
-    }
-    if (lo > hi) {
-        s.face_feature = enter >= 0 ? enter : leave;
-        return s;
-    }
-    float d0 = vec_dot(fg.n, eg.p - fg.p);
-    float d1 = vec_dot(fg.n, eg.h - fg.p);
-    float dl = d0 + (d1 - d0) * lo;
-    float dh = d0 + (d1 - d0) * hi;
-    if (dl * dh < 0.0f) {
-        s.penetration = true;
-        return s;
-    }
-    bool use_lo = fabsf(dl) <= fabsf(dh);
-    float lam = use_lo ? lo : hi;
-    if (lam <= 0.0f || lam >= 1.0f) {
-        s.edge_feature = vertex_feature_of(edge_poly, lam <= 0.0f ? e.vertex : e.head);
-        return s;
-    }
-    s.face_feature = use_lo ? enter : leave;
-    return s;
-}
-
 // Poly__buildFromFaces 0x50e6d0: capacity nv + nf + nf*3/2, one F per face,
 // V/E features shared between faces, E-V and E-F plane pairs.
 Poly build_from_faces(const std::vector<Vec3> &verts,
@@ -405,7 +305,7 @@ Poly build_from_faces(const std::vector<Vec3> &verts,
             Vec3 tail = poly.verts[ef.vertex];
             if (vec_dot(m, q - tail) < 0.0f)
                 m = -m;
-            m = normalize_or(m, Vec3{0.0f, 1.0f, 0.0f});
+            // 0x50e6d0 stores m = dir x n as is (not renormalized).
             add_plane(poly.features[fi], ei, tail, m);
             add_plane(poly.features[ei], fi, tail, -m);
         }
@@ -457,6 +357,376 @@ PolyCounts poly_counts(const Poly &p)
     return c;
 }
 
+namespace {
+
+// DAT_006060e0: the side whose feature the step routines move first. A global
+// in the exe, never reset by 0x50d230, so it carries over between queries.
+int g_side = 0;
+
+// The walk state of 0x50d230 (DAT_0060617c poses, DAT_00606174 polys,
+// DAT_00606184 features), indexed by side.
+struct Walk {
+    const Pose *pose[2];
+    const Poly *poly[2];
+    int feat[2];
+
+    const PolyFeature &f(int s) const { return poly[s]->features[feat[s]]; }
+    const PolyFeature &nb(int s, int i) const { return poly[s]->features[i]; }
+    Vec3 vert(int s, int v) const { return poly[s]->verts[v]; }
+    // A point of side `from` in the frame of side `to` (Phys__transformPoint 0x50e2d0).
+    Vec3 xf(int from, int to, Vec3 p) const
+    {
+        return to_local(*pose[to], to_world(*pose[from], p));
+    }
+};
+
+float plane_eval(const PolyPlane &pl, Vec3 p)
+{
+    return vec_dot(pl.normal, p - pl.point);
+}
+
+// VClip__clipEdge 0x508fe0: clip segment t->h (feature frame) against planes
+// [from, to) of `f`. lo/hi are in/out; n_lo/n_hi are reset (-1 = none).
+bool clip_edge(Vec3 t, Vec3 h, const PolyFeature &f, int *n_lo, int *n_hi,
+               float *lo, float *hi, int from, int to)
+{
+    *n_lo = *n_hi = -1;
+    for (int i = from; i < to; i++) {
+        const PolyPlane &pl = f.planes[i];
+        float dt = plane_eval(pl, t);
+        float dh = plane_eval(pl, h);
+        if (dt >= 0.0f) {
+            if (dh < 0.0f) {
+                float l = dt / (dt - dh);
+                if (l < *hi) {
+                    *hi = l;
+                    *n_hi = pl.neighbour;
+                    if (!(*lo <= l))
+                        return false;
+                }
+            }
+        } else {
+            if (dh < 0.0f) {
+                *n_lo = *n_hi = pl.neighbour;
+                return false;
+            }
+            float l = dt / (dt - dh);
+            if (l > *lo) {
+                *lo = l;
+                *n_lo = pl.neighbour;
+                if (!(l <= *hi))
+                    return false;
+            }
+        }
+    }
+    return true;
+}
+
+// d/dlambda of |x(lambda) - V|^2 sign: (x(lambda) - V) . u.
+float vertex_deriv(const Walk &w, int s, int vfeat, Vec3 t, Vec3 u, float lam)
+{
+    return vec_dot(t + u * lam - w.vert(s, w.nb(s, vfeat).vertex), u);
+}
+
+// D_F(x(lambda)) * (n_F . u) for a face neighbour.
+float face_deriv(const Walk &w, int s, int ffeat, Vec3 t, Vec3 u, float lam)
+{
+    const PolyFeature &fc = w.nb(s, ffeat);
+    Vec3 p = w.vert(s, fc.vertex);
+    return vec_dot(fc.normal, t + u * lam - p) * vec_dot(fc.normal, u);
+}
+
+// The other side's edge, in side s's frame.
+void other_edge(const Walk &w, int s, Vec3 *t, Vec3 *h)
+{
+    const PolyFeature &e = w.f(s ^ 1);
+    *t = w.xf(s ^ 1, s, w.vert(s ^ 1, e.vertex));
+    *h = w.xf(s ^ 1, s, w.vert(s ^ 1, e.head));
+}
+
+// VClip__checkVV 0x50d050.
+int check_vv(Walk &w)
+{
+    for (int pass = 0; pass < 2; pass++) {
+        int o = g_side ^ 1;
+        Vec3 p = w.xf(g_side, o, w.vert(g_side, w.f(g_side).vertex));
+        const PolyFeature &v = w.f(o);
+        for (const PolyPlane &pl : v.planes)
+            if (plane_eval(pl, p) < 0.0f) {
+                w.feat[o] = pl.neighbour;
+                return 1;
+            }
+        g_side = o;
+    }
+    return 0;
+}
+
+// VClip__stepVE 0x50be40 (g_side = V).
+int step_ve(Walk &w)
+{
+    const int s = g_side, o = s ^ 1;
+    Vec3 p = w.xf(s, o, w.vert(s, w.f(s).vertex));
+    const PolyFeature &e = w.f(o);
+    for (const PolyPlane &pl : e.planes)
+        if (plane_eval(pl, p) < 0.0f) {
+            w.feat[o] = pl.neighbour;
+            return 1;
+        }
+    Vec3 t, h;
+    other_edge(w, s, &t, &h);
+    Vec3 u = h - t;
+    float lo = 0.0f, hi = 1.0f;
+    int nlo, nhi;
+    const PolyFeature &v = w.f(s);
+    clip_edge(t, h, v, &nlo, &nhi, &lo, &hi, 0, (int)v.planes.size());
+    if (nlo == nhi) {
+        if (nlo >= 0) {
+            w.feat[s] = nlo;
+            return 1;
+        }
+    } else if (nlo >= 0 && vertex_deriv(w, s, w.feat[s], t, u, lo) > 0.0f) {
+        w.feat[s] = nlo;
+        return 1;
+    }
+    if (nhi >= 0 && vertex_deriv(w, s, w.feat[s], t, u, hi) < 0.0f) {
+        w.feat[s] = nhi;
+        return 1;
+    }
+    return 0;
+}
+
+// VClip__handleLocalMin 0x50b7b0: p is the vertex in the face side's frame.
+int handle_local_min(Walk &w, Vec3 p)
+{
+    const int o = g_side ^ 1;
+    const Poly &poly = *w.poly[o];
+    float best = -1e8f;
+    int pick = -1;
+    for (int i = 0; i < (int)poly.features.size(); i++) {
+        const PolyFeature &fc = poly.features[i];
+        if (fc.kind != POLY_F)
+            continue;
+        float d = vec_dot(fc.normal, p - poly.verts[fc.vertex]);
+        if (best < d) {
+            best = d;
+            pick = i;
+        }
+    }
+    if (poly.features.empty())
+        return 2;
+    if (0.0f < best) {
+        w.feat[o] = pick;
+        return 1;
+    }
+    if (pick >= 0)
+        w.feat[o] = pick;
+    return 2;
+}
+
+// VClip__stepVF 0x50c830 (g_side = V).
+int step_vf(Walk &w)
+{
+    const int s = g_side, o = s ^ 1;
+    const PolyFeature &vf = w.f(s);
+    Vec3 p = w.xf(s, o, w.vert(s, vf.vertex));
+    const PolyFeature &fc = w.f(o);
+    if (!fc.planes.empty()) {
+        float min = 1.0f;
+        int step = -1;
+        for (const PolyPlane &pl : fc.planes) {
+            float v = plane_eval(pl, p);
+            if (v < min) {
+                min = v;
+                step = pl.neighbour;
+            }
+        }
+        if (min < 0.0f) {
+            w.feat[o] = step;
+            return 1;
+        }
+    }
+    const Vec3 fp = w.vert(o, fc.vertex);
+    const float d = vec_dot(fc.normal, p - fp);
+    const float ad = fabsf(d);
+    for (const PolyPlane &pl : vf.planes) {
+        const PolyFeature &e = w.nb(s, pl.neighbour);
+        int other = e.vertex == vf.vertex ? e.head : e.vertex;
+        Vec3 q = w.xf(s, o, w.vert(s, other));
+        float dq = vec_dot(fc.normal, q - fp);
+        if (fabsf(dq) < ad || dq * d < 0.0f) {
+            w.feat[s] = pl.neighbour;
+            return 1;
+        }
+    }
+    if (d <= 0.0f)
+        return handle_local_min(w, p);
+    return 0;
+}
+
+// VClip__stepEE 0x50a410.
+int step_ee(Walk &w)
+{
+    for (int pass = 0;;) {
+        const int s = g_side;
+        Vec3 t, h;
+        other_edge(w, s, &t, &h);
+        Vec3 u = h - t;
+        float lo = 0.0f, hi = 1.0f;
+        int nlo, nhi;
+        const PolyFeature &e = w.f(s);
+        clip_edge(t, h, e, &nlo, &nhi, &lo, &hi, 0, 2);
+        if (nlo == nhi) {
+            if (nlo >= 0) {
+                w.feat[s] = nlo;
+                return 1;
+            }
+        } else if (nlo >= 0 && vertex_deriv(w, s, nlo, t, u, lo) > 0.0f) {
+            w.feat[s] = nlo;
+            return 1;
+        }
+        if (nhi >= 0 && vertex_deriv(w, s, nhi, t, u, hi) < 0.0f) {
+            w.feat[s] = nhi;
+            return 1;
+        }
+        // E-F planes, lambda interval carried over from the V-E clip.
+        clip_edge(t, h, e, &nlo, &nhi, &lo, &hi, 2, (int)e.planes.size());
+        if (nlo == nhi) {
+            if (nlo >= 0) {
+                w.feat[s] = nlo;
+                return 1;
+            }
+        } else if (nlo >= 0 && face_deriv(w, s, nlo, t, u, lo) > 0.0f) {
+            w.feat[s] = nlo;
+            return 1;
+        }
+        if (nhi >= 0 && face_deriv(w, s, nhi, t, u, hi) < 0.0f) {
+            w.feat[s] = nhi;
+            return 1;
+        }
+        g_side = 1 - g_side;
+        if (++pass > 1)
+            return 0;
+    }
+}
+
+// stepEF's boundary walk: after leaving face plane i at vertex `v`, the next
+// plane is i+1 (wrapping) when its edge holds v, else i-1 (wrapping).
+int next_face_plane(const Walk &w, int o, const PolyFeature &fc, int i, int v)
+{
+    const int last = (int)fc.planes.size() - 1;
+    int next = last <= i ? 0 : i + 1;
+    const PolyFeature &e = w.nb(o, fc.planes[next].neighbour);
+    if (e.planes[0].neighbour != v && e.planes[1].neighbour != v)
+        next = i > 0 ? i - 1 : last;
+    return next;
+}
+
+// VClip__stepEF 0x50aa60 (g_side = E). 1 = moved, 2 = penetration.
+int step_ef(Walk &w)
+{
+    const int s = g_side, o = s ^ 1;
+    const PolyFeature &e = w.f(s);
+    const PolyFeature &fc = w.f(o);
+    Vec3 t = w.xf(s, o, w.vert(s, e.vertex));
+    Vec3 h = w.xf(s, o, w.vert(s, e.head));
+    Vec3 u = h - t;
+    const Vec3 fp = w.vert(o, fc.vertex);
+    const int np = (int)fc.planes.size();
+    float lo = 0.0f, hi = 1.0f;
+    int nlo, nhi;
+    if (clip_edge(t, h, fc, &nlo, &nhi, &lo, &hi, 0, np)) {
+        float dlo = vec_dot(fc.normal, t + u * lo - fp);
+        float dhi = vec_dot(fc.normal, t + u * hi - fp);
+        if (dhi * dlo < 0.0f)
+            return 2;
+        if (dlo * vec_dot(fc.normal, u) < 0.0f) {
+            if (nhi < 0) {
+                w.feat[s] = e.planes[1].neighbour;
+                return 1;
+            }
+            w.feat[o] = nhi;
+        } else {
+            if (nlo < 0) {
+                w.feat[s] = e.planes[0].neighbour;
+                return 1;
+            }
+            w.feat[o] = nlo;
+        }
+        return 1;
+    }
+    // Clip failed: walk the face boundary from the plane that excluded the edge.
+    int i = 0;
+    while (i < np && fc.planes[i].neighbour != nlo)
+        i++;
+    if (i >= np)
+        i = 0; // INVENTED: guard; the exe scans unbounded (nlo is always a face plane)
+    int cur = -1, prev = -1, result = -1;
+    bool clipped = false, touched = false; // local_14 / local_10
+    for (;;) {
+        int next = i + 1;
+        lo = 0.0f;
+        hi = 1.0f;
+        prev = cur;
+        cur = i;
+        clip_edge(t, h, fc, &nlo, &nhi, &lo, &hi, i, i + 1);
+        if (nlo == nhi && nlo < 0) {
+            result = prev;
+            if (touched || clipped)
+                break;
+            if (np - 1 <= i)
+                next = 0;
+        } else {
+            clipped = true;
+            if (nlo == nhi) {
+                lo = 0.0f;
+                hi = 1.0f;
+            } else if (nlo < 0) {
+                lo = hi;
+                hi = 1.0f;
+            } else {
+                hi = lo;
+                lo = 0.0f;
+            }
+            const PolyFeature &edge = w.nb(o, fc.planes[i].neighbour);
+            clip_edge(t, h, edge, &nlo, &nhi, &lo, &hi, 0, 2);
+            if (nlo == nhi && nlo >= 0) {
+                next = next_face_plane(w, o, fc, i, nlo);
+            } else if (hi < lo) {
+                result = prev;
+                if (touched)
+                    break;
+                next = next_face_plane(w, o, fc, i, nlo < 0 ? nhi : nlo);
+            } else {
+                touched = true;
+                if (nlo >= 0 && vertex_deriv(w, o, nlo, t, u, lo) > 0.0f) {
+                    next = next_face_plane(w, o, fc, i, nlo);
+                } else {
+                    result = i;
+                    if (nhi < 0 || vertex_deriv(w, o, nhi, t, u, hi) >= 0.0f)
+                        break;
+                    next = next_face_plane(w, o, fc, i, nhi);
+                }
+            }
+        }
+        i = next;
+        result = prev;
+        if (next == prev)
+            break;
+    }
+    w.feat[o] = fc.planes[result].neighbour;
+    return 1;
+}
+
+void write_back(const Walk &w, int *feature_a, int *feature_b)
+{
+    if (feature_a)
+        *feature_a = w.feat[0];
+    if (feature_b)
+        *feature_b = w.feat[1];
+}
+
+} // namespace
+
 float vclip_closest(const Pose &pose_a, const Poly &poly_a,
                     const Pose &pose_b, const Poly &poly_b,
                     int *feature_a, int *feature_b,
@@ -466,131 +736,12 @@ float vclip_closest(const Pose &pose_a, const Poly &poly_a,
     const int nfb = static_cast<int>(poly_b.features.size());
     if (nfa == 0 || nfb == 0)
         return 1e6f;
-    int a = feature_a && *feature_a >= 0 && *feature_a < nfa ? *feature_a : 0;
-    int b = feature_b && *feature_b >= 0 && *feature_b < nfb ? *feature_b : 0;
-    const int budget = nfa + 2 * nfb;
+    Walk w{{&pose_a, &pose_b}, {&poly_a, &poly_b}, {0, 0}};
+    w.feat[0] = feature_a && *feature_a >= 0 && *feature_a < nfa ? *feature_a : 0;
+    w.feat[1] = feature_b && *feature_b >= 0 && *feature_b < nfb ? *feature_b : 0;
 
-    for (int step = 0; step <= budget; step++) {
-        const PolyFeature &fa = poly_a.features[a];
-        const PolyFeature &fb = poly_b.features[b];
-
-        // FF: A's first plane neighbour is an edge (notes/11 §3).
-        if (fa.kind == POLY_F && fb.kind == POLY_F) {
-            if (fa.planes.empty())
-                break;
-            a = fa.planes[0].neighbour;
-            continue;
-        }
-
-        Hit h = distance_pair(poly_a, pose_a, fa, poly_b, pose_b, fb);
-
-        // E-F: stepEF 0x50aa60 clips the edge to the face region. E-E:
-        // checkEE 0x509f10 tests the other edge's closest point against this
-        // edge's two V-E planes, then treats "behind every adjacent face" as
-        // penetration (features unchanged).
-        bool ef_penetration = false;
-        if ((fa.kind == POLY_E && fb.kind == POLY_F) ||
-            (fa.kind == POLY_F && fb.kind == POLY_E)) {
-            const bool e_is_a = fa.kind == POLY_E;
-            const Poly &edge_poly = e_is_a ? poly_a : poly_b;
-            const Pose &edge_pose = e_is_a ? pose_a : pose_b;
-            const PolyFeature &edge = e_is_a ? fa : fb;
-            const Poly &face_poly = e_is_a ? poly_b : poly_a;
-            const Pose &face_pose = e_is_a ? pose_b : pose_a;
-            const PolyFeature &face = e_is_a ? fb : fa;
-            EStep s = step_ef(edge_poly, edge_pose, edge, face_poly, face_pose, face);
-            if (s.edge_feature >= 0) {
-                if (e_is_a)
-                    a = s.edge_feature;
-                else
-                    b = s.edge_feature;
-                continue;
-            }
-            if (s.face_feature >= 0) {
-                if (e_is_a)
-                    b = s.face_feature;
-                else
-                    a = s.face_feature;
-                continue;
-            }
-            ef_penetration = s.penetration;
-        } else if (fa.kind == POLY_E && fb.kind == POLY_E) {
-            int step_a = edge_vertex_step(pose_a, fa, h.pb);
-            if (step_a >= 0) {
-                a = step_a;
-                continue;
-            }
-            int step_b = edge_vertex_step(pose_b, fb, h.pa);
-            if (step_b >= 0) {
-                b = step_b;
-                continue;
-            }
-            // checkEE also reports penetration when the closest point is
-            // behind every adjacent face; the features stay unchanged and the
-            // segment distance is returned as is.
-        }
-
-        if (!ef_penetration) {
-            // V-F local minimum: a vertex below a face switches to the face with
-            // the largest signed distance, else it is penetration
-            // (handleLocalMin 0x50b7b0). The vertex may belong to either side.
-            if ((fa.kind == POLY_V && fb.kind == POLY_F) ||
-                (fa.kind == POLY_F && fb.kind == POLY_V)) {
-                const bool face_is_b = fb.kind == POLY_F;
-                const Poly &face_poly = face_is_b ? poly_b : poly_a;
-                const Pose &face_pose = face_is_b ? pose_b : pose_a;
-                Vec3 vertex_world = face_is_b ? h.pa : h.pb;
-                if (h.d < 0.0f) {
-                    int best = face_is_b ? b : a;
-                    float best_d = h.d;
-                    for (int i = 0; i < static_cast<int>(face_poly.features.size()); i++) {
-                        if (face_poly.features[i].kind != POLY_F)
-                            continue;
-                        float d = face_distance(face_poly, face_pose,
-                                                face_poly.features[i], vertex_world);
-                        if (d > best_d) {
-                            best_d = d;
-                            best = i;
-                        }
-                    }
-                    if (face_is_b)
-                        b = best;
-                    else
-                        a = best;
-                    if (best_d > 0.0f)
-                        continue;
-                    h = distance_pair(poly_a, pose_a, poly_a.features[a], poly_b, pose_b,
-                                      poly_b.features[b]);
-                    if (feature_a)
-                        *feature_a = a;
-                    if (feature_b)
-                        *feature_b = b;
-                    if (point_a)
-                        *point_a = to_local(pose_a, h.pa);
-                    if (point_b)
-                        *point_b = to_local(pose_b, h.pb);
-                    if (normal)
-                        *normal = h.n;
-                    return h.d;
-                }
-            }
-
-            int step_a = outside_region(pose_a, fa, h.pb);
-            if (step_a >= 0) {
-                a = step_a;
-                continue;
-            }
-            int step_b = outside_region(pose_b, fb, h.pa);
-            if (step_b >= 0) {
-                b = step_b;
-                continue;
-            }
-        }
-
-        if (feature_a)
-            *feature_a = a;
-        if (feature_b)
-            *feature_b = b;
+    auto finish = [&](const Hit &h) {
+        write_back(w, feature_a, feature_b);
         if (point_a)
             *point_a = to_local(pose_a, h.pa);
         if (point_b)
@@ -598,10 +749,58 @@ float vclip_closest(const Pose &pose_a, const Poly &poly_a,
         if (normal)
             *normal = h.n;
         return h.d;
+    };
+    auto measure = [&]() {
+        return distance_pair(poly_a, pose_a, w.f(0), poly_b, pose_b, w.f(1));
+    };
+
+    for (int step = 0; step <= nfa + 2 * nfb; step++) {
+        const int code = w.f(g_side).kind * 0x100 + w.f(g_side ^ 1).kind;
+        int r;
+        switch (code) {
+        case 0x202:
+            if (step_ee(w) == 0)
+                return finish(measure());
+            break;
+        case 0x101:
+            if (check_vv(w) == 0)
+                return finish(measure());
+            break;
+        case 0x201:
+        case 0x102:
+            if (code == 0x201)
+                g_side ^= 1;
+            if (step_ve(w) == 0)
+                return finish(measure());
+            break;
+        case 0x301:
+        case 0x103:
+            if (code == 0x301)
+                g_side ^= 1;
+            r = step_vf(w);
+            if (r == 0 || r == 2)
+                return finish(measure());
+            break;
+        case 0x302:
+        case 0x203:
+            if (code == 0x302)
+                g_side ^= 1;
+            // stepEF never returns 0; 2 = the edge crosses the face (depth of
+            // the end behind it, witness at the crossing).
+            if (step_ef(w) == 2)
+                return finish(measure());
+            break;
+        case 0x303:
+            w.feat[0] = w.f(0).planes[0].neighbour;
+            break;
+        default:
+            return 1e6f;
+        }
     }
 
     fprintf(stderr, "Voronoi error (infinite loop)\n");
     g_vclip_overruns++;
+    write_back(w, feature_a, feature_b);
     return 1e6f;
 }
 

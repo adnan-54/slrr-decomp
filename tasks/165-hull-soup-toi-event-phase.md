@@ -1,6 +1,6 @@
 ---
 id: 165
-status: blocked
+status: implemented
 branch: card/165
 depends: [164]
 ---
@@ -172,3 +172,19 @@ That is the 0x50d230 walk 2-cycle the card says is a separate card. A transient 
 45 and the deep contacts 47 -> 42: the walk keeps cycling at those crash poses whatever the probe
 threshold, so the fix is the walk port (stepEE 0x50a410 / stepEF 0x50aa60 / stepVE / stepVF), not
 this card. Reverted to the faithful d <= -margin deep rule.
+
+### Follow-up (orchestrator, Claude): walk ported, card unblocked
+Real divergence: src `vclip_closest` was not the exe walk (INVENTED "largest violated plane",
+Mirtich-style stepEF, no stepVF edge test). Ported 1:1 from Ghidra: 0x50d230 dispatch
+(kind[side]*0x100 + kind[side^1], side = global DAT_006060e0 never reset between queries,
+FF -> A.planes[0]), clipEdge 0x508fe0, checkVV 0x50d050, stepVE 0x50be40, stepVF 0x50c830
+(face planes min < 0; else V -> neighbour edge when the far endpoint is closer to/opposite the
+face plane; d <= 0 -> handleLocalMin 0x50b7b0), stepEE 0x50a410, stepEF 0x50aa60 (incl. the
+boundary walk on a failed clip). 0x50e6d0 E-F plane normal m is no longer renormalized.
+`evaluate_candidate` now always calls 0x50d230; the INVENTED signed-distance gap-fill is gone and
+the 0x4fc7e0 deep branch runs only at the end when best.d <= -margin (0 for a mesh).
+vmboot: overruns 0 (was 33), drag-run hull frames 46, min separation 0.020667 m, deep-branch
+contacts 3 (was 47), crash drag frame 59 at 46.78 -4.78 -444.28 |v| 39.60 m/s, drag final
+|vel| 9.85 m/s, auto 43.98 / semi 42.04 m/s unchanged. 137 checks PASSED; `make -C src clean check`
+green in 120 s. Still INVENTED: side gate in the candidate filter and the signed fallback in
+`refresh_hull_contacts` (0x50d9d0 checks are not ported), merged soup nodes.

@@ -845,33 +845,33 @@ struct HullCandidate {
     Vec3 nn{0.0f, 1.0f, 0.0f};  // face -> hull normal, world
 };
 
-// 0x50d230 at the sweep position t. The exe measures with V-Clip at every
-// pose; src's walk overruns on a hull already deep inside the face (separate
-// card), and 0x4fc7e0 ends such a candidate in its deep branch anyway (margin
-// 0 for a mesh), so a hull whose lowest vertex is behind the face uses that
-// signed vertex distance. INVENTED: gap filling for the unported walk.
+// 0x50d230 at the sweep position t (margin 0 for a mesh).
 static void evaluate_candidate(HullCandidate &c, const RigidBody &a,
                                const BodyState &start, float t)
+{
+    const RigidBody::CollisionChild &cc = a.collision_children[c.child];
+    const Pose cp = child_pose_at(a, cc, start, t);
+    c.deep = false;
+    Pose bpose;  // the triangle poly holds world vertices
+    c.d = vclip_closest(cp, *cc.poly, bpose, c.face, &c.fa, &c.fb, &c.pa, &c.pb, &c.nn);
+}
+
+// 0x4fc7e0 deep branch (best.d <= -margin): the lowest hull vertex along the
+// face normal replaces the V-Clip result.
+static void deep_candidate(HullCandidate &c, const RigidBody &a,
+                           const BodyState &start, float t)
 {
     const RigidBody::CollisionChild &cc = a.collision_children[c.child];
     const Pose cp = child_pose_at(a, cc, start, t);
     const Mat34 cr = pose_rotation(cp);
     Vec3 support{0.0f, 0.0f, 0.0f};
     int vi = 0;
-    float ds = hull_plane_distance(*cc.poly, cr, cp.pos, c.n, c.vw[0], &support, &vi);
-    if (ds < 0.0f) {
-        c.deep = true;
-        c.d = ds;
-        c.nn = c.n;
-        c.fa = hull_vertex_feature(*cc.poly, vi);
-        c.fb = 0;
-        c.pa = mat_tvec(cr, support - cp.pos);
-        c.pb = support - c.n * ds;
-        return;
-    }
-    c.deep = false;
-    Pose bpose;  // the triangle poly holds world vertices
-    c.d = vclip_closest(cp, *cc.poly, bpose, c.face, &c.fa, &c.fb, &c.pa, &c.pb, &c.nn);
+    c.d = hull_plane_distance(*cc.poly, cr, cp.pos, c.n, c.vw[0], &support, &vi);
+    c.deep = true;
+    c.nn = c.n;
+    c.fa = hull_vertex_feature(*cc.poly, vi);
+    c.pa = mat_tvec(cr, support - cp.pos);
+    c.pb = support - c.n * c.d;
 }
 
 // 0x4fc7e0's "still approaching" test: n . (body world point - pB) < 0.
@@ -1041,6 +1041,8 @@ static void consider_hull_pair(const World &w, RigidBody &a, RigidBody &g,
     }
     if (!best || best->d > kAddSlop)
         return;
+    if (best->d <= 0.0f)
+        deep_candidate(*best, a, start, t);
     const HullCandidate &c = *best;
     if (hull_contact_exists(w, next, &a, &g, c.child, c.tri))
         return;  // 0x502830 rejects duplicates (same child, triangle)
