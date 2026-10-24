@@ -1,6 +1,6 @@
 ---
 id: 172
-status: todo
+status: implemented
 branch: card/172
 depends: [171]
 ---
@@ -38,3 +38,15 @@ stub with exe address; anything bigger = report. No unit tests, no map names in 
 
 ## Not this card
 Native bot, HUD rendering, rewards/save checks beyond printing the prize text.
+
+## Result
+- Blocker 1 (harness): 2 laps need ~26000 frames (lap rollover at frame 11824, fWindow at 26059); the 20000 cap
+  stopped in lap 2 at nextTrigger 2. A full run takes ~58 s, so time was never the limit. Cap now 40000.
+- Blocker 2 (harness): the finished race locks controls (method 7 `controllable 0`), so the card-161/162 drag and
+  semi-auto blocks cannot run after the finish. New `vmboot --race` mode (second line in `make check`) drives to
+  the finish and skips those blocks; `--selfcheck` keeps the card-171 stop at cp2 and all old checks.
+- Blocker 3 (VM): `finishWindowCircuitRacing.osdCommand` is **static** and calls instance `hide()`. Exe keeps the
+  instance in frame+0x30 for static methods too (0x561830 -> 0x54c180 stores param_4 unconditionally; only the
+  `this` local is skipped for flag 8). src/script/vm.cpp now keeps `self` for static frames/calls.
+- --race: lap 2 time[0] 222.614 s, raceTime[0] 579.569 s, fWindow windowStatus 3 after 48 frames, Enter (osd
+  0x01) -> EventList active, 0 failed threads. --selfcheck 153 checks PASSED, --race 143 PASSED, ~58 s each.

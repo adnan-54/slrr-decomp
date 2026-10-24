@@ -1,5 +1,5 @@
 // vmboot: end-to-end script boot over the shipped system package.
-//   vmboot --selfcheck
+//   vmboot --selfcheck | --race
 // Asserts the package pair opens, game.Init resolves, its static initializer
 // returns 100 (the value from the earlier classdump VM check), the native
 // registry holds 422 entries, a fresh runtime re-run matches, missing classes
@@ -469,6 +469,11 @@ void answer_dialogs(Boot &boot, std::vector<Object *> &answered, int frame)
 // scripted GameInit instance; its Init(int) constructor runs in THRD-CREATE.
 // A failing constructor is an expected finding here (missing engine services):
 // it is printed, not asserted.
+// INVENTED harness switch: --race drives both laps to the script's finish
+// instead of the card-162/161 drag and semi-auto blocks (each mode fits the
+// 300 s check budget alone).
+bool g_race_mode = false;
+
 void game_init_check(Boot &boot, Checker &c)
 {
     std::string err;
@@ -2466,10 +2471,11 @@ void game_init_check(Boot &boot, Checker &c)
                 int used = 0, next_trigger = -1, nt_cp0 = -1, cp0_frame = 0;
                 int nt_cp2 = -1, cur_lap = -1;
                 bool have_fwindow = false;
-                // Card 171: keep running past cp0. Card 172: run on (INVENTED
-                // cap 20000 frames) until handleCheckpoint executed gmThread
-                // method 7 and the script's finish window (fWindow) exists.
-                for (int i = 0; i < 20000; i++) {
+                // Card 171: keep running past cp0. Card 172 (--race): run on
+                // (INVENTED cap 40000 frames, 2 laps take ~26000) until
+                // handleCheckpoint executed gmThread method 7 and the script's
+                // finish window (fWindow) exists.
+                for (int i = 0; i < 40000; i++) {
                     frames(1);
                     used = i + 1;
                     float off = 0.0f;
@@ -2516,6 +2522,9 @@ void game_init_check(Boot &boot, Checker &c)
                         cp0_frame = used;
                     }
                     if (next_trigger >= 3 && nt_cp2 < 0) nt_cp2 = next_trigger;
+                    // --selfcheck stops at cp2 (card 171) so the drag/semi
+                    // blocks start from there; --race drives on to the finish.
+                    if (next_trigger >= 3 && !g_race_mode) break;
                     Value lapv;
                     std::string lerr;
                     if (game_object &&
@@ -2613,7 +2622,9 @@ void game_init_check(Boot &boot, Checker &c)
         // Card 161 check 4. INVENTED harness: force the largest shipped C_drag /
         // drag_center onto the player car (the exe reaches it by removing the
         // parts that reduce C_drag) and keep driving 300 frames.
-        if (x_car && x_car->c_drag > 0.0f && sim) {
+        // --race: the finished race locks controls (controllable 0, method 7),
+        // so the drag/semi blocks run only in --selfcheck.
+        if (!g_race_mode && x_car && x_car->c_drag > 0.0f && sim) {
             car_payload->c_drag = x_car->c_drag;
             for (int k = 0; k < 3; k++) car_payload->drag_center[k] = x_car->drag_center[k];
             int moving = 0, clamps = 0, bad = 0;
@@ -2708,105 +2719,107 @@ void game_init_check(Boot &boot, Checker &c)
             else
                 std::printf("  crash: no wall contact in the 300 drag frames\n");
         }
-        // Card 162: semi-auto gearbox 0x4ad480 (transmission flag 0x20).
-        // INVENTED harness: Track.enter sends "transmission " +
-        // Config.player_transmission (default 1); 5 is the shipped
-        // Vehicle.TRANSMISSION_SEMIAUTO.
-        // INVENTED harness: the 1200 frames above have carried the car away
-        // from the grid, so put it back at the spawn pose.
-        restore_spawn();
-        game::car_command(*rt, car_res, 0x10, Value::make_str("transmission 5"));
-        c.check((car_payload->flags & 0x70u) == 0x60u,
-                "transmission 5 sets the semi-auto flags 0x20|0x40 (got " +
-                    std::to_string(car_payload->flags & 0x70u) + ")");
-        game::car_command(*rt, car_res, 0x10, Value::make_str("reset"));
-        int semi_settle = 0;
-        while (std::fabs(car_payload->shaft_speed) > 1.0f && semi_settle < 300) {
-            frames(1);
-            semi_settle++;
-        }
-        // Check 2: neutral stays while throttle is held and no shift key is
-        // pressed (0x4ad480 returns at gear 0; the auto box 0x10 is off).
-        key(200, true);
-        bool semi_neutral = true;
-        for (int i = 0; i < 60; i++) {
-            frames(1);
-            if (car_payload->gear != 0) semi_neutral = false;
-        }
-        key(200, false);
-        c.check(semi_neutral,
-                "transmission 5 stays in neutral under throttle with no shift key "
-                "(0x4ad480 returns at gear 0)");
-        // Check 3: the 0x498300 shift block engages 1st from neutral.
-        key(0x1e, true);
-        frames(10);
-        key(0x1e, false);
-        frames(10);
-        int semi_gear = car_payload->gear;
-        c.check(car_payload->gears > 0 && semi_gear == 1,
-                "A shifts neutral -> 1st under transmission 5 (got gear " +
-                    std::to_string(semi_gear) + ", gears " +
-                    std::to_string(car_payload->gears) + ")");
-        // Check 4: drive with no shift key; only 0x4ad480 may shift.
-        if (car_payload->gears > 0 && semi_gear == 1) {
-            car_payload->semi_shifts = 0;
-            std::vector<int> semi_gears;
-            key(200, true);
-            for (int i = 0; i < 600; i++) {
+        if (!g_race_mode) {
+            // Card 162: semi-auto gearbox 0x4ad480 (transmission flag 0x20).
+            // INVENTED harness: Track.enter sends "transmission " +
+            // Config.player_transmission (default 1); 5 is the shipped
+            // Vehicle.TRANSMISSION_SEMIAUTO.
+            // INVENTED harness: the 1200 frames above have carried the car away
+            // from the grid, so put it back at the spawn pose.
+            restore_spawn();
+            game::car_command(*rt, car_res, 0x10, Value::make_str("transmission 5"));
+            c.check((car_payload->flags & 0x70u) == 0x60u,
+                    "transmission 5 sets the semi-auto flags 0x20|0x40 (got " +
+                        std::to_string(car_payload->flags & 0x70u) + ")");
+            game::car_command(*rt, car_res, 0x10, Value::make_str("reset"));
+            int semi_settle = 0;
+            while (std::fabs(car_payload->shaft_speed) > 1.0f && semi_settle < 300) {
                 frames(1);
-                semi_gears.push_back(car_payload->gear);
+                semi_settle++;
+            }
+            // Check 2: neutral stays while throttle is held and no shift key is
+            // pressed (0x4ad480 returns at gear 0; the auto box 0x10 is off).
+            key(200, true);
+            bool semi_neutral = true;
+            for (int i = 0; i < 60; i++) {
+                frames(1);
+                if (car_payload->gear != 0) semi_neutral = false;
             }
             key(200, false);
-            int semi_max = 0, semi_changes = 0, semi_bad_step = 0, semi_bad_gear = 0;
-            for (size_t i = 0; i < semi_gears.size(); i++) {
-                int g = semi_gears[i];
-                if (g == 0 || g == 7) semi_bad_gear++;
-                if (g > semi_max) semi_max = g;
-                if (i != 0) {
-                    int step = g - semi_gears[i - 1];
-                    if (step != 0) {
-                        semi_changes++;
-                        if (step != 1 && step != -1) semi_bad_step++;
+            c.check(semi_neutral,
+                    "transmission 5 stays in neutral under throttle with no shift key "
+                    "(0x4ad480 returns at gear 0)");
+            // Check 3: the 0x498300 shift block engages 1st from neutral.
+            key(0x1e, true);
+            frames(10);
+            key(0x1e, false);
+            frames(10);
+            int semi_gear = car_payload->gear;
+            c.check(car_payload->gears > 0 && semi_gear == 1,
+                    "A shifts neutral -> 1st under transmission 5 (got gear " +
+                        std::to_string(semi_gear) + ", gears " +
+                        std::to_string(car_payload->gears) + ")");
+            // Check 4: drive with no shift key; only 0x4ad480 may shift.
+            if (car_payload->gears > 0 && semi_gear == 1) {
+                car_payload->semi_shifts = 0;
+                std::vector<int> semi_gears;
+                key(200, true);
+                for (int i = 0; i < 600; i++) {
+                    frames(1);
+                    semi_gears.push_back(car_payload->gear);
+                }
+                key(200, false);
+                int semi_max = 0, semi_changes = 0, semi_bad_step = 0, semi_bad_gear = 0;
+                for (size_t i = 0; i < semi_gears.size(); i++) {
+                    int g = semi_gears[i];
+                    if (g == 0 || g == 7) semi_bad_gear++;
+                    if (g > semi_max) semi_max = g;
+                    if (i != 0) {
+                        int step = g - semi_gears[i - 1];
+                        if (step != 0) {
+                            semi_changes++;
+                            if (step != 1 && step != -1) semi_bad_step++;
+                        }
                     }
                 }
+                float semi_vel = vec_length(root->vel);
+                float semi_h = sqrtf(root->vel.x * root->vel.x + root->vel.z * root->vel.z);
+                float semi_rpm = car_payload->rpm_raw * 9.549296f;
+                std::printf("  semi-auto drive (0x4ad480): max gear %d, semi_shifts %d, "
+                            "gear changes %d, final |vel| %.2f m/s (horizontal %.2f, "
+                            "y %.2f), final rpm %.0f, pos %.1f %.1f %.1f\n",
+                            semi_max, car_payload->semi_shifts, semi_changes,
+                            (double)semi_vel, (double)semi_h, (double)root->vel.y,
+                            (double)semi_rpm, (double)root->pos.x, (double)root->pos.y,
+                            (double)root->pos.z);
+                c.check(car_payload->semi_shifts > 0,
+                        "semi-auto shifts while driving (0x4ad480, got " +
+                            std::to_string(car_payload->semi_shifts) + " shift(s))");
+                c.check(semi_max >= 2,
+                        "semi-auto reaches 2nd gear without a gear key (0x4ad480, got " +
+                            std::to_string(semi_max) + ")");
+                c.check(semi_bad_step == 0 &&
+                            semi_changes <= car_payload->semi_shifts,
+                        "every gear change is +-1 and no more changes than shifts (" +
+                            std::to_string(semi_changes) + " change(s), " +
+                            std::to_string(car_payload->semi_shifts) + " shift(s), " +
+                            std::to_string(semi_bad_step) + " bad step(s))");
+                c.check(semi_bad_gear == 0,
+                        "semi-auto never selects neutral or reverse while driving (got " +
+                            std::to_string(semi_bad_gear) + " frame(s))");
+                c.check(v_top > 0.0f && semi_vel <= v_top,
+                        "semi-auto final |vel| within v_top (" +
+                            std::to_string((double)semi_vel) + " <= " +
+                            std::to_string((double)v_top) + " m/s)");
             }
-            float semi_vel = vec_length(root->vel);
-            float semi_h = sqrtf(root->vel.x * root->vel.x + root->vel.z * root->vel.z);
-            float semi_rpm = car_payload->rpm_raw * 9.549296f;
-            std::printf("  semi-auto drive (0x4ad480): max gear %d, semi_shifts %d, "
-                        "gear changes %d, final |vel| %.2f m/s (horizontal %.2f, "
-                        "y %.2f), final rpm %.0f, pos %.1f %.1f %.1f\n",
-                        semi_max, car_payload->semi_shifts, semi_changes,
-                        (double)semi_vel, (double)semi_h, (double)root->vel.y,
-                        (double)semi_rpm, (double)root->pos.x, (double)root->pos.y,
-                        (double)root->pos.z);
-            c.check(car_payload->semi_shifts > 0,
-                    "semi-auto shifts while driving (0x4ad480, got " +
-                        std::to_string(car_payload->semi_shifts) + " shift(s))");
-            c.check(semi_max >= 2,
-                    "semi-auto reaches 2nd gear without a gear key (0x4ad480, got " +
-                        std::to_string(semi_max) + ")");
-            c.check(semi_bad_step == 0 &&
-                        semi_changes <= car_payload->semi_shifts,
-                    "every gear change is +-1 and no more changes than shifts (" +
-                        std::to_string(semi_changes) + " change(s), " +
-                        std::to_string(car_payload->semi_shifts) + " shift(s), " +
-                        std::to_string(semi_bad_step) + " bad step(s))");
-            c.check(semi_bad_gear == 0,
-                    "semi-auto never selects neutral or reverse while driving (got " +
-                        std::to_string(semi_bad_gear) + " frame(s))");
-            c.check(v_top > 0.0f && semi_vel <= v_top,
-                    "semi-auto final |vel| within v_top (" +
-                        std::to_string((double)semi_vel) + " <= " +
-                        std::to_string((double)v_top) + " m/s)");
+            // Check 5: restore the shipped transmission mode and its flags.
+            game::car_command(*rt, car_res, 0x10,
+                              Value::make_str("transmission " + std::to_string(tr)));
+            c.check((car_payload->flags & 0x70u) == tr_bits,
+                    "transmission restored to " + std::to_string(tr) + " (flags " +
+                        std::to_string(car_payload->flags & 0x70u) + " == " +
+                        std::to_string(tr_bits) + ")");
         }
-        // Check 5: restore the shipped transmission mode and its flags.
-        game::car_command(*rt, car_res, 0x10,
-                          Value::make_str("transmission " + std::to_string(tr)));
-        c.check((car_payload->flags & 0x70u) == tr_bits,
-                "transmission restored to " + std::to_string(tr) + " (flags " +
-                    std::to_string(car_payload->flags & 0x70u) + " == " +
-                    std::to_string(tr_bits) + ")");
         // Card 167 check 2 (re-check): mass-0 sensor bodies live in the
         // non-static world list but never integrate, so their pose is unchanged.
         bool trig_pos_ok = !trig_bodies.empty();
@@ -2841,9 +2854,7 @@ void game_init_check(Boot &boot, Checker &c)
         // when the Gamemode's fWindow appeared. finishWindowCircuitRacing binds
         // Enter to OSD command 0x01 (CircuitRacing.java:1364) and
         // osdCommand(0x01) calls hide() (CircuitRacing.java:1583-1586).
-        // INVENTED harness order: the key is deferred to after the drag/semi
-        // blocks above because hide() starts timer 13 and the exit unloads the
-        // map ground (Track.exit, Track.java:1132) those blocks drive on.
+        if (g_race_mode) {
         if (race_finished) {
             Value fwv;
             std::string ferr;
@@ -2863,6 +2874,7 @@ void game_init_check(Boot &boot, Checker &c)
                 wait++;
             }
             bool sent = false;
+            // INVENTED: stands in for the Enter hotkey (no input-to-Osd path here)
             if (ready)
                 sent = osd_command(boot, fwv.obj, 0x01, "THRD-FINISH-ENTER", &ferr);
             else if (ferr.empty())
@@ -2893,6 +2905,7 @@ void game_init_check(Boot &boot, Checker &c)
         c.check(fin_failed == 0,
                 "no failed thread after the finish key (got " +
                     std::to_string(fin_failed) + ")");
+        }
     }
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
@@ -3434,7 +3447,8 @@ int selfcheck()
 
 int main(int argc, char **argv)
 {
-    if (argc == 2 && strcmp(argv[1], "--selfcheck") == 0) {
+    if (argc == 2 && (strcmp(argv[1], "--selfcheck") == 0 || strcmp(argv[1], "--race") == 0)) {
+        g_race_mode = strcmp(argv[1], "--race") == 0;
         // INVENTED: harness switch (not in the exe): seed Math.randomize
         // (0x4dee90) and System.currentTime (0x4e5500) from the frame clock
         // instead of wall time, so runs pick the same dealer car.
@@ -3442,6 +3456,6 @@ int main(int argc, char **argv)
         int rc = selfcheck();
         return rc;
     }
-    std::fprintf(stderr, "usage: vmboot --selfcheck\n");
+    std::fprintf(stderr, "usage: vmboot --selfcheck | --race\n");
     return 2;
 }

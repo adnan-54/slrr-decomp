@@ -473,7 +473,9 @@ static void fill_frame(Frame *f, ClassState *decl, const MethodInfo *m, Object *
     f->unit = decl->unit;
     f->state = decl;
     f->method = m;
-    f->self = m->is_static ? nullptr : self;
+    // 0x54c180 stores the call instance at frame+0x30 for static methods too;
+    // only the `this` local is skipped (0x561830, method flag 8).
+    f->self = self;
     expand_body(decl->unit->bodies[(size_t)m->body], &f->code);
 
     const char *sg = decl->unit->str(m->sig);
@@ -963,9 +965,8 @@ bool Thread::invoke(Frame &f, uint32_t op, uint32_t operand)
     ClassState *decl = nullptr;
     const MethodInfo *m = vm_->find_method(start, name, desc, argc, args, &decl, &e);
     if (!m) return fail(e);
-    if (m->is_static) {
-        self = nullptr;
-    } else if (!self) {
+    // Static methods keep the instance (0x561830 passes it to 0x54c180).
+    if (!m->is_static && !self) {
         // A String receiver is a Value, not an Object: its natives get it as
         // `this` through the receiver argument of start_call.
         bool str_recv = have_recv && recv.kind == Value::Str;
