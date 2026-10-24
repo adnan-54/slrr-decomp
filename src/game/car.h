@@ -288,8 +288,8 @@ void control_cars(float dt);
 int car_body_instances();
 void bind_wheel(Object *wrapper, WheelData *w);
 WheelData *wheel_data(Object *wrapper);
-// SfxTable native handle payload. No producer yet (Chassis.getSfxTable 0x4b3890
-// is a stub), so sfx_table() is always null.
+// SfxTable native handle payload, bound by Chassis.getSfxTable 0x4b3890 to one
+// of the car's three engine_sfx tables.
 void bind_sfx_table(Object *wrapper, audio::SfxTable *t);
 audio::SfxTable *sfx_table(Object *wrapper);
 // DynoData native handle (Native__instanceToHandle 0x4ecc70 / FUN_004ed320).

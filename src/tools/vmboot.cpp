@@ -1058,6 +1058,38 @@ void game_init_check(Boot &boot, Checker &c)
             "drive bridge copies the installed engine's torque curve (" +
                 std::to_string(sim ? sim->engine.torque_curve.size() : 0) +
                 " points, max " + std::to_string((double)curve_max) + " Nm)");
+    // Card 151: Chassis.updatevariables copies dyno.RPM_limit and rounds
+    // 1.25*RPM_limit down to 250 rpm steps (Chassis.java:688-692). Read the
+    // installed block's script field instead of a hand-written number.
+    float block_rpm_limit = 0.0f;
+    {
+        Value dv, lv;
+        std::string derr;
+        if (engine_obj &&
+            boot.vm()->get_instance_field(engine_obj, "dynodata", &dv, &derr) &&
+            dv.kind == Value::Obj && dv.obj &&
+            boot.vm()->get_instance_field(dv.obj, "RPM_limit", &lv, &derr))
+            block_rpm_limit = lv.kind == Value::Float ? lv.f
+                              : lv.kind == Value::Int ? (float)lv.i : 0.0f;
+    }
+    c.check(car_payload && block_rpm_limit > 0.0f &&
+                car_payload->rpm_limit == block_rpm_limit,
+            "RPM_limit comes from the installed block's dynodata (got " +
+                std::to_string(car_payload ? (double)car_payload->rpm_limit : 0.0) +
+                ", block " + std::to_string((double)block_rpm_limit) + ")");
+    c.check(car_payload && car_payload->max_rpm > car_payload->rpm_limit,
+            "maxRPM is above RPM_limit (got " +
+                std::to_string(car_payload ? (double)car_payload->max_rpm : 0.0) + " / " +
+                std::to_string(car_payload ? (double)car_payload->rpm_limit : 0.0) + ")");
+    c.check(car_payload && car_payload->rpm_max_torque > 0.0f &&
+                car_payload->rpm_max_torque < car_payload->max_rpm,
+            "rpm_max_torque lies inside the curve (got " +
+                std::to_string(car_payload ? (double)car_payload->rpm_max_torque : 0.0) +
+                ")");
+    std::printf("  engine limits: rpm_max_torque %.0f, rpm_limit %.0f, max_rpm %.0f\n",
+                car_payload ? (double)car_payload->rpm_max_torque : 0.0,
+                car_payload ? (double)car_payload->rpm_limit : 0.0,
+                car_payload ? (double)car_payload->max_rpm : 0.0);
     bool ratios_ok = sim && car_payload->ratio[7] < 0.0f;
     for (int i = 0; ratios_ok && i < kMaxGears; i++)
         if (sim->ratios[i] != car_payload->ratio[i]) ratios_ok = false;

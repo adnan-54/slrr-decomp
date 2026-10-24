@@ -3928,6 +3928,31 @@ bool ch_get_wheel(Vm &vm, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4b3890 Chassis.getSfxTable: a new SfxTable wrapper per call, bound to the
+// engine block's looping-table slot (e+0xfc + id*0x248).
+bool ch_get_sfx_table(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    int32_t i;
+    if (!want("Chassis.getSfxTable", a, 2, err) ||
+        !get_i("Chassis.getSfxTable", a[1], &i, err))
+        return false;
+    *out = Value::make_null();
+    game::CarData *c = car_of(a);
+    // shortcut: the exe's car-wait vf5(0) and FUN_0051f4f0(0xa0000000,0,0)
+    // preamble is not ported (same as getWheel 0x4b4150).
+    if (!c || i < 0 || i > 2) return true;
+    ClassState *cs = vm.get_class("java.game.parts.SfxTable");
+    if (!cs) {
+        *err = "Chassis.getSfxTable: java.game.parts.SfxTable is not loaded";
+        return false;
+    }
+    Object *o = vm.new_object(cs, err);
+    if (!o) return false;
+    game::bind_sfx_table(o, &c->engine_sfx.tables[i]);
+    *out = Value::make_obj(o);
+    return true;
+}
+
 bool ch_get_wheel_damage(Vm &, const Args &a, Value *out, std::string *err)
 {
     int32_t i;
@@ -7689,7 +7714,7 @@ const std::vector<Entry> &table()
     {"java.game.parts.bodypart.Chassis", "setSteerWheel", "(FF)V", ch_set_steer_wheel, false},
     {"java.game.parts.bodypart.Chassis", "setAckermann", "(F)V", ch_set_ackermann, false},
     {"java.game.Vehicle", "hasCrime", "()F", ve_has_crime, false},
-    {"java.game.parts.bodypart.Chassis", "getSfxTable", "(I)Ljava.game.parts.SfxTable;", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "getSfxTable", "(I)Ljava.game.parts.SfxTable;", ch_get_sfx_table, false},
     {"java.game.parts.SfxTable", "getItems", "()I", sfx_get_items, false},
     {"java.game.parts.SfxTable", "clear", "()V", sfx_clear, false},
     {"java.game.parts.SfxTable", "addItem", "(Ljava.util.resource.ResourceRef;FFFFF)V", sfx_add_item, false},

@@ -1,7 +1,7 @@
 ---
 id: 151
-status: todo
-branch:
+status: implemented
+branch: card/151
 depends: [150]
 ---
 # Chassis.getSfxTable: unblock the engine block's updatevariables (torque curve)
@@ -69,3 +69,9 @@ copies the installed engine's torque curve" with > 1 points and max torque > 0 (
 - No unit tests or synthetic inputs; cite the exe address next to the ported code.
 
 ## Result
+Ported `Chassis.getSfxTable` 0x4b3890 (`ch_get_sfx_table`, natives.cpp): returns a fresh
+`java.game.parts.SfxTable` wrapper bound through `bind_sfx_table` to
+`engine_sfx.tables[id]` for id 0..2, null otherwise. `make -C src clean check` passes
+(92 vmboot checks, 0 failures). Axis/D18V drive bridge: curve 33 points, max 159.05 Nm;
+RPM_limit 6750 == block `dynodata.RPM_limit` 6750, max_rpm 8250, rpm_max_torque 4500.
+0 failed threads.
