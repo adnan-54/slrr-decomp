@@ -12,6 +12,7 @@ LIB_SRC  := script/classfile.cpp script/vm.cpp script/packages.cpp script/native
             script/compiler/body.cpp script/compiler/emit.cpp \
             resource/rpk.cpp resource/rdb.cpp resource/manager.cpp \
             parts/cfg.cpp physics/shape.cpp physics/world.cpp physics/mesh.cpp \
+            physics/vclip.cpp \
             mesh/scx.cpp render/device.cpp render/scene.cpp render/ui.cpp \
             render/recording.cpp input/backend.cpp input/device.cpp \
             input/controller.cpp input/hotkeys.cpp input/cursor.cpp \

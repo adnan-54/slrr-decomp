@@ -20,10 +20,12 @@
 #include "game/car.h"
 #include "input/backend.h"
 #include "input/device.h"
+#include "mesh/scx.h"
 #include "parts/cfg.h"
 #include "platform/fs.h"
 #include "physics/mesh.h"
 #include "physics/physics.h"
+#include "physics/vclip.h"
 #include "resource/manager.h"
 #include "resource/rpk.h"
 #include "script/classfile.h"
@@ -1117,6 +1119,127 @@ void game_init_check(Boot &boot, Checker &c)
         c.check(!box_contact,
                 "no world contact has car_root or part_comp as a side");
         c.check(std::fabs(root->vel.y) < 0.1f, "car settles (|vel.y| < 0.1)");
+
+        // Card 159: every SunStrip cfg body-line hull as a V-Clip Poly
+        // (Poly__buildFromFaces 0x50e6d0) against the soup face under its
+        // lowest vertex (two-face Poly, 0x50f000). The returned V-F distance
+        // must equal the directly computed minimum vertex-to-face distance.
+        {
+            CfgFile car_cfg;
+            bool car_cfg_ok = car_res && game::load_car_cfg(*rt, car_res, &car_cfg, nullptr);
+            size_t hulls = 0, evaluated = 0, vf = 0;
+            bool terminate_ok = true, distance_ok = true;
+            if (car_cfg_ok && ground && ground->def.shape.mesh) {
+                const CollisionMesh &gm = *ground->def.shape.mesh;
+                Pose gpose = ground->pose();
+                Mat34 gr = pose_rotation(gpose);
+                Pose rpose = root->pose();
+                Mat34 rr = root->rotation();
+                for (const CfgBody &b : car_cfg.bodies) {
+                    std::string rel = b.shape;
+                    if (rel.size() < 4 ||
+                        lower_ascii(rel.substr(rel.size() - 4)) != ".scx")
+                        continue;
+                    for (char &ch : rel)
+                        if (ch == '\\')
+                            ch = '/';
+                    // selfcheck() chdirs to the game dir, so cfg paths are
+                    // already relative to the current directory.
+                    mesh::Mesh hm;
+                    std::string herr;
+                    if (!mesh::load(rel.c_str(), &hm, &herr)) {
+                        std::printf("    hull %s: skipped (%s)\n", rel.c_str(),
+                                    herr.c_str());
+                        continue;
+                    }
+                    std::shared_ptr<const CollisionMesh> hcm = build_collision_mesh(hm);
+                    if (!hcm)
+                        continue;
+                    hulls++;
+                    Poly hpoly = poly_from_triangles(*hcm);
+                    // Same pose as the mass compound child (0x5032d0): the
+                    // 0x508d20 centroid moves the child, not the mesh, and
+                    // car_root's local frame is the compound COM.
+                    float ang[3] = {b.xform.rx, b.xform.ry, b.xform.rz};
+                    Mat34 lr;
+                    euler_to_mat(&lr, ang);
+                    Vec3 child{b.xform.px, b.xform.py, b.xform.pz};
+                    {
+                        BodyDef def;
+                        def.shape.type = SHAPE_MESH;
+                        def.shape.mesh = hcm;
+                        Vec3 center{0.0f, 0.0f, 0.0f};
+                        compute_mass_props(&def, b.mass, &center);
+                        child += mat_vec(lr, center);
+                    }
+                    Vec3 local = child - Vec3{car_payload->com[0], car_payload->com[1],
+                                              car_payload->com[2]};
+                    Mat34 wr;
+                    mat_mul(&wr, &rr, &lr);
+                    Pose hpose;
+                    hpose.pos = rpose.pos + mat_vec(rr, local);
+                    mat_to_quat(&hpose.rot, &wr);
+
+                    float lowest = 1e30f;
+                    Vec3 low{0.0f, 0.0f, 0.0f};
+                    for (const Vec3 &v : hpoly.verts) {
+                        Vec3 w = hpose.pos + mat_vec(wr, v);
+                        if (w.y < lowest) {
+                            lowest = w.y;
+                            low = w;
+                        }
+                    }
+                    float maxd = low.y - (gm.bounds_min.y - 1.0f);
+                    MeshRayHit hit;
+                    if (maxd <= 0.0f ||
+                        !mesh_raycast(gm, gpose, low, Vec3{0.0f, -1.0f, 0.0f}, maxd,
+                                      &hit))
+                        continue;
+                    const CollisionMesh::Triangle &tri = gm.triangles[hit.triangle];
+                    Vec3 tv[3];
+                    for (int i = 0; i < 3; i++)
+                        tv[i] = gpose.pos + mat_vec(gr, gm.vertices[tri.v[i]]);
+                    Poly spoly = poly_triangle(tv[0], tv[1], tv[2], hit.normal);
+
+                    int fa = 0, fb = 0;
+                    Vec3 pa{0.0f, 0.0f, 0.0f}, pb{0.0f, 0.0f, 0.0f};
+                    Vec3 nrm{0.0f, 1.0f, 0.0f};
+                    Pose ipose;
+                    float d = vclip_closest(hpose, hpoly, ipose, spoly, &fa, &fb, &pa, &pb,
+                                            &nrm);
+                    if (d >= 1e6f) {
+                        terminate_ok = false;
+                        std::printf("    hull %s: vclip_closest returned 1e6\n",
+                                    rel.c_str());
+                        continue;
+                    }
+                    evaluated++;
+                    int ka = hpoly.features[fa].kind, kb = spoly.features[fb].kind;
+                    float expected = 1e30f;
+                    for (const Vec3 &v : hpoly.verts) {
+                        Vec3 w = hpose.pos + mat_vec(wr, v);
+                        float sd = vec_dot(hit.normal, w - tv[0]);
+                        if (sd < expected)
+                            expected = sd;
+                    }
+                    std::printf("    hull %-42s V-Clip d %+.6f, vertex-face min %+.6f, "
+                                "kinds %d-%d\n",
+                                rel.c_str(), (double)d, (double)expected, ka, kb);
+                    if (ka == POLY_V && kb == POLY_F) {
+                        vf++;
+                        if (std::fabs(d - expected) > 1e-4f)
+                            distance_ok = false;
+                    }
+                }
+            }
+            c.check(car_cfg_ok, "SunStrip car cfg loads for the hull V-Clip check");
+            std::printf("  hull V-Clip (0x50d230): %zu hull(s), %zu evaluated, %zu V-F\n",
+                        hulls, evaluated, vf);
+            c.check(terminate_ok, "vclip_closest terminates on every cfg body-line hull");
+            c.check(vf > 0 && distance_ok,
+                    "V-Clip V-F distance equals the minimum vertex-face distance of the "
+                    "soup face under the hull");
+        }
 
         // Card 156: the wheel "ray" is the sensor segment (0x4f3f10) tested
         // one-sided against every PHYS face by 0x4fd110, using the stored

@@ -1,6 +1,6 @@
 ---
 id: 159
-status: todo
+status: implemented
 branch: card/159
 depends: [158]
 ---
@@ -74,3 +74,14 @@ synthetic shapes; cite exe addresses; `INVENTED:` for anything not from the exe 
 Wiring into World (card 160), the 0x4feb20 filters, TOI, addContact, pair cache 0x4f6570/0x4f6ea0.
 
 ## Result
+Implemented `physics/vclip.{h,cpp}`: `Poly`/`PolyFeature`/`PolyPlane`, `poly_from_triangles` (0x50e6d0),
+`poly_triangle` (0x50f000), `vclip_closest` (0x50d230, incl. stepEF/clipEdge 0x50aa60/0x508fe0 and
+checkEE 0x509f10 stepping) and `vclip_check` (0x50d9d0). No hull Poly cache was needed; vmboot builds it
+on demand. `make -C src clean check` green:
+- vmboot: 11/11 cfg hulls evaluated, 10 V-F, every V-F distance == min vertex-face distance (1e-4);
+  auto drive unchanged (`max gear 5, final speed 103.85 m/s`).
+- scxcheck: 1888 unique cfg `body` hulls, 1847 closed; Axis `_phys_FL_door.scx` = 16 V / 42 E / 28 F
+  (86 features). 41 shipped hulls are open (windows/water/garage props) and 5 cfg hulls have no mesh on
+  disk; both are reported, not failed, and not repaired.
+`INVENTED:` C++ storage layout, max-violation plane choice in the region test, and the exact branch
+order inside stepEF/vclip_check (notes/11 §3 gives the exe addresses and result codes, not every branch).

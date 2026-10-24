@@ -14,11 +14,15 @@
 #include <cmath>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <string>
 #include <system_error>
 #include <vector>
 
 #include "mesh/scx.h"
+#include "parts/cfg.h"
+#include "physics/mesh.h"
+#include "physics/vclip.h"
 
 namespace fs = std::filesystem;
 
@@ -57,7 +61,8 @@ std::string relative_path(const fs::path &path, const fs::path &root)
     return ec ? path.generic_string() : rel.generic_string();
 }
 
-bool collect_scx(const fs::path &root, std::vector<fs::path> *out, std::string *err)
+bool collect_ext(const fs::path &root, const char *ext, std::vector<fs::path> *out,
+                 std::string *err)
 {
     std::error_code ec;
     fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied,
@@ -70,8 +75,7 @@ bool collect_scx(const fs::path &root, std::vector<fs::path> *out, std::string *
     while (it != end) {
         std::error_code fec;
         if (it->is_regular_file(fec)) {
-            std::string ext = lower_ascii(it->path().extension().string());
-            if (ext == ".scx")
+            if (lower_ascii(it->path().extension().string()) == ext)
                 out->push_back(it->path());
         } else if (fec) {
             *err = "cannot stat " + it->path().string() + ": " + fec.message();
@@ -220,11 +224,97 @@ void test_phys_fl_door(const fs::path &root)
     printf("PASS  _phys_FL_door.scx: 1 section, 16 vertices, 28 triangles, bounds match\n");
 }
 
+// Card 159 check 1: every kind-6 hull a shipped cfg `body` line names must
+// build a closed Poly (Poly__buildFromFaces 0x50e6d0): each E has exactly two
+// adjacent F and V - E + F = 2. Open hulls are reported, never repaired.
+void check_hull_polys(const fs::path &root, std::vector<std::string> *errors)
+{
+    std::vector<fs::path> cfgs;
+    std::string err;
+    if (!collect_ext(root, ".cfg", &cfgs, &err)) {
+        errors->push_back(err);
+        return;
+    }
+    std::set<std::string> seen;
+    std::vector<std::string> open, missing;
+    size_t hulls = 0, closed = 0, skipped = 0;
+    PolyCounts fl;
+    bool fl_found = false;
+    for (const fs::path &cfg_path : cfgs) {
+        CfgFile cfg;
+        std::string perr;
+        if (!cfg_load(cfg_path.string().c_str(), &cfg, &perr)) {
+            skipped++;
+            continue;
+        }
+        for (const CfgBody &b : cfg.bodies) {
+            std::string rel = b.shape;
+            if (rel.size() < 4 ||
+                lower_ascii(rel.substr(rel.size() - 4)) != ".scx")
+                continue;
+            for (char &ch : rel)
+                if (ch == '\\')
+                    ch = '/';
+            if (!seen.insert(lower_ascii(rel)).second)
+                continue;
+            mesh::Mesh m;
+            std::string merr;
+            fs::path hull_path = root / fs::path(rel);
+            if (!mesh::load(hull_path.string().c_str(), &m, &merr)) {
+                // A shipped cfg may name a mesh that is not on disk (resman
+                // reports the same missing set); report, do not fail.
+                missing.push_back(rel);
+                continue;
+            }
+            std::shared_ptr<const CollisionMesh> cm = build_collision_mesh(m);
+            if (!cm) {
+                missing.push_back(rel + " (no usable triangles)");
+                continue;
+            }
+            PolyCounts c = poly_counts(poly_from_triangles(*cm));
+            hulls++;
+            if (c.closed) {
+                closed++;
+            } else {
+                char buf[160];
+                snprintf(buf, sizeof buf, "%s: not closed (V/E/F = %d/%d/%d)",
+                         rel.c_str(), c.verts, c.edges, c.faces);
+                open.push_back(buf);
+            }
+            if (rel == "cars/racers/Axis_data/meshes/_phys_FL_door.scx") {
+                fl = c;
+                fl_found = true;
+            }
+        }
+    }
+    printf("V-Clip hull polys: %zu unique .scx hull(s) from %zu cfg(s), %zu closed\n", hulls,
+           cfgs.size(), closed);
+    if (skipped)
+        printf("  note: %zu cfg file(s) did not parse and were skipped\n", skipped);
+    // Shipped hulls that are not closed are reported, never repaired (card
+    // 159): open panes/water/garage props legitimately fail V - E + F = 2.
+    if (!open.empty()) {
+        printf("  %zu open hull(s):\n", open.size());
+        for (const std::string &s : open)
+            printf("    %s\n", s.c_str());
+    }
+    if (!missing.empty()) {
+        printf("  %zu cfg hull(s) without a mesh on disk:\n", missing.size());
+        for (const std::string &s : missing)
+            printf("    %s\n", s.c_str());
+    }
+    if (fl_found)
+        printf("  _phys_FL_door.scx: %d V / %d E / %d F (%d features)\n", fl.verts,
+               fl.edges, fl.faces, fl.verts + fl.edges + fl.faces);
+    if (fl_found && (fl.verts != 16 || fl.edges != 42 || fl.faces != 28))
+        errors->push_back("_phys_FL_door.scx: expected 16 V / 42 E / 28 F");
+}
+
 int selfcheck(const fs::path &root)
 {
     std::vector<fs::path> files;
     std::string err;
-    if (!collect_scx(root, &files, &err)) {
+    if (!collect_ext(root, ".scx", &files, &err)) {
         fprintf(stderr, "FAIL  %s\n", err.c_str());
         return 1;
     }
@@ -310,6 +400,7 @@ int selfcheck(const fs::path &root)
         printf("  %s\n", k);
 
     test_phys_fl_door(root);
+    check_hull_polys(root, &errors);
 
     if (!errors.empty()) {
         printf("FAIL  %zu problem(s):\n", errors.size());
