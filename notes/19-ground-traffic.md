@@ -255,3 +255,120 @@ findRoute/getRouteLength(VV), getRouteLength(), getRoutePos (also needs 0x4133f0
 untraced); traffic cars (vehicle sim + scripted `traffic_car` objects + per-frame
 0x41a9d0/0x41b290/0x417c90); pedestrians (0x41b570 family + walk areas 0x41dd70);
 water (needs a process-wide physics world owner).
+
+## 7. Map collision: game-instance data blob, ground body, triangle contacts (2026-10-24, cards 142/143)
+
+**Where the map collision lives.** Not in the `.scm` (that file is only `materials N` /
+`material i name`, parsed by `Cfg__parseKeyTable` 0x4f6240 with the key table at 0x5daa80)
+and not in a type-6 shape. It is in the **binary data of the map's `ins_game` (type 1)
+records**: the top map record (`maps/<map>.rpk` id 1, flags 0x11/0x01, size 0x10d in
+ROC_track) carries an embedded resource tree of type-1 child records (area_N, every map
+object), and each child's data has a `PHYS` triangle soup. `ResourceInstance_Game__load`
+0x5195a0 (vtable 0x5a7d70 slot 10, +0x28; `ResourceInstance_Game__vf10` in names.json) calls the parser below when the
+instance is first made resident, then runs the native create (`typed->+0xc->vf3`, here
+`type_ground__vf3` 0x4bade0) and the script `<init>` (THRD-CREATE).
+
+### `ResourceInstance_Game__loadData` 0x519940 (ECX = typed data `T` = R+0x108; args R, data, size)
+```
+p = data + 4 + 4*u32[data]                    // skip n leading dwords (0 in every shipped map)
+nChild = u32 p; p += 4
+repeat nChild: rec.flags(+9) |= 8; p += 0x51e6b0(p, R+0x80, &child, R)   // same record format as the
+              // .rpk record table (notes/01): super,id,type,flags,f32,off,size,nameLen,name,[48 if flags&1];
+              // off/size point into the same .rpk file. if R+0x84 & 0x80000: child flag 0x80000 + make resident
+while (p - data < size) { tag = u32 p; sz = u32 p+4; q = p+8
+  tag 0, sz 0   : the rest of the blob (size - 12 bytes from p+0xc) is RSD text, as below
+  'RSD\0' 0x445352 : sz bytes of text lines: "gametype %d" -> 0x51fa40(0x51e860(id), 8, 0) (precache type);
+                  "params %2048s" -> T+0x48 (malloc 0x801 once). Then continue after the text.
+  'PHYS' 0x53594850 : nf = u32 q; T+0x18 = nf; T+0x1c = malloc(nf*0x20); q += 4
+                  per face (file 28 bytes): u32 mat -> +0, u32 i0,i1,i2 -> +4,+8,+0xc, f32 n[3] -> +0x10..+0x18; +0x1c = 0
+                  nv = u32; T+0x10 = nv; T+0x14 = malloc(nv*12); nv x f32[3] verts (metres, world frame)
+                  (sz is not read: the walker continues after the parsed data; shipped sz == parsed length)
+  'EXTP' 0x50545845 : sz/4 ids, each 0x51e650(id) (precache); then R's AABB (+0xb0 kind=1, centre +0xb4, half
+                  +0xc0) is grown to cover every child's AABB
+  'POLY' 0x594c4f50 : T+0x30 = count, T+0x34 = polygon records {u32 a, u32 n14, u32 n3, n14 x 14 dwords, n3 x 3 dwords}
+                  (not needed for collision; not traced further)
+  other         : p = q + sz }
+DAT_00773ab4++ (loaded game instances)
+```
+Unload 0x51a1b0 frees `R+0x11c` (=T+0x14 verts), `R+0x13c`, `R+0x124` (T+0x1c faces; face `+0x1c` != 0 goes to
+0x4fb000 on the world first), so `+0x1c` is a runtime per-face link (contact/pair cache), 0 after load.
+
+**Shipped corpus (scratch parse, card 142 makes it an rpkdump check).** Every type-1 blob of the four map
+packages parses to its exact size, all face indices < nv, PHYS `sz` = parsed length, embedded ids unique:
+| map | type-1 instances (top + embedded) | PHYS chunks | faces | verts | POLY | max mat | `.scm` materials |
+|---|---|---|---|---|---|---|---|
+| city | 58,210 | 23,976 | 197,286 | 236,064 | 624 | 107 | 108 |
+| city2 | 56,689 | 19,040 | 251,902 | 276,107 | 748 | 74 | 75 |
+| test_track | 12,224 | 6,420 | 66,825 | 77,132 | 242 | 85 | none |
+| ROC_track | 10,894 | 5,147 | 55,040 | 61,777 | 155 | 42 | none |
+Vertex bounds are map-sized (city x −1471..1485, y −27..70, z −1929..329), i.e. metres in the world frame
+(no ×0.01 as in `.scx`). Highest triangle under (x,z) = (0,0): city 1.00, test_track 6.37, ROC_track 0.003.
+UNRESOLVED: what `mat` indexes when the map has no `.scm` (test_track/ROC_track use 0..85/0..42, while
+type_ground's default material array has 1 entry).
+
+### `type_ground__vf3` 0x4bade0, body part (the part elided in §1)
+```
+g = new type_ground; g+0x3c = 0x517b80(g+8); g+0x7c = g+0x80 = g+0x2d8 = g+0x78 = 0
+gravity:  v = Config("gravity") (0x47c080); if (-v <= 0) world+0x1c4..0x1cc = (0, -v, 0)
+g+0x94 = Config("ground_friction"); if (<= 0) 1.0
+def = Physics__createBox(0, 0, 0,0,0, 0)       // mass 0 -> inv mass 0, def+0xb4 |= 4 (static, no integration);
+                                               // shape kind 0 (none): Collide__bodyPair never pairs it
+g+0x40 = ref(def); def+0xb4 |= 4; def+0x2c = 0
+shape = def+0x90: +0x58 = 0.2 (0x3e4ccccd), +0x50 = g+0x94 (friction), +0x54 = 0.01 (0x3c23d70a, rolling res),
+        +0x9c = 0x80000000, +0xa0 = 0.6 (0x3f19999a)    // the shape doubles as the ground material (S+0xac, notes/09)
+precache particles.rpk 2/10 (type 0xe), sound.rpk 6 (type 6)
+if (scm[0]) { n = File__readAll(scm); if (n >= 0) Cfg__parseKeyTable(buf, n, "materials" table 0x5daa80, g) }
+if (g+0x78 == 0) { g+0x78 = 1; g+0x7c = new material[1] (0x48 bytes, ctor 0x487a80); precache system.rpk 3, 9 }
+Physics__attachToResource 0x4e8a50(g, def, &(x,y,z) /*params %f 1..3*/, mat, "groundbody")
+   = PhysicsWorld__addBody(def, pos, mat): def flag 4 -> NOT head-inserted under w+0x84 (never stepped)
+     + GameObject__createPhysInstance(g, 0, body, "groundbody")
+g->resource flags (+0x84) |= 0x200000 (0x4ebdd0)       // the ground's own node is skipped by the collision walk
+b = GameRef__getPhysBody(g); if (b) b+0xb4 body +0x58 &= ~1
+precache render record id (0x51e860(id)) type 0xe; Render__createInstance(g, g+0x48, "r_ground", 0); bone00 ...
+traffic / pedestrians (§1), 0x4ebd90(g, 0x14, 0), g+0x90 = 0, IntervalMgr__addNode 0x4ee1a0(g, 0)
+```
+`a,b,c` (params %f 4..6) are scanned but this function never reads them (the matrix `local_6c` is not
+initialised in the decompile; UNRESOLVED whether it is the identity built by 0x5663c0/0x569b20).
+
+### Who collides with the soup
+`IntervalMgr__collidePass` 0x4ee460 (big per-step pass over interval nodes; also calls `Collide__candidatesTOI`
+0x4fc7e0) walks resource children: type 1 -> **`Collide__groundTree` 0x4fe6f0(obj, node, groundBody, depth,
+bounds)**, type 2 -> `Collide__physInstPair` 0x4ff9e0.
+- `Collide__groundTree`: node AABB (+0xb4 centre, +0xc0 half) vs obj AABB; miss -> (cheap path 0x4fe550 when
+  `DAT_006028dc < DAT_005dadbc`) return 0. Hit: if not loaded, `ResourceNode__requestLoad(node, node+0x9c, 0,
+  0 or 10)` (**streaming: map nodes load because a body is near them**); when loaded, T = typed data; if
+  `T+0x28 == node+0x80` the ground body is re-fetched through getInfo(1) of the native (vf15 id 1 = g+0x24);
+  `if (T+0x18) Collide__groundSoup(obj, node, T, groundBody)`; then recurse into the node's type-1 children
+  (except `+0x84 & 0x200000`) and pair type-2 children with `Collide__physInstPair`.
+- **`Collide__groundSoup` 0x4ff6b0(obj, node, T, groundBody)**: for every type-2 child (physics instance) of
+  obj whose node AABB test (0x516640 sphere / 0x516450 box by node+0xb0) does not reject and whose body and def
+  are not flagged 0x24: clear the 64 candidate slots at 0x6029e4 (stride 0xa0); body flag 0x800 -> for each
+  face `Collide__bodyVsStatic`-style sweep 0x4fd110(rootBody, T+0x14 verts, face, groundBody, &prev/cur pos);
+  capsule-y/z sensor bodies (shape 3/4, flag 0x40, not 0x1000) -> 0x4fd110 per face with the capsule segment;
+  otherwise (no 0x20000) **`Collide__bodyVsTriangles` 0x4feb20(body, verts, faces, groundBody, node+0xb0,
+  nf, 0)** (recursive over compound children; callees 0x4fbda0, 0x4fd110, 0x4fc450, 0x50f000, 0x504570,
+  0x4ffec0) which queues `body_dummy_candidate`s; `Collide__candidatesTOI` 0x4fc7e0 then bisects the earliest
+  TOI and calls `PhysicsWorld__addContact(body, …, B = groundBody, …)`. Not traced in detail (card 144+).
+So in the exe the car (box `car_root` + `part_comp` children) gets c_collision contacts against triangles of
+every resident map node near it, with the static `groundbody` as side B (friction = min(shape μ), §5 of
+notes/11).
+
+### What src has (2026-10-24)
+- `src/resource/rpk.*` parses the record table only; type-1 data blobs (embedded child records, PHYS, RSD)
+  are not parsed. `load_ground` (src/game/runtime.cpp) line-scans the blob as text: it finds `gametype`/`params`
+  only because the RSD text is the blob tail (fragile; the exe reads the RSD/0 chunk, 0x519940).
+- Embedded child instances (58k in city) are never mounted (`Runtime::mount_package` walks the table only).
+- `physics::World` pairs only active roots (`bodies`); it has `SHAPE_MESH` + `CollisionMesh` (AABB tree) +
+  `mesh_contacts` (sphere/box/capsule vs soup), static bodies (`inv_mass == 0`), but nothing creates a ground.
+- `Runtime::instantiate` ignores native kinds other than car (shortcut comment ~runtime.cpp:528).
+
+### Side note: `Class not found: java.game.parts.bodypart.Block_Vee` (vmboot --selfcheck)
+Not real misses. They come from `jvm::load_class` (src/script/packages.cpp:272) being called by the VM
+class-loader callback (src/app/boot.cpp:79) while compile-on-load resolves a simple name through the
+source's import list in order: e.g. `Block_Vee_OHC.java` (package `...block.block_vee`) imports
+`java.render.osd.*`, `java.io.*`, ..., `java.game.parts.bodypart.*`, `java.game.parts.enginepart.*`,
+`java.game.parts.enginepart.block.*`; every earlier import prints one line before the last one finds
+`parts/scripts/enginepart/block/Block_Vee.class` (same for Camshaft, Part, Inventory, Headlights: 6,289
+lines in one run). The same run reports `compile on load: 635 sources, ok 635, failed 0` and
+`selfcheck: PASSED`. The exe has the string `"Class not found: "` (0x5b46e4) but whether it prints it on
+import probes is not traced; src could silence probe misses (cosmetic, no card).

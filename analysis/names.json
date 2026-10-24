@@ -1973,5 +1973,14 @@
   "0x4ae5a0": "PhysBody__sleepRoot",
   "0x480700": "PhysBody__root",
   "0x501d00": "PhysBody__unlink",
-  "0x4f7b20": "PhysBody__attachChild"
+  "0x4f7b20": "PhysBody__attachChild",
+  "0x519940": "ResourceInstance_Game__loadData",
+  "0x4fe6f0": "Collide__groundTree",
+  "0x4ff6b0": "Collide__groundSoup",
+  "0x4feb20": "Collide__bodyVsTriangles",
+  "0x4ff9e0": "Collide__physInstPair",
+  "0x4ee460": "IntervalMgr__collidePass",
+  "0x4ee1a0": "IntervalMgr__addNode",
+  "0x5205e0": "PhysType__loadRsd",
+  "0x4f6240": "Cfg__parseKeyTable"
 }
