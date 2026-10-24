@@ -256,58 +256,49 @@ std::string thread_state(const natives::ThreadInfo &t)
     return "running (yielded)" + at;
 }
 
-// MainMenu.java:417-419 (CMD_NEW_CAREER): StringRequesterDialog.display() waits
-// on the dialog object (Dialog.java:213-220); StringRequesterDialog.osdCommand
-// copies osd.stringValue into `input` and forwards OK (0) while SIF_NOEMPTY.
-// INVENTED: stands in for typing into the Osd string gadget + OK.
-bool answer_name_dialog(Boot &boot, std::string *msg)
+// Dialog.display() waits on the dialog object (Dialog.java:213-220) until its
+// osdCommand(0) resolves the wait. StringRequesterDialog's OK path also needs
+// its `input`: the shipped 2.3.1 class checks the gadget's osd.stringValue for
+// SIF_NOEMPTY (2.2.1 source: input), so both get the name.
+// INVENTED: stands in for clicking the dialog's Osd buttons (no render hit test).
+void answer_dialogs(Boot &boot, std::vector<Object *> &answered, int frame)
 {
-    natives::ThreadInfo select;
-    bool found = false;
-    for (const natives::ThreadInfo &t : natives::thread_report(*boot.vm()))
-        if (t.name == "THRD-MENU-SELECT") { select = t; found = true; }
-    if (!found) { *msg = "no THRD-MENU-SELECT thread"; return false; }
-    if (!select.waiting || !select.wait_on) {
-        *msg = "THRD-MENU-SELECT not waiting (" + thread_state(select) + ")";
-        return false;
+    for (const natives::ThreadInfo &t : natives::thread_report(*boot.vm())) {
+        Object *d = t.wait_on;
+        if (!t.waiting || !d || !is_a(boot, d->cls, "java.render.osd.dialog.Dialog"))
+            continue;
+        if (!is_a(boot, d->cls, "java.render.osd.dialog.StringRequesterDialog")) continue;  // TEMP
+        // One OK per dialog: several threads may wait on the same object.
+        if (std::find(answered.begin(), answered.end(), d) != answered.end()) continue;
+        answered.push_back(d);
+        const std::string cls = object_class(boot, d);
+        std::string err;
+        if (is_a(boot, d->cls, "java.render.osd.dialog.StringRequesterDialog")) {
+            Value input;
+            if (!boot.vm()->get_instance_field(d, "input", &input, &err) ||
+                input.kind != Value::Str || input.s.empty()) {
+                boot.vm()->set_instance_field(d, "input", Value::make_str("vmboot"), &err);
+                Value osd;
+                if (boot.vm()->get_instance_field(d, "osd", &osd, &err) &&
+                    osd.kind == Value::Obj && osd.obj)
+                    boot.vm()->set_instance_field(osd.obj, "stringValue",
+                                                  Value::make_str("vmboot"), &err);
+            }
+        }
+        std::vector<Value> args{Value::make_int(0)};
+        ClassState *decl = nullptr;
+        const MethodInfo *m = boot.vm()->find_method(d->cls, "osdCommand", "(I)V", 1, args,
+                                                     &decl, &err);
+        const ClassUnit *unit = m ? unit_of(boot, decl) : nullptr;
+        bool ok = unit && natives::spawn_untimed(
+                               *boot.vm(), boot.vm()->start(*unit, *m, d, args, &err), 10,
+                               "THRD-DIALOG-OK");
+        if (ok)
+            std::printf("  dialog OK: %s (frame %d)\n", cls.c_str(), frame);
+        else
+            std::printf("  dialog %s: not answered%s\n", cls.c_str(),
+                        err.empty() ? "" : (" (" + err + ")").c_str());
     }
-    Object *d = select.wait_on;
-    const std::string cls = object_class(boot, d);
-    if (!is_a(boot, d->cls, "java.render.osd.dialog.StringRequesterDialog")) {
-        *msg = cls + " -> not a StringRequesterDialog, skipped";
-        return false;
-    }
-    std::string err;
-    // The OK path reads `input`; the shipped 2.3.1 class checks the gadget's
-    // osd.stringValue for SIF_NOEMPTY (2.2.1 source: input), so both get the name.
-    if (!boot.vm()->set_instance_field(d, "input", Value::make_str("vmboot"), &err)) {
-        *msg = cls + " -> input not set: " + err;
-        return false;
-    }
-    Value osd;
-    if (!boot.vm()->get_instance_field(d, "osd", &osd, &err) || osd.kind != Value::Obj ||
-        !osd.obj) {
-        *msg = cls + " -> osd not an object" + (err.empty() ? "" : ": " + err);
-        return false;
-    }
-    if (!boot.vm()->set_instance_field(osd.obj, "stringValue", Value::make_str("vmboot"),
-                                       &err)) {
-        *msg = cls + " -> osd.stringValue not set: " + err;
-        return false;
-    }
-    std::vector<Value> args{Value::make_int(0)};
-    ClassState *decl = nullptr;
-    const MethodInfo *m = boot.vm()->find_method(d->cls, "osdCommand", "(I)V", 1, args,
-                                                 &decl, &err);
-    const ClassUnit *unit = m ? unit_of(boot, decl) : nullptr;
-    if (!unit) {
-        *msg = cls + " -> osdCommand(I)V not found" + (err.empty() ? "" : ": " + err);
-        return false;
-    }
-    bool ok = natives::spawn_untimed(*boot.vm(), boot.vm()->start(*unit, *m, d, args, &err),
-                                     10, "THRD-DIALOG-OK");
-    *msg = cls + (ok ? " -> sent OK" : " -> OK thread failed: " + err);
-    return ok;
 }
 
 // 0x47d760 init step: Config.init -> type record "Init" (sl.rpk, type 8) ->
@@ -389,16 +380,18 @@ void game_init_check(Boot &boot, Checker &c)
         else if (serr.empty())
             serr = "MainMenu.window is not an object";
     }
-    // The NEW CAREER dialog is up once the select handler has run; answer it
-    // once, then let the handler continue (loading screen, name, garage).
-    const int kDialog = 4200;
-    std::string dialog_msg;
+    // The NEW CAREER dialog is up once the select handler has run; answer every
+    // modal dialog that shows up from then on (loading screen, name, garage),
+    // then let each handler continue.
+    const int kDialog = 4200, kDialogStep = 300;
+    std::vector<Object *> answered;
     for (int i = kSelect + 1; i <= kFrames; i++) {
         g_input->devices[0].raw.keys[0x1c] = 0;
         loop.frame(i * 16);
-        if (i == kDialog) answer_name_dialog(boot, &dialog_msg);
+        if (i % 300 == 0) std::printf("  frame %d\n", i);  // TEMP debug
+        if (i >= kDialog && (i - kDialog) % kDialogStep == 0)
+            answer_dialogs(boot, answered, i);
     }
-    std::printf("  name dialog: %s\n", dialog_msg.c_str());
 
     Value state_after;
     serr.clear();
@@ -408,6 +401,7 @@ void game_init_check(Boot &boot, Checker &c)
     std::printf("  menu select: actualState %s -> %s%s\n", class_before.c_str(),
                 class_after.c_str(),
                 selected ? "" : (" (invoke failed: " + serr + ")").c_str());
+    std::printf("  final actualState: %s\n", class_after.c_str());
 
     // MainMenu.java:436: display() == 0 sends the NEW CAREER handler on to
     // GameLogic.changeActiveSection(GameLogic.garage); the MainMenu fields are
@@ -677,6 +671,8 @@ int selfcheck()
     vector3_check(boot, c);
     game_init_check(boot, c);
 
+    std::printf("  boot.reset (TEMP debug)\n");  // TEMP debug
+    boot.reset();
     std::printf("selfcheck: %s (%d checks, %d failure(s))\n",
                 c.failures ? "FAILED" : "PASSED", c.checks, c.failures);
     return c.failures ? 1 : 0;
@@ -686,7 +682,12 @@ int selfcheck()
 
 int main(int argc, char **argv)
 {
-    if (argc == 2 && strcmp(argv[1], "--selfcheck") == 0) return selfcheck();
+    setvbuf(stdout, nullptr, _IONBF, 0);  // TEMP debug
+    if (argc == 2 && strcmp(argv[1], "--selfcheck") == 0) {
+        int rc = selfcheck();
+        std::printf("main: selfcheck returned %d\n", rc);  // TEMP debug
+        return rc;
+    }
     std::fprintf(stderr, "usage: vmboot --selfcheck\n");
     return 2;
 }
