@@ -1,6 +1,6 @@
 ---
 id: 168
-status: todo
+status: implemented
 branch: card/168
 depends: [167]
 ---
@@ -80,4 +80,25 @@ Sensor-vs-sensor pairs (the car's wheel triggerspring capsules also carry 0x40),
 (no 0x1000), kind-6/sphere/rod triggers, Poly__buildBox, reaching checkpoint 0 (z -542, needs steering /
 bot Navigator), finish window and return to Garage.
 
-## Result
+## Result (card/168, `make -C src -j4 check` green, vmboot `selfcheck: PASSED` 145 checks / 0 failed)
+- Trigger pass in `World::step` (tail, before `time += t`): root-vs-sensor V-Clip test (0x4fb370 step 4
+  -> 0x4fd910: `vclip_closest(sensor pose, box poly, child pose, child poly) < 0` after the
+  `|dp| <= bA + bB + 0.05` broad phase) -> `add_trigger_contact` 0x502d60 (root climb on flag 4, record
+  keyed by A + B root + B owner id, stamp = `time`, 0x20 to A and to B if it has an owner), then the
+  0x4fa900 sweep with 0x4fb070 removal (0x40 to both, erase). Box sensor poly cached on the body.
+- Runtime callback (0x47c960) queues the event to the body owner with the *other* side's id formatted
+  `%d` into a String; the notification forwards it as `handleRacePos(triggerRef, 0x20, "<car id>")`, which
+  matches the script's `String` signature (`param.token(0).intValue()`). Car root body bound to the car
+  resource (body+0x38/+0x40) in `create_car_bodies`.
+- vmboot (900-frame auto drive): `rpTotal[0] 11`, `rpNextTrigger[0] 12`, `nextTrigger[0] 0`,
+  `current_lap 1`, 2 trigger record(s); both new checks pass -> `handleRacePos` ran for the player car,
+  checkpoint #3 ignored. End of the career block: 1 record alive (of 42 sensor bodies); 0 V-Clip
+  overruns (0x50d230) and no Voronoi error over the block; 0 failed threads; final speeds unchanged
+  (43.98 m/s auto drive).
+- INVENTED / shortcuts (commented in src): 12-triangle box Poly via `poly_from_triangles` instead of
+  Poly__buildBox's 26 features (0x502d60 creates the real Poly__buildBox poly); `sensor_poly` cached on
+  `RigidBody` (the exe's sensor body owns it); one trigger test per step on the final pose instead of
+  inside every 0x4fb370 sub-iteration; sphere/rod sensors skipped (race scripts build box triggers);
+  the no-0x1000 record path (c_collision param) is not queued; trigger records referencing a removed
+  body are erased in `remove_body` (no 0x40, the owner is being destroyed); `(int32_t)` cast for the
+  exe's signed `"%d"` (script `intValue` is `%d`).

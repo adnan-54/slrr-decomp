@@ -4,6 +4,7 @@
 #pragma once
 #include <stdint.h>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -148,12 +149,17 @@ struct RigidBody {
     std::vector<RigidBody *> children;
     // PhysBody sleep flag (+0x58 bit 0x80, 0x506d90/0x507060).
     bool asleep = false;
-    // PhysBody +0x58 flag word. Only 0x40 (sensor pair, no physical contact)
-    // and 0x1000 (keep trigger records) exist here; type_trigger vf3 0x4d4700
-    // writes (flags & ~1) | 0x15040.
+    // PhysBody +0x58 flag word. 0x4 = compound child (0x502d60 climbs to the
+    // root), 0x40 (sensor pair, no physical contact) and 0x1000 (keep trigger
+    // records) exist here; type_trigger vf3 0x4d4700 writes
+    // (flags & ~1) | 0x15040.
     uint32_t body_flags = 0;
     uint32_t owner_id = 0;    // +0x40: resource id reported in event params
     void *owner = nullptr;    // +0x38 ResourceRef target
+    // INVENTED storage: the exe builds a 26-feature box Poly (Poly__buildBox)
+    // when the sensor body is created; src caches the 12-triangle box Poly on
+    // the body for the trigger pass (0x4fd910).
+    std::shared_ptr<const Poly> sensor_poly;
 
     Pose pose() const { return Pose{pos, rot}; }
     Mat34 rotation() const;
@@ -259,6 +265,22 @@ struct World {
     void sleep(RigidBody *b);
     void wake(RigidBody *b);
     int step(float dt);
+
+    // PhysicsWorld__addTriggerContact 0x502d60 record (w+0x2bc, 0x58 bytes):
+    // the sensor A (+0x24), the other body's root B (+0x2c), B's resource id
+    // (+0x50) and the last touch time (+0x34).
+    struct TriggerRecord {
+        RigidBody *a = nullptr;  // +0x24 sensor body
+        RigidBody *b = nullptr;  // +0x2c other body's root
+        uint32_t owner_id = 0;   // +0x50 = B+0x40 at creation
+        float stamp = 0.0f;      // +0x34 world time of the last touch
+    };
+    std::vector<TriggerRecord> triggers;  // w+0x2bc
+    // 0x502d60 / 0x4fb070 queue EVENT_TRIGGER_ON/OFF (0x20/0x40) to the
+    // bodies' owners; the game runtime dispatches them (0x47c960 formats the
+    // other side's id into the "%d" param).
+    std::function<void(RigidBody *target, RigidBody *other, uint32_t code)>
+        trigger_event;
 };
 
 // The process-wide world (g_physWorld, 0x60251c): the exe creates it at engine

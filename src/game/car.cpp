@@ -1159,6 +1159,8 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
         cr->def.shape.type = SHAPE_NONE;
         cr->pos = root->pos;
         cr->rot = root->rot;
+        cr->owner = inst;       // 0x4992e0: body+0x38 resource ref
+        cr->owner_id = inst->id; // body+0x40: id 0x47c960 reports as "%d"
         world.add_body(cr);
         car->root_body = cr;
         world.unlink(root);                // 0x501d00

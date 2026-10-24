@@ -54,8 +54,8 @@ static void dispatch_script(Runtime &rt, Runtime::Resource *target,
             async = v.i;
         method = async ? "handleEventAsync" : "handleEvent";
     }
-    // INVENTED: param passes through for ev 1/4/0x20/0x40; the exe formats a
-    // contact record into a String (no caller of those codes exists yet).
+    // 0x20/0x40 params arrive as the String built by the trigger callback
+    // (0x47c960: "%d" of the other side's id); other codes pass theirs through.
     rt.call_method(script, method, {ref, Value::make_int((int32_t)ev), param},
                    nullptr, &err);
 }
@@ -374,10 +374,22 @@ static void load_ground(Runtime &rt, Runtime::Resource *r)
 Runtime::Runtime(ResourceManager &resources, Vm *vm, ClassPath *classes)
     : resources_(&resources), vm_(vm), classes_(classes)
 {
+    // 0x502d60/0x4fb070 queue the trigger events to the bodies' owners; 0x47c960
+    // formats the other side's id with "%d" into the param.
+    process_world().trigger_event = [this](RigidBody *target, RigidBody *other,
+                                           uint32_t code) {
+        Resource *r = static_cast<Resource *>(target->owner);
+        if (r)
+            queue_event(r, nullptr, code,
+                        Value::make_str(std::to_string((int32_t)other->owner_id)));
+    };
 }
 
 Runtime::~Runtime()
 {
+    // The trigger callback captures this; the process world outlives the runtime
+    // (the exe's engine singleton 0x60251c).
+    process_world().trigger_event = nullptr;
     if (active_ == this) {
         if (vm_) vm_->set_resource_resolver(nullptr);
         active_ = nullptr;

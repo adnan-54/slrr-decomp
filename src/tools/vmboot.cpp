@@ -2058,6 +2058,47 @@ void game_init_check(Boot &boot, Checker &c)
                                           kn ? ksum / (float)kn : 0.0f});
         }
         key(200, false);
+        // Card 168 checks 1-2: the race triggers fire through 0x502d60 and
+        // 0x47c960 during the auto drive. The param is the other side's id
+        // ("%d" of body+0x40), so the script's player car check matches.
+        {
+            auto int_array0 = [&](const char *field, int *out) {
+                Value av;
+                std::string e;
+                *out = -1;
+                if (!game_object ||
+                    !boot.vm()->get_instance_field(game_object, field, &av, &e) ||
+                    av.kind != Value::Array || !av.arr || av.arr->elems.empty() ||
+                    av.arr->elems[0].kind != Value::Int)
+                    return false;
+                *out = av.arr->elems[0].i;
+                return true;
+            };
+            int rp_total = -1, rp_next = -1, next_trigger = -1, cur_lap = -1;
+            bool rp_ok = int_array0("rpTotal", &rp_total);
+            int_array0("rpNextTrigger", &rp_next);
+            bool nt_ok = int_array0("nextTrigger", &next_trigger);
+            Value lv;
+            std::string le;
+            bool lap_ok = game_object && boot.vm()->get_instance_field(
+                                            game_object, "current_lap", &lv, &le) &&
+                          lv.kind == Value::Int;
+            if (lap_ok) cur_lap = lv.i;
+            std::printf("  race triggers (0x502d60/0x47c960): rpTotal[0] %d, "
+                        "rpNextTrigger[0] %d, nextTrigger[0] %d, current_lap %d, "
+                        "%zu record(s)\n",
+                        rp_total, rp_next, next_trigger, cur_lap,
+                        process_world().triggers.size());
+            c.check(rp_ok && rp_total > 0,
+                    "handleRacePos ran for the player car over the auto drive "
+                    "(CircuitRacing.java:720-760, rpTotal[0] " +
+                        std::to_string(rp_total) + ")");
+            c.check(nt_ok && next_trigger == 0 && lap_ok && cur_lap == 1,
+                    "checkpoint #3 is not the next checkpoint: nextTrigger[0] stays 0, "
+                    "current_lap 1 (CircuitRacing.java:513, got " +
+                        std::to_string(next_trigger) + ", lap " +
+                        std::to_string(cur_lap) + ")");
+        }
         std::printf("  sensor gate (0x4f3d70): %u crossing(s) rejected (prev - d > r) "
                     "over the 900 launch frames\n",
                     gate_rejects(sim) - launch_rejects0);
@@ -2407,6 +2448,10 @@ void game_init_check(Boot &boot, Checker &c)
         c.check(sensor_contact_frames == 0,
                 "no world contact has a sensor body as a side over the career block (" +
                     std::to_string(sensor_contact_frames) + " frame(s), 0x4fb370 step 4)");
+        // Card 168 done-when: trigger records alive at the end of the block
+        // (0x502d60 creates, 0x4fa900/0x4fb070 removes).
+        std::printf("  trigger records alive at the end: %zu (of %zu sensor bodies)\n",
+                    process_world().triggers.size(), trig_bodies.size());
         // Card 165 check 1: on the integrated pose with the 0x4fc7e0 TOI the
         // walk never runs out of steps in the whole career-race block.
         unsigned race_overruns = (unsigned)vclip_overruns() - vclip_overrun0;

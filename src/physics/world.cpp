@@ -259,6 +259,12 @@ void World::remove_body(RigidBody *b)
     for (size_t i = contacts.size(); i-- > 0;)
         if (contacts[i].a == b || contacts[i].b == b)
             contacts.erase(contacts.begin() + (long)i);
+    // INVENTED: the exe's sweep 0x4fa900 sees a deleted body as a null record
+    // side; src bodies die with their owner, so drop the record here instead of
+    // dereferencing it (no EVENT_TRIGGER_OFF: the owner is being destroyed).
+    for (size_t i = triggers.size(); i-- > 0;)
+        if (triggers[i].a == b || triggers[i].b == b)
+            triggers.erase(triggers.begin() + (long)i);
     body_count--;
 }
 
@@ -1179,6 +1185,127 @@ static void update_contacts(World &w, bool add_new)
     w.contacts.swap(next);
 }
 
+// ---- Trigger contacts (0x502d60 / 0x4fd910 / 0x4fa900 / 0x4fb070, card 168) ----
+
+// INVENTED/shortcut: the exe's Poly__buildBox yields 26 features (8 V, 12 E,
+// 6 F quads); src builds the same box from 12 triangles through
+// poly_from_triangles 0x50e6d0 (36 features). Upgrade if trigger V-Clip shows
+// overruns.
+static std::shared_ptr<const Poly> box_poly(const Vec3 &h)
+{
+    CollisionMesh m;
+    m.vertices = {Vec3{-h.x, -h.y, -h.z}, Vec3{h.x, -h.y, -h.z},
+                  Vec3{h.x, h.y, -h.z},  Vec3{-h.x, h.y, -h.z},
+                  Vec3{-h.x, -h.y, h.z}, Vec3{h.x, -h.y, h.z},
+                  Vec3{h.x, h.y, h.z},   Vec3{-h.x, h.y, h.z}};
+    static const uint32_t kTris[12][3] = {
+        {0, 2, 1}, {0, 3, 2},  // -z
+        {4, 5, 6}, {4, 6, 7},  // +z
+        {0, 1, 5}, {0, 5, 4},  // -y
+        {3, 7, 6}, {3, 6, 2},  // +y
+        {0, 4, 7}, {0, 7, 3},  // -x
+        {1, 2, 6}, {1, 6, 5},  // +x
+    };
+    for (const auto &t : kTris) {
+        CollisionMesh::Triangle tri;
+        for (int i = 0; i < 3; i++) tri.v[i] = t[i];
+        m.triangles.push_back(tri);
+    }
+    return std::make_shared<const Poly>(poly_from_triangles(m));
+}
+
+// 0x502d60 PhysicsWorld__addTriggerContact(A = sensor, B = other): one record
+// per (sensor, other root); an existing record only refreshes its stamp.
+static void add_trigger_contact(World &w, RigidBody &sensor, RigidBody &other)
+{
+    if (!(sensor.body_flags & 0x1000u)) {
+        // shortcut: the no-record path queues EVENT_TRIGGER_ON with a
+        // c_collision param; only wheel sensor capsules take it and no shipped
+        // race script reads such an event.
+        return;
+    }
+    RigidBody *root = &other;
+    while ((root->body_flags & 4u) && root->parent) root = root->parent;
+    for (World::TriggerRecord &rec : w.triggers)
+        if (rec.a == &sensor && rec.b == root && rec.owner_id == root->owner_id) {
+            rec.stamp = w.time;
+            return;
+        }
+    w.triggers.push_back(World::TriggerRecord{&sensor, root, root->owner_id, w.time});
+    if (w.trigger_event) w.trigger_event(&sensor, root, 0x20);
+    if (root->owner_id && w.trigger_event) w.trigger_event(root, &sensor, 0x20);
+}
+
+// 0x4fb070: EVENT_TRIGGER_OFF (0x40) to both owners, then unlink and delete.
+static void remove_trigger(World &w, size_t index)
+{
+    World::TriggerRecord rec = w.triggers[index];
+    if (w.trigger_event) {
+        if (rec.a) w.trigger_event(rec.a, rec.b, 0x40);
+        if (rec.b && rec.owner_id) w.trigger_event(rec.b, rec.a, 0x40);
+    }
+    w.triggers.erase(w.triggers.begin() + (long)index);
+}
+
+// 0x4fa900 trigger sweep (PhysicsWorld__step finish pass): a record whose last
+// touch is older than two steps survives only while the bodies' bounding
+// spheres still overlap.
+static void sweep_triggers(World &w)
+{
+    for (size_t i = 0; i < w.triggers.size();) {
+        const World::TriggerRecord &rec = w.triggers[i];
+        if (!rec.a || !rec.b) {  // 0x4fa900: a missing side removes the record
+            remove_trigger(w, i);
+            continue;
+        }
+        if (rec.stamp < w.time - 2.0f * w.last_dt) {
+            Vec3 dp = rec.a->pos - rec.b->pos;
+            float reach = rec.a->def.shape.bounding_radius() +
+                          rec.b->def.shape.bounding_radius() + 0.05f;
+            if (vec_dot(dp, dp) >= reach * reach) {
+                remove_trigger(w, i);
+                continue;
+            }
+        }
+        i++;
+    }
+}
+
+// Collide__bodyPair 0x4fb370 step 4 -> 0x4fd910: the sensor shape against
+// every collision child of a dynamic root, d < 0 (no margins for a box or a
+// kind-6 hull) -> 0x502d60.
+// shortcut: the exe runs this inside the contact generation of every
+// sub-iteration; src tests the final pose once per step after the event phase.
+// Sphere/rod sensors are skipped (the race scripts only build box triggers).
+static void trigger_pass(World &w)
+{
+    for (RigidBody *b : w.bodies) {
+        if (b->asleep || !is_dynamic(*b) || b->collision_children.empty()) continue;
+        for (RigidBody *a : w.bodies) {
+            if (!(a->body_flags & 0x40u) || a == b) continue;
+            if (a->def.shape.type != SHAPE_BOX) continue;
+            if (!a->sensor_poly)
+                a->sensor_poly = box_poly(a->def.shape.half_extents);
+            const Pose ap = a->pose();
+            for (const RigidBody::CollisionChild &cc : b->collision_children) {
+                if (!cc.poly) continue;
+                const Pose cp = child_world_pose(*b, cc);
+                Vec3 dp = cp.pos - ap.pos;
+                float reach = a->def.shape.bounding_radius() +
+                              cc.shape.bounding_radius() + 0.05f;
+                if (vec_dot(dp, dp) > reach * reach) continue;
+                int fa = 0, fb = 0;
+                Vec3 pa{0.0f, 0.0f, 0.0f}, pb{0.0f, 0.0f, 0.0f};
+                Vec3 n{0.0f, 1.0f, 0.0f};
+                if (vclip_closest(ap, *a->sensor_poly, cp, *cc.poly, &fa, &fb, &pa, &pb,
+                                  &n) < 0.0f)
+                    add_trigger_contact(w, *a, *b);
+            }
+        }
+    }
+    sweep_triggers(w);
+}
+
 int World::step(float dt)
 {
     // PhysicsWorld__step 0x502060 prologue: dt joins the accumulator; a sum
@@ -1276,6 +1403,9 @@ int World::step(float dt)
     for (Contact &c : contacts)
         if (c.mode == 6)
             c.mode = 7;
+    // 0x502060 tail: 0x4fa900 sweeps the trigger records (0x502d60 creates
+    // them, 0x4fb070 removes them).
+    trigger_pass(*this);
     time += t; // 0x502060 epilogue: simulated time
     return 1;
 }
