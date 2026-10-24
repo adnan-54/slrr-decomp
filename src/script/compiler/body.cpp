@@ -313,6 +313,7 @@ struct BodyParser {
         }
         auto e = mk(ExprKind::New, line, std::move(type));
         if (!parse_args(&e->kids)) return nullptr;
+        e->end_line = t[pos - 1].line;
         return e;
     }
 
@@ -408,6 +409,8 @@ struct BodyParser {
                     call->flag = true; // receiver present
                     call->kids.push_back(std::move(e)); // receiver
                     if (!parse_args(&call->kids)) return nullptr;
+                call->end_line = t[pos - 1].line;
+                    call->end_line = t[pos - 1].line;
                     e = std::move(call);
                 } else {
                     auto m = mk(ExprKind::Member, line, std::move(name));
@@ -417,6 +420,7 @@ struct BodyParser {
             } else if (at("(") && e->kind == ExprKind::Name) {
                 auto call = mk(ExprKind::Call, e->line, e->text);
                 if (!parse_args(&call->kids)) return nullptr;
+                call->end_line = t[pos - 1].line;
                 e = std::move(call);
             } else if (at("[")) {
                 int line = cur().line;
@@ -785,6 +789,14 @@ struct BodyParser {
     }
 
     std::unique_ptr<Stmt> parse_stmt()
+    {
+        auto s = parse_stmt_inner();
+        if (s && pos > 0) s->last_line = t[pos - 1].line;
+        if (s) s->next_line = cur().line;
+        return s;
+    }
+
+    std::unique_ptr<Stmt> parse_stmt_inner()
     {
         if (at_end()) {
             fail("unexpected end of body");

@@ -18,7 +18,6 @@ struct FieldSym {
 struct MethodSym {
     std::string name, sig;
     bool is_static = false;
-    bool is_native = false;
 };
 struct ClassSym {
     std::string name, super;

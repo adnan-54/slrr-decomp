@@ -1379,8 +1379,71 @@ static bool same_const_set(const ClassUnit &w, const ClassUnit &g, std::string *
     return false;
 }
 
+static bool op_has_const(uint8_t op)
+{
+    switch (op) {
+    case 0x06: case 0x09: case 0x0e: case 0x12: case 0x19:
+    case 0x1a: case 0x1b: case 0x1c: case 0x25: case 0x26:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// One instruction as text, const operands resolved so CONS order does not matter.
+static std::string instr_text(const ClassUnit &u, const Instr &in)
+{
+    char buf[48];
+    snprintf(buf, sizeof buf, "0x%02x L%u ", in.op, in.line);
+    if (!in.has_operand) return buf;
+    if (op_has_const(in.op)) return buf + const_key(u, (int)in.operand);
+    return buf + std::to_string((int32_t)in.operand);
+}
+
+// First difference of two bodies; empty when identical. *group gets a short
+// reason key: "op want/got", "line", "operand op", "length".
+static std::string body_diff(const ClassUnit &w, const Body &wb, const ClassUnit &g,
+                             const Body &gb, std::string *group)
+{
+    size_t n = std::min(wb.instrs.size(), gb.instrs.size());
+    char buf[64];
+    for (size_t i = 0; i < n; i++) {
+        const Instr &a = wb.instrs[i], &b = gb.instrs[i];
+        std::string ta = instr_text(w, a), tb = instr_text(g, b);
+        if (ta == tb) continue;
+        if (a.op != b.op)
+            snprintf(buf, sizeof buf, "op want 0x%02x got 0x%02x", a.op, b.op);
+        else if (a.line != b.line)
+            snprintf(buf, sizeof buf, "line op 0x%02x", a.op);
+        else
+            snprintf(buf, sizeof buf, "operand op 0x%02x", a.op);
+        *group = buf;
+        return "instr " + std::to_string(i) + ": want " + ta + " got " + tb;
+    }
+    if (wb.instrs.size() == gb.instrs.size()) return std::string();
+    *group = wb.instrs.size() > gb.instrs.size() ? "length: ours shorter" : "length: ours longer";
+    return "length want " + std::to_string(wb.instrs.size()) + " got " +
+           std::to_string(gb.instrs.size());
+}
+
+static bool same_const_order(const ClassUnit &w, const ClassUnit &g)
+{
+    if (w.consts.size() != g.consts.size()) return false;
+    for (size_t i = 0; i < w.consts.size(); i++)
+        if (const_key(w, (int)i) != const_key(g, (int)i)) return false;
+    return true;
+}
+
 static int compile_check(int argc, char **argv)
 {
+    // --show <substr>: print both disassemblies of every differing body of
+    // matching class paths (development aid).
+    std::string show;
+    if (argc >= 2 && strcmp(argv[0], "--show") == 0) {
+        show = argv[1];
+        argc -= 2;
+        argv += 2;
+    }
     if (argc < 1) {
         std::fprintf(stderr, "usage: classdump --compile-check <dir>...\n");
         return 2;
@@ -1412,6 +1475,9 @@ static int compile_check(int argc, char **argv)
     size_t ok_header = 0, ok_fild = 0, ok_mthd = 0, ok_clss = 0, ok_cons = 0;
     std::map<std::string, size_t> reasons;
     std::vector<std::string> first_mismatches, first_errors;
+    size_t bodies_total = 0, bodies_same = 0, cons_exact = 0;
+    std::map<std::string, size_t> body_reasons;
+    std::map<std::string, std::string> body_examples;
 
     for (const std::string &class_path : class_paths) {
         std::string src_path = source_for_class(class_path);
@@ -1493,6 +1559,52 @@ static int compile_check(int argc, char **argv)
                 why = "missing compiled unit";
                 group = "missing unit";
             }
+            if (i < ours.units.size()) {
+                const ClassUnit &w = want.units[i], &g = check.units[i];
+                bool cons_same = same_const_order(w, g);
+                cons_exact += cons_same;
+                if (!cons_same && !show.empty() && class_path.find(show) != std::string::npos) {
+                    std::printf("show %s CONS:\n", class_path.c_str());
+                    size_t n = std::max(w.consts.size(), g.consts.size());
+                    for (size_t k = 0; k < n; k++) {
+                        std::string a = k < w.consts.size() ? const_key(w, (int)k) : "";
+                        std::string c = k < g.consts.size() ? const_key(g, (int)k) : "";
+                        std::printf("  %3zu %c %-60s | %s\n", k, a == c ? ' ' : '*', a.c_str(),
+                                    c.c_str());
+                    }
+                }
+                for (size_t bi = 0; bi < w.bodies.size(); bi++) {
+                    bodies_total++;
+                    if (bi >= g.bodies.size()) {
+                        body_reasons["missing body"]++;
+                        continue;
+                    }
+                    std::string bgroup;
+                    std::string bwhy = body_diff(w, w.bodies[bi], g, g.bodies[bi], &bgroup);
+                    if (bwhy.empty()) {
+                        bodies_same++;
+                        continue;
+                    }
+                    body_reasons[bgroup]++;
+                    if (!body_examples.count(bgroup))
+                        body_examples[bgroup] = class_path + " body " + std::to_string(bi) +
+                                                ": " + bwhy;
+                    if (!show.empty() && class_path.find(show) != std::string::npos) {
+                        std::printf("show %s body %zu: %s\n", class_path.c_str(), bi,
+                                    bwhy.c_str());
+                        size_t n = std::max(w.bodies[bi].instrs.size(),
+                                            g.bodies[bi].instrs.size());
+                        for (size_t k = 0; k < n; k++) {
+                            std::string a = k < w.bodies[bi].instrs.size()
+                                                ? instr_text(w, w.bodies[bi].instrs[k]) : "";
+                            std::string c = k < g.bodies[bi].instrs.size()
+                                                ? instr_text(g, g.bodies[bi].instrs[k]) : "";
+                            std::printf("  %3zu %c %-48s | %s\n", k, a == c ? ' ' : '*',
+                                        a.c_str(), c.c_str());
+                        }
+                    }
+                }
+            }
             ok_header += h;
             ok_fild += f;
             ok_mthd += m;
@@ -1531,6 +1643,19 @@ static int compile_check(int argc, char **argv)
               });
     for (const auto &r : sorted_reasons)
         std::printf("mismatch reason: %s %zu\n", r.second.c_str(), r.first);
+    std::printf("bodies: total %zu, identical %zu (const operands compared by value); "
+                "CONS exact %zu of %zu units\n",
+                bodies_total, bodies_same, cons_exact, units);
+    std::vector<std::pair<size_t, std::string>> body_sorted;
+    for (const auto &r : body_reasons) body_sorted.push_back({r.second, r.first});
+    std::sort(body_sorted.begin(), body_sorted.end(),
+              [](const std::pair<size_t, std::string> &a,
+                 const std::pair<size_t, std::string> &b) {
+                  return a.first != b.first ? a.first > b.first : a.second < b.second;
+              });
+    for (size_t k = 0; k < body_sorted.size() && k < 25; k++)
+        std::printf("body difference: %s %zu  e.g. %s\n", body_sorted[k].second.c_str(),
+                    body_sorted[k].first, body_examples[body_sorted[k].second].c_str());
     return 0; // report only
 }
 

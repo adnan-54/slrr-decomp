@@ -64,7 +64,7 @@ check: all
 	$(BUILD)/classdump --natives-check ../analysis/natives.tsv
 	$(BUILD)/classdump --conformance "$(GAME)"
 	cd .. && src/$(BUILD)/classdump --parse-java "bin/the game"
-	# stage 3 skeleton check: report only (CONS order and TREE are later cards)
+	# compiler check (skeleton, CONS order, TREE bodies): report only
 	cd .. && src/$(BUILD)/classdump --compile-check "bin/the game"
 	cd .. && src/$(BUILD)/rpkdump $(ROOT_CHECK)
 	cd .. && src/$(BUILD)/resman --selfcheck

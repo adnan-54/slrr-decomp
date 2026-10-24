@@ -92,6 +92,7 @@ enum class ExprKind : int {
 struct Expr {
     ExprKind kind = ExprKind::Null;
     int line = 0;
+    int end_line = 0; // call/new: line of the closing ')'
     std::string text;
     bool flag = false;
     std::vector<std::unique_ptr<Expr>> kids;
@@ -132,6 +133,8 @@ struct Stmt {
     StmtKind kind = StmtKind::Empty;
     int line = 0;
     int end_line = 0; // Block/Switch closing brace
+    int last_line = 0; // line of the statement's last token (`;` or `}`)
+    int next_line = 0; // line of the token after the statement
 
     std::vector<std::unique_ptr<Stmt>> stmts; // Block
     std::unique_ptr<Expr> expr;               // Expr/If/While/DoWhile/Switch, Return value
