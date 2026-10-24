@@ -1,7 +1,7 @@
 ---
 id: 134
-status: todo
-branch:
+status: implemented
+branch: card/134
 depends: [133]
 ---
 # compiler: resource literal package name through the name registry

@@ -1,6 +1,7 @@
 // classdump: dump TUFA .class constants/fields/methods, run parser+VM self-checks
 // and structural conformance over a directory tree of shipped classes.
 #include <dirent.h>
+#include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1206,6 +1207,99 @@ static bool is_file(const std::string &path)
     return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
 }
 
+static bool is_dir(const std::string &path)
+{
+    struct stat st;
+    return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+// ---- resource name registry (compile-check) --------------------------------
+
+static bool ieq(const std::string &a, const std::string &b)
+{
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++)
+        if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i])) return false;
+    return true;
+}
+
+static bool ends_with_ci(const std::string &s, const char *suffix)
+{
+    size_t n = strlen(suffix);
+    return s.size() >= n && ieq(s.substr(s.size() - n), suffix);
+}
+
+// Resolves a Windows-style relative name below `root` with every component
+// matched case-insensitively: the shipped tree is a Windows install, Linux
+// here is case-sensitive. Empty when some component does not exist.
+static std::string resolve_ci(const std::string &root, const std::string &rel)
+{
+    std::string cur = root;
+    size_t pos = 0;
+    while (pos < rel.size()) {
+        size_t sep = rel.find_first_of("\\/", pos);
+        std::string part =
+            rel.substr(pos, sep == std::string::npos ? std::string::npos : sep - pos);
+        pos = sep == std::string::npos ? rel.size() : sep + 1;
+        if (part.empty()) continue;
+        std::vector<std::string> names;
+        if (!fs::list_dir(cur, &names)) return std::string();
+        bool found = false;
+        for (const std::string &n : names)
+            if (ieq(n, part)) {
+                cur = path_join(cur, n);
+                found = true;
+                break;
+            }
+        if (!found) return std::string();
+    }
+    return cur;
+}
+
+// Registry slots created by System.rpkScan: the dir as written + the on-disk
+// file name (0x518940 keeps the registration spelling).
+static void add_scan_dir(NameRegistry *reg, const std::string &game_dir,
+                         const std::string &dir)
+{
+    std::string real = resolve_ci(game_dir, dir);
+    if (real.empty()) return;
+    std::vector<std::string> names;
+    if (!fs::list_dir(real, &names)) return;
+    std::sort(names.begin(), names.end());
+    for (const std::string &n : names) {
+        if (!ends_with_ci(n, ".rpk") || !is_file(path_join(real, n))) continue;
+        reg->names.push_back(dir + n);
+    }
+}
+
+// The registry GameLogic built before the shipped classes were compiled:
+// rpkScan dirs in GameLogic.java order, then every multibot\maps\ directory.
+static NameRegistry make_registry(const std::string &game_dir)
+{
+    NameRegistry reg;
+    reg.names.push_back("system.rpk"); // 0x54b170(gid 0) resolves to slot 0
+    reg.loads = [game_dir](const std::string &name) {
+        std::string p = resolve_ci(game_dir, name);
+        return !p.empty() && is_file(p);
+    };
+    static const char *kScans[] = {"parts\\engines\\", "parts\\", "cars\\racers\\",
+                                   "cars\\fake_racers\\", "maps\\",
+                                   "sl\\Scripts\\game\\CareerEvents\\"};
+    for (const char *dir : kScans) add_scan_dir(&reg, game_dir, dir);
+    std::string maps = resolve_ci(game_dir, "multibot\\maps");
+    std::vector<std::string> subs;
+    if (!maps.empty()) {
+        std::vector<std::string> names;
+        fs::list_dir(maps, &names);
+        for (const std::string &n : names)
+            if (n != "." && n != ".." && is_dir(path_join(maps, n))) subs.push_back(n);
+    }
+    std::sort(subs.begin(), subs.end()); // INVENTED: FindFile order
+    for (const std::string &sub : subs)
+        add_scan_dir(&reg, game_dir, "multibot\\maps\\" + sub + "\\");
+    return reg;
+}
+
 // `<dir>/X.class` pairs with `<dir>/src/X.java` (Windows is case-insensitive,
 // so the shipped `Src` dirs count too).
 static std::string source_for_class(const std::string &class_path)
@@ -1460,6 +1554,9 @@ static int compile_check(int argc, char **argv)
     std::sort(class_paths.begin(), class_paths.end());
     class_paths.erase(std::unique(class_paths.begin(), class_paths.end()), class_paths.end());
 
+    // Resource names the shipped compiler saw registered (GameLogic's scans).
+    NameRegistry base_reg = make_registry(argv[0]);
+
     // The shipped classes are the symbol table the exe compiler had at load.
     ClassIndex index;
     for (const std::string &path : class_paths) {
@@ -1498,7 +1595,10 @@ static int compile_check(int argc, char **argv)
             continue;
         }
         ClassFile ours;
-        if (!compile_unit(ju, tokens, index, &ours, &err)) {
+        // INVENTED: fresh copy per unit; the exe's compile order across files
+        // is unknown, literals registered within one unit persist for it.
+        NameRegistry reg = base_reg;
+        if (!compile_unit(ju, tokens, index, &ours, &err, &reg)) {
             errs++;
             if (first_errors.size() < 10) first_errors.push_back(src_path + ": " + err);
             continue;

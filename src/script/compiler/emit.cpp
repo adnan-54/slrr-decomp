@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <math.h>
 
 #include <algorithm>
@@ -201,8 +202,8 @@ ResourceLit parse_resource(const std::string &raw)
 class Emitter {
 public:
     Emitter(const JavaUnit &unit, const std::vector<Token> &tokens, const ClassIndex &index,
-            const ClassDecl &cls)
-        : unit_(unit), tok_(tokens), index_(index), cls_(cls)
+            const ClassDecl &cls, NameRegistry *reg)
+        : unit_(unit), tok_(tokens), index_(index), cls_(cls), reg_(reg)
     {
     }
 
@@ -213,6 +214,7 @@ private:
     const std::vector<Token> &tok_;
     const ClassIndex &index_;
     const ClassDecl &cls_;
+    NameRegistry *reg_;
 
     std::string fqn_, super_;
     std::vector<std::string> ifaces_;
@@ -1264,7 +1266,27 @@ void Emitter::gen_expr(const Expr &e, Body *b)
     case ExprKind::ResourceLit: {
         ResourceLit r = parse_resource(e.text);
         ins(b, 0x07, e.line, 28);
-        ins(b, 0x0e, e.line, (uint32_t)(dry_ ? 0 : add_resource(r.name, r.id)));
+        if (dry_) {
+            ins(b, 0x0e, e.line, 0);
+            return;
+        }
+        // 0x54b310 per resource constant: 0x5189e0 looks the package up in the
+        // name registry (0x518940, _stricmp; first registration keeps its
+        // spelling, a miss is appended as written); a package that does not
+        // load (0x51e310) yields gid 0, which 0x54b170 resolves to slot 0.
+        if (reg_ && !reg_->names.empty()) {
+            size_t i = 0;
+            for (; i < reg_->names.size(); i++)
+                if (strcasecmp(reg_->names[i].c_str(), r.name.c_str()) == 0) break;
+            if (i == reg_->names.size()) reg_->names.push_back(r.name);
+            if (reg_->loads && !reg_->loads(reg_->names[i])) {
+                r.name = reg_->names[0];
+                r.id = 0;
+            } else {
+                r.name = reg_->names[i];
+            }
+        }
+        ins(b, 0x0e, e.line, (uint32_t)add_resource(r.name, r.id));
         return;
     }
     default:
@@ -1953,11 +1975,12 @@ const ClassSym *ClassIndex::find(const std::string &name) const
 }
 
 bool compile_unit(const JavaUnit &src, const std::vector<Token> &tokens,
-                  const ClassIndex &index, ClassFile *out, std::string *err)
+                  const ClassIndex &index, ClassFile *out, std::string *err,
+                  NameRegistry *reg)
 {
     out->units.clear();
     for (const ClassDecl &cls : src.classes) {
-        Emitter em(src, tokens, index, cls);
+        Emitter em(src, tokens, index, cls, reg);
         ClassUnit unit;
         if (!em.run(&unit, err)) return false;
         out->units.push_back(std::move(unit));

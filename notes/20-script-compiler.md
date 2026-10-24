@@ -202,3 +202,21 @@ name re-cased". Corpus check (all 136 literal packages vs disk, case-insensitive
   plain filesystem lookup;
 - no literal id has hi bits set or local 0 (sub-package remap of 0x51e860 unused).
 Card 134 ports this.
+
+## Stage 4c results (card 134, `classdump --compile-check "bin/the game"`)
+
+`bodies: total 7096, identical 6889; CONS exact 2749 of 2809 units` (4b: 6821 / 2681).
+
+- emit.h `NameRegistry` + compile_unit's optional `reg`; the ResourceLit codegen matches the
+  literal's package against the slots with strcasecmp, appends it on a miss, and a `loads`
+  failure (Package::load 0x51e310) yields slot 0 `system.rpk` local 0
+  (0x54b310 -> 0x5189e0 -> 0x518940 -> 0x54b170). Not applied in the dry walk.
+- classdump --compile-check builds the base registry GameLogic's rpkScan created: the scan
+  dirs as written + the on-disk `.rpk` names, then `multibot\maps\` subdirs sorted
+  (INVENTED: FindFile order); `loads` = case-insensitive file exists under the game dir;
+  each unit gets a fresh copy (INVENTED: cross-file compile order unknown).
+- All 68 casing bodies now match (Baiern/Duhen/Einvagen/Enula/Focer/MC/Nonus/Prime/
+  SuperDuty, TimeAttackTest's missing `old_stdpack_231` -> `system.rpk#0`). The remaining
+  207 body differences are the known stale/float set: 189 float 1-ulp, 5 getBlock returns
+  (Center_Differential `()Part` vs `()Block`), 5 transmissions with `TT_AUTO`/`TT_MANUAL*`
+  inlined, 4 edited strings, 3 neontube line shifts, 1 Garage httpRequestAsync call.
