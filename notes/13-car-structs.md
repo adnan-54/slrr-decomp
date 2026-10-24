@@ -613,3 +613,106 @@ Payload = 0x1ec-byte struct (direct pointer via `FUN_004ed320`).
 - `M+0x1b0c..0x1b60` OSD fields are manager fields; who initializes them per car type is untraced.
 - The slot-ID → render-handle table built in `Vehicle__createCar` (ids 0x65..0x190 mapped with
   constant offsets) is still unresolved; see `09-vehicle.md` open questions.
+
+## 15. Part install: `"install ..."` command (2026-10-24, card 150 RE)
+
+**Who installs what (scripts).** `Vehicle(parent, id, ...)` (sl/Scripts/game/Vehicle.java:107-117)
+creates the car: `chassis = create(parent, GameRef(id), "0,0,0,0,0,0", "Vehicle")` returns the
+car type's script instance (the Chassis, e.g. Axis_200S; the car record has `native car
+_main_200S.cfg`, no `native part`). Then `chassis.addStockParts(desc)` (Axis_200S.java:52 fills
+`stock_parts_list_*`, Chassis.java:776 -> Part.addPart per id). Garage purchase, freeride player
+car and MapDebug all go through this ctor (Vehicle.java:91/117, MapDebug.java:361). Sub-parts:
+each installed part's `addStockParts(desc)` calls `addPart` again (e.g. Duhen_D18V_block.java:99-133
+crankshaft, heads, transmission ...). Load from save: Part.java:195 `attachedPart.command("install
+0 <me> <otherSlotID> <me> <slotID>")` (explicit slots).
+`Part.addPart(id, name, desc)` (Part.java:818): `carID = getCar()` (P+0xc8; 0 -> `this.id()`),
+`rootID = GameRef(carID).getParentID()`; `part = xa.create(GameRef(rootID), GameRef(id), "", name)`
+(new part in the car's parent, i.e. the world); `xa.command("install 0 " + carID + " 0 " +
+this.id() + " 0")`; success = `xa.getParentID() != rootID` (install reparents), then
+`part.addStockParts(desc)`, `setTexture`; failure -> `xa.destroy()`. Hungarian comment at
+Part.java:194 names the 5 ints: cursor, dest ("kire"), my slot, target part ("pontosan kire"),
+target slot.
+
+**Native side, all in the exe** (`type_part__vf14` 0x4c4400, ECX = part type manager M, param_1 = P
+the part instance, code 0x10):
+```
+"install": n = Str__scan(cmd, "%*s %d %d %d %d %d %f %f %f", &cursor, &dest, &mySlot, &target, &tSlot, &x, &y, &z)
+  P+0x60 ref = dest (0x51fa40 on ECX = P+0x60)     // ResourceRef: +0 prev +4 next +8 id +0xc RI
+  tref = target
+  mySlot' = Part__installSearch 0x4c96c0(P, &tref, &tSlot, n >= 8 ? &pos : null)   // mySlot arg ignored
+  if (!mySlot') return 0                           // nothing changes, script destroys the part
+  Part__attach 0x4cb1d0(P, mySlot', &tref, tSlot)
+```
+`Part__installSearch 0x4c96c0(P, tref, &tSlot, pos)`: if `tref` resolves, `r = 0x4c9af0(P, tref,
+&tSlot, null)`; if found return it. Else fall back to the dest object (`P+0x6c`): `getInfo(dest, 7)`
+must be 9 or 5 (5 = vehicle): try `0x4c9af0(P, dest, ...)`, and for 5 also every part of the car
+(`getInfo(dest, 0x31, &it)` iterator); with `pos`, pick the candidate whose target slot world
+position (`0x4c6e50`) is nearest (squared distance < 1e8), without `pos` the first.
+
+`Part__findMateSlot 0x4c9af0(P, tref, &tSlot, pos)` (ECX = M of P):
+```
+if (getInfo(tref, 0x27) < 1 || tref.id == P.id) return 0
+T' = type manager of tref's instance (TI+0x4c); TI = tref.RI vf3(1.0)
+if (tSlot == 0)                                 // auto: walk MY type slots in list order
+  for each my type slot s (M+0x116c, i < M+0x1160), runtime r = P+0x78 + i*0x68:
+    if ((r+8 == 0 || r.flags & 1) && !(r.flags & 0x10)):
+      c = 0x4c89f0(T' ECX, TI, &M+4 /*my type ref*/, s.id, pos)
+      if (c) { if (!pos) { tSlot = c; return s.id }  nearest-by-pos otherwise }
+else                                            // explicit target slot
+  if (0x4c9fe0(T', TI, tSlot))                  // target slot tSlot exists, free (+8 == 0), not 0x10, target not locked (0x4cb0b0)
+    for each my type slot s with r+8 == 0 and !(r.flags & 0x10):
+      if (0x4c9d90(&T'+4, tSlot, &M+4, s.id)) return s.id
+return 0 (or the nearest)
+```
+`0x4c89f0(T' ECX, TI, myTypeRef, mySlot, pos)`: `if (0x4cb0b0(TI)) return 0` (target locked: some
+occupied slot has flags&0x50 == 0x50, recursive up the attached chain); for each target type slot
+t (list order) whose runtime slot is free (`+8 == 0`) and not disabled (`!(flags & 0x10)`): if
+`0x4c9d90(&T'+4, t.id, myTypeRef, mySlot)` -> return t.id (no pos) / nearest (pos).
+
+**Slot compatibility `0x4c9d90(refA, slotA, refB, slotB)`** (refs = the two TYPE resources, `+8` =
+type id `pkg<<16|local`; sA/sB = `PartType__findSlotByID 0x4c6f90` type-slot nodes; node `+0xc4` =
+`attach` list, `+0x110` = `compatible` list, entries `+0x24` type id, `+0x28` slot id):
+```
+if (A.id == B.id && slotA == slotB) return 0
+if (sA.attach  has (B.id, slotB)) return 1
+if (sB.attach  has (A.id, slotA)) return 1
+if (any sA.attach entry == any sB.compatible entry (id and slot)) return 1
+if (any sB.attach entry == any sA.compatible entry) return 1
+return 0
+```
+Axis example: `_main_200S.cfg:387` slot 401 `attach 0x000A009B 99` (+5 other engines);
+Duhen_D18V_block.cfg slots 46, 98, 99, 14, 47, 1, 40 ... -> engine slots 46 and 98 match nothing,
+slot 99 matches chassis 401 (rule 1 from the chassis side). `compatible 0x00000006 39` (exhaust
+slot 39) is the group form (rule 3/4).
+
+**`Part__attach 0x4cb1d0(P, mySlot, tref, tSlot)`** (ECX = M):
+1. `if (P+0x68) 0x4ec210(P+0x60)`: reparent P under dest (GameRef set-parent: no-op when the parent id
+   already matches; moves the RI across worlds via 0x51f880 when `+0xf8` differ). Same for the
+   `M+0xff8` element objects. **This reparent is what Part.addPart tests (`getParentID() != root`).**
+2. `P+0x5c = 1`; `bolts = 0x4c1a10(P, mySlot, tref, tSlot, &pos, &mat)`: computes P's pose = target
+   slot world pose (target body pose `+0x20c*0xd4` block ∘ target runtime slot pos/matrix) minus my
+   slot offset, and returns `tTypeSlot+0x6c + myTypeSlot+0x6c` (per-slot count, very likely bolts;
+   which cfg keyword fills `+0x6c` UNRESOLVED). `0x4eac50(pos, mat)` places P's body.
+3. My runtime slot (mySlot): `flags |= 4` (pending), slot ref (+0..+0xc) = target RI (`+8` = target
+   id), `+0x10 = tSlot`. Target runtime slot (`PartType__findRuntimeSlot 0x4c6fd0`(TI, tSlot)):
+   `flags |= 4`, ref = P, `+0x10 = mySlot`.
+4. `if (bolts == 0) Part__commitInstall 0x4c7d20(P)`; else the install stays pending (flag 4) until
+   bolted (slot_bolt objects; not traced). `partOnSlot` (0x4cd600) reads `slot+8` only, so a
+   pending part is already visible to scripts.
+
+**`Part__commitInstall 0x4c7d20(P)`** (ECX = M): for every my runtime slot with `+8 && flags & 4`:
+`flags = (flags & ~4) | 1`, `P+0x74++`; on the attached part's runtime slot `+0x10`: `flags = (flags &
+~4) | 2`, `T+0x74++`, `0x4c7060(T, 1)`; `P+0xb0` = target `+0xb0` with the low/high 16 bits of the
+target type slot `+0x68` overriding unless 0xffff (`0x4c9530(P)` on change); first attached part ->
+local ref `tgt`. Physics: join P's body under the target body (`0x501d00`, `0x4f7b20(Pbody,
+Tbody)`, compound mass `0x5032d0(Tbody)`, wake/sleep handling). `0x4cb6c0(P)`: recursively re-point
+P's own installed children (flag 2 slots) to P's dest (`0x4ec210`), copy `+0x5c`. Then
+`if (P+0xc8) 0x4ca980(P,0)`; **`getInfo(tgt, 0x2b, P+0xc0)` = P's car ref := the target's car**
+(P+0xc8 = car id, what `Part.getCar` returns); if now set: `P+0xd0 = 0x4c8b10(P,0)` (wheel id),
+`0x4ca390(P,0)`. Script callback `GameObject__callScriptMethod 0x47dd50(P inst, "install", 0x4f,
+0x4f)` = `Part.install()` (Part.java:707, empty in the base). Finally clear the `P+0x60` dest ref.
+
+Also in vf14: `"remove %d %d"` -> 0x4cb510(P) (uninstall, not traced), `"repair"`, `"texture"`,
+`"add_part"`/`"rem_part"` (0x4c17b0/0x4c6990), `"filter"`, `"paint"`, `"decal"`, `"bigdecal"`,
+`"colorscheme"`, `"flap_toggle"`. `install_OK` (0x4cd3a0) wraps the same `0x4c96c0` search for the
+garage UI; `Part.addPart` no longer calls it (commented out in Part.java:840).
