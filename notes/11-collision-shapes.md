@@ -37,7 +37,8 @@ Mass properties `RigidBody__computeMassProps` 0x505760 (m = 1/invMass; writes in
 - capsule axis a (2=x,3=y,4=z), r = +0x10, L = 2h: invI_aa = 2/(r²·m); invI_⊥ = 1/((L²/12 + r²/4)·m) (cylinder formulas).
 - box: invI_xx = 3/((hy²+hz²)·m), invI_yy = 3/((hx²+hz²)·m), invI_zz = 3/((hx²+hy²)·m).
 - mesh: `Poly__massProps` 0x508d20 = Mirtich volume integrals (`Poly__volumeIntegrals` 0x508820, doubles in 0x605f90..0x605fd8): V=T0, COM c=T1/V, unit-density-per-volume inertia `Ixx=(T2y+T2z)/V−(cy²+cz²)`, `Ixy=−(TPxy/V − cx·cy)` …; **mesh vertices are shifted by −c** (COM to origin), matrix inverted, then scaled by invMass (`Math__mat3Scale`); shape+0x4c = V.
-- `RigidBody__setSphereInertia(_, R)` 0x5056a0 (used for type 7 / generic): invI = **2.5/(m·R)** (R not squared — as in the exe), volume 4/3πR³.
+- `RigidBody__setSphereInertia(_, R)` 0x5056a0 (only caller `Physics__createBox` 0x4f7d60: type 7 with R = max‖v‖+0.05 of the loaded .scx, or R = 1.0 without meshRes; type 6 **without meshRes** with R = 1.0, e.g. the `part_comp` body of 0x4c1f90): invI = **2.5/(m·R)** (R not squared — as in the exe), volume 4/3πR³.
+  Re-checked 2026-10-24 (decompiled 0x505760, 0x5056a0, 0x4f7d60): type 1 spheres (createBox case 1, cfg `sphere`/`ball` shapes, every shipped wheel `type` line such as `10.000 sphere 0.315`) always go through 0x505760 = 2.5/(r²·m); only the two createBox cases above use 0x5056a0. So src `compute_mass_props` (world.cpp:75, r²) is right; there is no R-vs-r² conflict. Gap (no behaviour today): src leaves type 7 and mesh-less type 6 at inverse inertia 0; for `part_comp` 0x5032d0 overwrites the inertia from massive children (or makes it static), and src creates no type-7 body.
 - `Physics__createBody` (generic, from a resource with no primitive): invMass=1/m, invI diag = 2.5/m, drag as above.
 
 ## 2. Polyhedron + Voronoi features (V-Clip, Mirtich 1998)

@@ -590,7 +590,10 @@ Per-frame engine/vehicle sound update:
   `e+0x840 + sel*0x10` (= node+0x08), uses pitch at `e+0x878 + sel*4` and
   volume `DAT_005dada0` (effects channel). [V]
 - nitro node at e+0x818. [V location]
-- exhaust pops use timers at car+0x224c / car+0x2248. [V]
+- two impulse/intensity sounds after the horn (asm 0x495104..0x495202, ECX/ESI = car type M, EDI = car): [V]
+  - `car+0x224c > 0`: `v = min(x * [0x59ab30], 4)`, node `M+0x1f84`, pitch `(min(v,1)+1)·DAT_005fe10c`, volume `v·DAT_005dada0`, then **`car+0x224c = 0`** (one-shot; writer not traced, meaning UNRESOLVED).
+  - `car+0x2248 > 0`: `v = min(x * 0.0001 [0x5938c4], 4 [0x593758])`, node `M+0x1f94`, same pitch/volume form, **not cleared** here. car+0x2248 is the aero drag magnitude: Vehicle::update zeroes it each tick (0x49fb38) and writes `|F_drag|` (0x49ff20), the aero parts add their magnitudes (notes/09 §7). So this is a wind/aero noise intensity, not an exhaust-pop timer (corrected 2026-10-24; byte search `48 22 00 00` finds only 0x4996c0 createCar init, 0x49fb3a/0x49ff24/0x49ff61/0x49ff67 Vehicle::update and this read).
+  - src: `audio::EngineSfx::exhaust_timer[1]` / `exhaust_resource[1]` (sfx.h:98-99) = this pair (scale 0.0001 and clamp 4 match); the comment there should read `M+0x1f84 / M+0x1f94` nodes and `car+0x224c` one-shot / `car+0x2248` drag magnitude. No behaviour today: src never runs vf13 per car nor sets the nodes, and nothing copies `vehicle::Car::drag_magnitude` into it.
 - engine sounds use volume `DAT_005dada8` (engine channel). [V]
 
 ### 2.4 Chassis / Part SFX natives
