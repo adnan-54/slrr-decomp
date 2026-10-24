@@ -1,6 +1,6 @@
 ---
 id: 141
-status: implemented
+status: merged
 branch: card/141
 depends: [140]
 ---
