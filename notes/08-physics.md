@@ -12,6 +12,43 @@ Main loop (`FUN_0047d760`, `notes/00-overview.md`) → every >15 ms `FUN_0047e05
 4. **Sub-iteration loop (corrected, see `11-collision-shapes.md`)**: `world[4]++`; `world[0xe7] = 1` ("converged"); `PhysicsWorld__solvePass` (0x502410, per-row constraints of `world+0xe8`); then `PhysicsWorld__updateContacts` (0x4f9af0, may clear `world[0xe7]` when a contact gets within 0.02); if still converged → go straight to the event phase; else sum `vf4` (`c_collision__resolve`) over the contact list `world+0x1d8`: sum==0 → `world[0xe7]=1` and event phase, sum≠0 → keep iterating (event phase only at iteration 19). Event phase: run `PhysicsWorld__purgeEvents` (0x5040f0), `PhysicsWorld__dispatchCollisionEvents` (0x4fc610; perf counters into `DAT_006052b4/b8`) and, if events were dispatched, `PhysicsWorld__resolveImpacts` (0x4ffd20, mode-6 impacts → mode 7; non-zero ⇒ `world[0xe7]=0`). Every sub-iteration re-integrates all roots from the start-of-step state (`PhysBody__integrateTree`). Exit when `world[0xe7]≠0` or `world[4] > 19` (≤ 20 iterations).
 5. Finish: `FUN_004fa900()`, `FUN_00502530(body)` for each root, `world[0] += dt` (simulated time), running average of iteration count `DAT_006028e4 += (iters - DAT_006028e4) * 0.1`, return 1.
 
+### Exact pass order (full re-decompile 2026-10-24, card 158 RE; supersedes the loose wording of 3.)
+Each pass is a separate loop over **all** roots (`w[0x21]+0x24` / `+0x28`), not one loop per body:
+```
+t = dt + w[1]; w[1] = t; if (t < 1e-4) return 0
+if (DAT_006052ac) { clear +0xb8/+0xbc/+0xc0 of every contact in w[0x76]; DAT_006052ac = 0 }
+w[1] -= t; w[3] = t; DAT_006028e0++; w[4] = w[5] = w[0xb] = 0
+A  for root: PhysBody__applyForces 0x4f8460(root)        // gravity/drag into the force accumulators, clears other-state bit0
+B  PhysicsWorld__runControllers 0x4ffca0()               // w+0x9c list, vf3 (+0xc); <0 -> unlink, w+0x58--, vf0(1). c_triggerspring vf3 0x4f2d70 = spring force (reads S+0xb4 = previous collide pass)
+C  Game__runDriveCallbacks 0x47be30(t)                   // mode-9 list -> 0x47be90 -> type_car vf12 Vehicle__update 0x49c8e0 (tyre/drag forces, 0x504e70/0x5051e0: accumulators only)
+D  for root: PhysBody__integrateTree 0x5001c0(root, t)   // RK4 with the accumulated F/τ held constant
+E  PhysicsWorld__pruneConstraints 0x4fa4d0()             // w+0xe8 list, vf6 (+0x18) == 0 -> unlink, w+0x5c--
+   DAT_006052b4 = DAT_006052b8 = 0
+   do {
+     w[4]++; w[0xe7] = 1
+F    PhysicsWorld__solvePass 0x502410()
+     if (w[0xe7]) {
+G      PhysicsWorld__updateContacts 0x4f9af0()           // refresh w+0x1d8 pairs (drop > rA+rB+0.05, clear w[0xe7] < +0.02, TOI bisection)
+       if (!w[0xe7]) { sum = Σ vf4 over w[0x76] list (c_collision resolve)
+                       if (sum && !w[0xe7]) goto skip_unless_19 ; if (!sum) w[0xe7] = 1 }
+H      event: purgeEvents 0x5040f0; n = dispatchCollisionEvents 0x4fc610()
+              // 0x4fc610: queued bodies in DAT_00605230 (0x4f9750 filter) -> distinct interval managers (<=16)
+              //           -> IntervalMgr__collidePass 0x4ee460 -> Collide__groundTree 0x4fe6f0 -> Collide__groundSoup 0x4ff6b0
+              //           -> sensor 0x4fd110 (event 0x20 -> 0x4f3d70 writes S+0xb4) / Collide__bodyVsTriangles 0x4feb20 + candidatesTOI 0x4fc7e0
+              //           -> addContact 0x502830 (NEW contacts); also Collide__bodyPair 0x4fb370 body-vs-body
+              if (n && resolveImpacts 0x4ffd20()) w[0xe7] = 0
+     } else skip_unless_19: if (w[4] == 19) goto H
+I    for root: PhysBody__integrateTree 0x5001c0(root, t) // re-integrate from the start state
+   } while (!w[0xe7] && w[4] <= 19)
+J  PhysicsWorld__finishContacts 0x4fa900()               // w[0xaf] list: drop stale pairs (age vs w[0]-2t, distance > rA+rB+0.05) via 0x4fb070
+K  for root: PhysBody__sleepCheck 0x502530(root)         // flags&1 and (0x84 or other-state bit0 && !static): damp acc*0.9+0.1*state; slow (|v|²<0.1, |ω|²<0.001, ...·invm² < 0.01) -> 0x4ae5a0 (sleep) else 0x502750; recurse children
+w[0] += t; DAT_006028e4 += (w[4] - DAT_006028e4)·0.1; return 1
+```
+Consequences:
+- **Collision (new contacts + wheel sensor hits) runs after integrate**, in the event phase H of the iteration that converged (or iteration 19), on the pose produced by D/I of that step. The sensor hit S+0xb4 written there is consumed by B of the **next** step. That pose equals the final pose of the step unless `resolveImpacts` re-opens the loop (I then re-integrates with new impulses). So src's query at the start of the next tick (on the step's final pose) is equivalent except after a step whose new mode-6 impacts were resolved in-loop.
+- src (World::step + natives advance_sim, 2026-10-24) differs in two places: (1) `game::drive_cars` (Vehicle::update + the spring solve) runs **before** `World::step`, and `vehicle::Car::apply_contact_impulses` turns every tyre/spring force into an **impulse** `F·dt` on the start velocity (because World::step's force pass zeroes `force`); the exe adds forces to the accumulators after A and before D (0x504e70 `F += R·f, τ += (R·P)×(R·f)`; 0x5051e0 world F) and RK4 holds them constant — with an impulse the position gets `Δv·h` instead of `½Δv·h`. Card 158. (2) src's `update_contacts(add_new=true)` creates new pairs on the **start** pose before D; the exe creates them in H on the integrated pose. Start pose of step N+1 = final pose of step N, so this only differs by the in-loop `resolveImpacts` of mode-6 impacts (src turns 6 -> 7 after the loop, TODO in world.cpp). Not carded (no world contacts in vmboot to check it against; see 159 notes in 19 §7).
+- B (controllers) and C (drive) both run after A, so the c_triggerspring force and the tyre forces see the same start state; src's update_suspension -> tyre order inside Car::update matches B -> C.
+
 ## Body layout (`FUN_005001c0`, `504180`, `5030b0`)
 | off | meaning |
 |---|---|

@@ -393,8 +393,44 @@ when `d < max_ray`. src (card 144/146) instead casts a two-sided ray of length `
 merged soup and uses the geometric normal flipped toward the ray (`mesh_raycast`): cards 156/157 port the
 exe rule; the merged-soup collider stays (geometrically the same face set as the per-node walk as long
 as every face lies inside its node AABB; streaming is a residency/script effect, not a collision one).
-UNRESOLVED: order of `IntervalMgr__collidePass` vs controllers inside `Game__physicsTick` 0x47e050 (if the
-collide pass runs after integrate, src's query at the start of `update_suspension` sees the same pose).
+RESOLVED (notes/08 "Exact pass order"): `IntervalMgr__collidePass` runs inside 0x502060's event phase
+(0x4fc610 -> 0x4ee460), after integrate and before the next step's controllers, so src's query at the start
+of `update_suspension` sees the same pose (except after an in-loop `resolveImpacts`).
+
+### Body-vs-soup narrow phase `Collide__bodyVsTriangles` 0x4feb20 (decompiled 2026-10-24, not ported)
+Args `(body, verts, faces, groundBody, nodeBounds, nf, faceMask*)`, ECX = world-ish counter block (`+0x40++`).
+```
+if (body+0x58 & 0x800): seg = (other-state pos, active pos); for each face 0x4fd110(body, verts, face, ground, seg); return 0
+shape = body.def+0x90; br = shape+0xc; s = other state (prev)
+if |s.pos - nodeBounds.c|_k > nodeBounds.h_k + br for any k: return 0           // node AABB vs body sphere
+if shape kind 3/4 and (flags & 0x1040) == 0x40: sensor segment, 0x4fd110 per face (mask[i]==0 only); return 0
+mask[nf] = copy of faceMask (or 0); live = #zero
+for face i (mask 0): if slot DAT_00602948[i]+0x9c == 0: 0x504570(verts, face) (face AABB cache, stride 0xa0)
+                     0x4f9860(s, sweep = (prev pos, half motion), br, slot) == 0 -> mask = 1, live--  // swept-sphere vs face AABB
+if live && kind != 1:
+   OBB = shape+0x14 half extents (kind 6 with children: AABB of shape+0x24 bounds rotated) + |R·motion|·1.5 + 0.05
+   for face (mask 0): 0x4fc450(OBB, tri in body frame) == 0 -> mask = 1, live--                  // SAT box vs triangle
+if live:
+   children (+0x24): recurse 0x4feb20(child, ..., mask) for children without 0x20 / def 0x20 / 0x20000; return Σ
+   else per face (mask 0): face+0x1c cached triangle shape (0x4ffec0 alloc, +0x84 = 0.2, +0x7c = 0.6, 0x50f000 builds it
+        from the face's 3 vertices / normal), +0xf4 = *ECX; n += 0x4fbda0(body, shape, triShape, ground)   // queues body_dummy_candidate in DAT_006028f8
+return n
+```
+`Collide__candidatesTOI` 0x4fc7e0(ground): for every candidate in `DAT_006028f8`: resolve cached features
+(0x4f6ea0), d = `0x50d230(prev state, ground state, shape, tri+0x2c, features..)` − margin; keep the minimum;
+10-step time bisection (t = 1.0, step 0.5, `0x506c00` interpolate prev->cur) until d in (0, 0.02] and
+approaching (normal·Δ < 0); deep penetration (d <= −margin): pick the vertex (`shape+0x30` list, kind 1) with
+min distance along the face normal; then `0x4fa550`, margin re-added/subtracted (pA −= r·Rᵀn), and
+`PhysicsWorld__addContact 0x502830(body, ground, tri, fA, fB, pA, pB, n, d, toi, t, worldPt)` — **one contact
+per body per collide pass (earliest TOI)**; candidates freed, their features written back.
+src instead: `consider_pair` -> `collide_shapes_within(box/sphere/capsule, mesh)` -> `mesh_contacts` returns up
+to 4 hits over the merged soup on the start pose. Differences: number of contacts per pass (exe 1, earliest
+TOI; addContact also keeps only the earliest-TOI contact per root), TOI bisection between prev and current
+state, contact created in the event phase. Port needs 0x4fbda0, 0x4fc450, 0x4f9860, 0x50d230, 0x4fa550,
+0x50f000 too (not decompiled here) -> too big for one card (> 5 functions), and vmboot has no real-data check
+that bites (car_root/part_comp never touch the soup at rest or in the launch). Card 159 not written; next step
+is a trace of those six callees plus a vmboot scenario where the box hits the ground (e.g. a car without
+wheels/springs, if a shipped car or command produces one).
 
 ### Side note: `Class not found: java.game.parts.bodypart.Block_Vee` (vmboot --selfcheck)
 Not real misses. They come from `jvm::load_class` (src/script/packages.cpp:272) being called by the VM
