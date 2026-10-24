@@ -2452,10 +2452,15 @@ void game_init_check(Boot &boot, Checker &c)
                     }
                 }
                 float max_off = 0.0f, closest_cp = 1e30f;
+                float max_vel = 0.0f, min_y = root->pos.y;
+                const float spawn_y = root->pos.y;
+                const unsigned deep0 = hull_deep_contacts();
+                const unsigned overrun0 = (unsigned)vclip_overruns();
                 Vec3 first_off_pos{0.0f, 0.0f, 0.0f};
                 float first_off_speed = 0.0f;
-                int used = 0, next_trigger = -1;
-                for (int i = 0; i < 4000; i++) {
+                int used = 0, next_trigger = -1, nt_cp0 = -1, cp0_frame = 0;
+                // Card 171: keep running past cp0 until cp2 is accepted.
+                for (int i = 0; i < 9000; i++) {
                     frames(1);
                     used = i + 1;
                     float off = 0.0f;
@@ -2467,10 +2472,12 @@ void game_init_check(Boot &boot, Checker &c)
                         first_off_speed = vec_length(root->vel);
                     }
                     max_off = std::max(max_off, off);
+                    min_y = std::min(min_y, root->pos.y);
                     if (cp0) closest_cp = std::min(closest_cp,
                                                    vec_length(root->pos - cp0->pos));
                     float vh = std::hypot(root->vel.x, root->vel.z);
                     float vl = vec_length(root->vel);
+                    max_vel = std::max(max_vel, vl);
                     float L = std::min(30.0f, std::max(8.0f, 8.0f + 0.6f * vl));
                     Vec3 tgt = point_at(s + L);
                     float a = 0.0f;
@@ -2482,14 +2489,24 @@ void game_init_check(Boot &boot, Checker &c)
                         a = std::atan2(h.z * to.x - h.x * to.z,
                                        h.x * to.x + h.z * to.z);
                     }
-                    float want_speed =
-                        (std::fabs(a) > 0.25f || turn_ahead(s) > 0.6f) ? 12.0f : 30.0f;
+                    // Card 171 (INVENTED tune): brake for corners up to ~70 m
+                    // out and take them at 8 m/s; 40 m / 12 m/s put the car
+                    // into the Norisring hairpin at ~18 m/s, where it lost the
+                    // back.
+                    float want_speed = (std::fabs(a) > 0.25f || turn_ahead(s) > 0.6f ||
+                                        turn_ahead(s + 30.0f) > 0.6f)
+                                           ? 8.0f
+                                           : 30.0f;
                     key(203, vh > 2.0f && a * left_yaw_sign > 0.05f);
                     key(205, vh > 2.0f && a * left_yaw_sign < -0.05f);
                     key(200, vl < want_speed);
                     key(208, vl > want_speed + 3.0f);
                     next_trigger = read_int0("nextTrigger");
-                    if (next_trigger > nt0) break;
+                    if (next_trigger > nt0 && nt_cp0 < 0) {
+                        nt_cp0 = next_trigger;
+                        cp0_frame = used;
+                    }
+                    if (next_trigger >= 3) break;
                 }
                 key(200, false);
                 key(208, false);
@@ -2504,32 +2521,50 @@ void game_init_check(Boot &boot, Checker &c)
                     boot.vm()->get_instance_field(game_object, "current_lap", &lv, &le) &&
                     lv.kind == Value::Int)
                     cur_lap = lv.i;
+                const unsigned deep = hull_deep_contacts() - deep0;
+                const unsigned overruns = (unsigned)vclip_overruns() - overrun0;
                 std::printf("  spline driver (INVENTED, %s): %d frame(s), nt0 %d, "
                             "nextTrigger[0] %d, rpTotal[0] %d, current_lap %d, pos "
                             "%.2f %.2f %.2f, closest cp0 %.2f m, max spline distance "
-                            "%.2f m, left the spline (>10 m) at %.2f %.2f %.2f with "
-                            "|v| %.2f m/s\n",
+                            "%.2f m, max |v| %.2f m/s, min y %.2f (spawn %.2f), "
+                            "deep-branch contact(s) %u, vclip overruns %u, left the "
+                            "spline (>10 m) at %.2f %.2f %.2f with |v| %.2f m/s\n",
                             spline_path.c_str(), used, nt0, next_trigger, rp_total,
                             cur_lap, (double)root->pos.x, (double)root->pos.y,
                             (double)root->pos.z,
                             closest_cp < 1e29f ? (double)closest_cp : -1.0,
-                            (double)max_off, (double)first_off_pos.x,
+                            (double)max_off, (double)max_vel, (double)min_y,
+                            (double)spawn_y, deep, overruns, (double)first_off_pos.x,
                             (double)first_off_pos.y, (double)first_off_pos.z,
                             (double)first_off_speed);
                 c.check(std::fabs(omega_y) > 0.05f,
                         "Left yaws the car (|mean angular velocity y| > 0.05 rad/s "
                         "over the card-170 turn frames, got " +
                             std::to_string((double)omega_y) + ")");
-                c.check(nt0 == 0 && next_trigger == 1,
+                c.check(nt0 == 0 && nt_cp0 == 1,
                         "the spline driver itself observes checkpoint 0 "
                         "(CircuitRacing.handleCheckpoint, nt0 " +
                             std::to_string(nt0) + " -> nextTrigger[0] " +
-                            std::to_string(next_trigger) + " after " +
-                            std::to_string(used) + " frame(s), closest cp0 " +
+                            std::to_string(nt_cp0) + " after " +
+                            std::to_string(cp0_frame) + " frame(s), closest cp0 " +
                             std::to_string(closest_cp < 1e29f ? (double)closest_cp
                                                               : -1.0) +
                             " m, max spline distance " +
                             std::to_string((double)max_off) + " m)");
+                // Card 171 check 1: cp0, cp1 and cp2 accepted.
+                c.check(next_trigger == 3,
+                        "the spline driver reaches checkpoint 2 (nextTrigger[0] == 3, "
+                        "got " + std::to_string(next_trigger) + " after " +
+                            std::to_string(used) + " frame(s), current_lap " +
+                            std::to_string(cur_lap) + ")");
+                // Card 171 check 2. INVENTED bounds: no launch, no fall-through.
+                c.check(max_vel < 60.0f,
+                        "INVENTED bound: max |vel| over the spline block stays below "
+                        "60 m/s (" + std::to_string((double)max_vel) + " m/s)");
+                c.check(min_y >= spawn_y - 20.0f,
+                        "INVENTED bound: pos.y stays above spawn y - 20 m (min " +
+                            std::to_string((double)min_y) + " m, spawn " +
+                            std::to_string((double)spawn_y) + " m)");
             }
         }
         // Card 161 check 4. INVENTED harness: force the largest shipped C_drag /

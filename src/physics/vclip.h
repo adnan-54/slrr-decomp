@@ -71,10 +71,14 @@ float vclip_closest(const Pose &pose_a, const Poly &poly_a,
 
 // 0x50d9d0 Phys__shapeDistance: one validity test on the cached features,
 // between the two poses. Returns the signed distance, or 0.0 when the feature
-// pair needs an update (result 1; the caller drops the contact).
+// pair needs an update (result 1; the caller drops the contact). The out
+// points are the feature witnesses in each body's local frame (before
+// margins), `normal` is world and points from B to A (0x4f9af0 stores them).
 float vclip_check(const Pose &pose_a, const Poly &poly_a,
                   const Pose &pose_b, const Poly &poly_b,
-                  int feature_a, int feature_b);
+                  int feature_a, int feature_b,
+                  Vec3 *point_a = nullptr, Vec3 *point_b = nullptr,
+                  Vec3 *normal = nullptr);
 
 // INVENTED: harness counter, incremented next to the "Voronoi error" print;
 // read only by vmboot (card 165). The exe has no such counter.

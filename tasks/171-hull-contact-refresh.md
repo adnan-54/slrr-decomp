@@ -1,6 +1,6 @@
 ---
 id: 171
-status: todo
+status: implemented
 branch: card/171
 depends: [169]
 ---
@@ -59,3 +59,14 @@ No unit tests, no map names in engine code, every harness rule `INVENTED:`.
 
 ## Not this card
 Lap 2 / finish window / exit (card 172), native bot, 0x50d9d0 handlers line by line.
+
+## Result (2026-10-24)
+`make -C src clean check` green: 153 checks, 0 failures. Spline driver: 7823 frames, `nextTrigger[0]` 3
+(cp0 accepted at frame 1856, 2.21 m from the trigger), rpTotal 24, current_lap 1, max |v| 30.83 m/s,
+min y -5.22 (spawn -3.72), max spline distance 4.52 m, deep-branch contacts 179, vclip overruns 0.
+Before the fix (main physics) the same block launched at f1501+ and hit 121.67 m/s / y -114.45.
+
+One harness tune was needed (INVENTED, vmboot only): with the stale contacts gone the driver entered the
+Norisring hairpin (route_1.spl points 31-33, the z -571 U-turn) at ~18 m/s, lost the back and rolled the
+car at f~1461-1601, never reaching cp0. Braking now starts up to ~70 m before a corner (`turn_ahead(s+30)`)
+and corners are taken at 8 m/s instead of 12. Car and contact code unchanged by the tune.

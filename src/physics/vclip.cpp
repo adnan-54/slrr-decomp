@@ -811,7 +811,8 @@ int vclip_overruns()
 
 float vclip_check(const Pose &pose_a, const Poly &poly_a,
                   const Pose &pose_b, const Poly &poly_b,
-                  int feature_a, int feature_b)
+                  int feature_a, int feature_b,
+                  Vec3 *point_a, Vec3 *point_b, Vec3 *normal)
 {
     // INVENTED: one pass reproducing the checkVV/VE/VF/EE/EF result codes of
     // notes/11 §3; the exe bodies are not transcribed line by line.
@@ -824,6 +825,14 @@ float vclip_check(const Pose &pose_a, const Poly &poly_a,
         return 0.0f;
 
     Hit h = distance_pair(poly_a, pose_a, fa, poly_b, pose_b, fb);
+    // 0x50d9d0 writes the witnesses (body-local) and the world normal of the
+    // cached pair; 0x4f9af0 keeps them on the refreshed contact.
+    if (point_a)
+        *point_a = to_local(pose_a, h.pa);
+    if (point_b)
+        *point_b = to_local(pose_b, h.pb);
+    if (normal)
+        *normal = h.n;
 
     // VF: a vertex below the face plane is penetration (result 2) and still
     // yields a distance; otherwise a violated face plane invalidates the pair.

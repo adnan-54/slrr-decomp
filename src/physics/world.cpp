@@ -1107,14 +1107,22 @@ static size_t add_hull_contacts(World &w, const std::vector<StepState> &states)
     return added;
 }
 
-// Phys__shapeDistance 0x50d9d0 refresh of an existing hull contact: result 0
-// (invalid features) or a separation beyond 0.05 drops it (notes/11 §4).
-static void refresh_hull_contacts(const World &w, RigidBody &a, RigidBody &g,
-                                  std::vector<Contact> &next)
+// Phys__shapeDistance 0x50d9d0 refresh of an existing hull contact as
+// PhysicsWorld__updateContacts 0x4f9af0 runs it (notes/11 §"Contact refresh"):
+// recompute features/points/normal at the integrated states every time, drop
+// the pair on a 0.0 result or beyond the keep slop, bisect the step sweep when
+// it is penetrating now but was not deep last refresh, and store the world
+// point from A's witness. No plane fallback: the two-face triangle Poly is
+// two-sided, so a hull that crossed it still gets a signed distance.
+static void refresh_hull_contacts(World &w, RigidBody &a, RigidBody &g,
+                                  const BodyState &start_a, std::vector<Contact> &next)
 {
     const CollisionMesh &gm = *g.def.shape.mesh;
     const Pose gp = g.pose();
     const Mat34 gr = g.rotation();
+    // rA = rB = 0 for mesh-vs-soup (no shape margin); the exe's margin terms
+    // ptA -= rA*R_A^T n and ptB += rB*R_B^T n are therefore no-ops here.
+    const float r = 0.0f;
     for (const Contact &old : w.contacts) {
         if (old.a != &a || old.b != &g || old.child_index < 0)
             continue;
@@ -1133,37 +1141,71 @@ static void refresh_hull_contacts(const World &w, RigidBody &a, RigidBody &g,
                      : vec_cross(vw[1] - vw[0], vw[2] - vw[0]);
         n = vec_normalize(n, Vec3{0.0f, 1.0f, 0.0f});
         Poly face = poly_triangle(vw[0], vw[1], vw[2], n);
+        Pose bpose;  // the triangle Poly holds world vertices
+        const int fa = old.feature_a, fb = old.feature_b;
         Pose cpose = child_world_pose(a, cc);
-        Pose bpose;
-        float d = vclip_check(cpose, *cc.poly, bpose, face, old.feature_a, old.feature_b);
-        // Signed fallback for a hull that crossed the face between steps; the
-        // cached V-F pair stays valid, but the face poly is two-sided.
-        Vec3 support{0.0f, 0.0f, 0.0f};
-        float ds = hull_plane_distance(*cc.poly, pose_rotation(cpose), cpose.pos, n,
-                                       vw[0], &support);
-        // Same rule as consider_hull_pair (INVENTED side gate).
-        if (vec_dot(n, cpose.pos - vw[0]) > 0.0f) {
-            if (d <= 0.0f || ds < d)
-                d = ds;
-        } else if (d <= 0.0f) {
-            continue;
+        Vec3 pa{0.0f, 0.0f, 0.0f}, pb{0.0f, 0.0f, 0.0f}, cn{0.0f, 1.0f, 0.0f};
+        float d = vclip_check(cpose, *cc.poly, bpose, face, fa, fb, &pa, &pb, &cn);
+        if (d == 0.0f || d > r + kKeepSlop)
+            continue;  // invalid cached features, or apart beyond 0.05 m
+        if (d < r + kAddSlop) {
+            w.wake(&a);
+            w.wake(&g);
+            // w+0x39c (converged) is recomputed from the separations in step().
         }
-        if (d > kKeepSlop)
-            continue;
         Contact c = old;
-        c.separation = d;
+        // Else: deep now and deep at the last refresh -> keep the world point.
+        if (d > r || d > -r || old.separation >= r) {
+            if (d <= r) {
+                // Same 10-step bisection as 0x4fc7e0 (t = 0.5, step = 0.25),
+                // interpolating the hull child from the step start to the
+                // integrated pose; keep the last check that left the face.
+                float t = 0.5f, step = 0.25f;
+                for (int iter = 0; iter < 10; iter++) {
+                    cpose = child_pose_at(a, cc, start_a, t);
+                    d = vclip_check(cpose, *cc.poly, bpose, face, fa, fb, &pa, &pb, &cn);
+                    if (d > r) {
+                        if (d < r + kAddSlop &&
+                            (iter == 0 || vec_dot(cn, cpose.pos - pb) < 0.0f))
+                            break;
+                        t += step;
+                    } else {
+                        t -= step;
+                    }
+                    step *= 0.5f;
+                }
+                if (d <= r) {
+                    // Still penetrating along the sweep: use the integrated states.
+                    cpose = child_world_pose(a, cc);
+                    d = vclip_check(cpose, *cc.poly, bpose, face, fa, fb, &pa, &pb, &cn);
+                }
+            }
+            c.world_point = cpose.pos + mat_vec(pose_rotation(cpose), pa);
+        }
+        // Lift the child witness into the root frame (notes/11 §4, child+0x1c).
+        c.local_a = cc.pose.pos + mat_vec(pose_rotation(cc.pose), pa);
+        c.local_b = mat_tvec(gr, pb - gp.pos);
+        c.normal = cn;
+        c.separation = d - r;
         next.push_back(c);
     }
 }
 
 // PhysicsWorld__updateContacts 0x4f9af0 plus Collide__bodyPair 0x4fb370.
 // add_new: the broad phase pass at the start of a step may create pairs; later
-// sub-iteration refreshes only update pairs that already exist.
-static void update_contacts(World &w, bool add_new)
+// sub-iteration refreshes only update pairs that already exist. `states` holds
+// each root's step-start state for the 0x506c00 sweep interpolation.
+static void update_contacts(World &w, bool add_new, const std::vector<StepState> &states)
 {
     std::vector<Contact> next;
     for (size_t i = 0; i < w.bodies.size(); i++) {
         RigidBody &a = *w.bodies[i];
+        BodyState start_a{a.pos, a.vel, a.angular_momentum, a.rot};
+        for (const StepState &s : states)
+            if (s.body == &a) {
+                start_a = s.start;
+                break;
+            }
         for (size_t j = i + 1; j < w.bodies.size(); j++)
             consider_pair(w, a, *w.bodies[j], add_new, next);
         // Flag-4 bodies sit outside the active root list (0x4f7830); pair them
@@ -1179,7 +1221,7 @@ static void update_contacts(World &w, bool add_new)
             for (RigidBody *g : w.statics) {
                 if (g->def.shape.type != SHAPE_MESH || !g->def.shape.mesh)
                     continue;
-                refresh_hull_contacts(w, a, *g, next);
+                refresh_hull_contacts(w, a, *g, start_a, next);
             }
     }
     w.contacts.swap(next);
@@ -1356,7 +1398,7 @@ int World::step(float dt)
     // forces land in the accumulators RK4 holds constant for the whole step.
     if (drive) drive(h);
 
-    update_contacts(*this, true);
+    update_contacts(*this, true, states);
 
     // 0x502060: integrate every root once, then sub-iterate. The exe skips
     // bodies whose flags bit0 is still set; re-integrating them from unchanged
@@ -1366,7 +1408,7 @@ int World::step(float dt)
     int iterations = 0;
     for (int it = 0; it < 20; it++) {
         iterations = it + 1;
-        update_contacts(*this, false); // contact refresh, no new pairs mid-step
+        update_contacts(*this, false, states); // contact refresh, no new pairs mid-step
         // 0x4f9af0 clears the converged flag (world+0x39c) when a contact is
         // within 0.02 m; only then are the contacts resolved.
         bool converged = true;
