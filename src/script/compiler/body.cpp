@@ -405,6 +405,7 @@ struct BodyParser {
                 pos++;
                 if (at("(")) {
                     auto call = mk(ExprKind::Call, line, std::move(name));
+                    call->flag = true; // receiver present
                     call->kids.push_back(std::move(e)); // receiver
                     if (!parse_args(&call->kids)) return nullptr;
                     e = std::move(call);

@@ -81,7 +81,7 @@ enum class ExprKind : int {
 //   binary/assign  [left, right] (assign: [target, value])
 //   ternary        [cond, then, else]
 //   unary/postfix  [operand]
-//   call           [receiver?] then args; receiver absent for unqualified calls
+//   call           flag=qualified; [receiver] then args (receiver only if flag)
 //   member/index   [object] / [array, index]
 //   new            args; text = type
 //   newarray       dimension exprs; text = type with one [] per dimension;

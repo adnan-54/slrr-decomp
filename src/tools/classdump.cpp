@@ -9,9 +9,11 @@
 #include <unistd.h>
 
 #include <cmath>
+#include <algorithm>
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -22,6 +24,7 @@
 #include "script/classfile.h"
 #include "script/compiler/body.h"
 #include "script/compiler/decl.h"
+#include "script/compiler/emit.h"
 #include "script/natives.h"
 #include "script/vm.h"
 
@@ -1183,6 +1186,318 @@ static int parse_java_cmd(int argc, char **argv)
     return failures ? 1 : 0;
 }
 
+// ---- class skeleton compile check ------------------------------------------
+
+static std::string dir_of(const std::string &path)
+{
+    size_t slash = path.rfind('/');
+    return slash == std::string::npos ? std::string(".") : path.substr(0, slash);
+}
+
+static std::string base_of(const std::string &path)
+{
+    size_t slash = path.rfind('/');
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+static bool is_file(const std::string &path)
+{
+    struct stat st;
+    return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+// `<dir>/X.class` pairs with `<dir>/src/X.java` (Windows is case-insensitive,
+// so the shipped `Src` dirs count too).
+static std::string source_for_class(const std::string &class_path)
+{
+    std::string dir = dir_of(class_path);
+    std::string base = base_of(class_path);
+    if (ends_with(base, ".class")) base.resize(base.size() - 6);
+    const char *subs[] = {"src", "Src"};
+    for (const char *sub : subs) {
+        std::string p = path_join(path_join(dir, sub), base + ".java");
+        if (is_file(p)) return p;
+    }
+    return std::string();
+}
+
+static std::string const_key(const ClassUnit &u, int idx)
+{
+    const ConstEntry *e = u.entry(idx);
+    if (!e) return "#" + std::to_string(idx) + "?";
+    char buf[32];
+    switch (e->type) {
+    case CONST_STRING:
+        return "str:" + e->str;
+    case CONST_RESOURCE:
+        snprintf(buf, sizeof buf, "%08x", (uint32_t)e->b);
+        return "res:" + std::string(u.str(e->a) ? u.str(e->a) : "?") + "#" + buf;
+    case CONST_CLASS:
+        return "class:" + u.class_name(idx);
+    case CONST_MEMBER:
+        return "member:" + u.member_class(idx) + "::" + u.member_name(idx) + " " +
+               u.member_type(idx);
+    case CONST_NAME_TYPE:
+        return "nameType:" + std::string(u.str(e->a) ? u.str(e->a) : "?") + " " +
+               std::string(u.str(e->b) ? u.str(e->b) : "?");
+    default:
+        return "type" + std::to_string(e->type);
+    }
+}
+
+static bool same_text(const char *a, const char *b)
+{
+    if (!a || !b) return a == b;
+    return strcmp(a, b) == 0;
+}
+
+static bool same_fields(const ClassUnit &w, const ClassUnit &g, std::string *why)
+{
+    if (w.fields.size() != g.fields.size()) {
+        *why = "count " + std::to_string(w.fields.size()) + " vs " +
+               std::to_string(g.fields.size());
+        return false;
+    }
+    for (size_t i = 0; i < w.fields.size(); i++) {
+        const FieldInfo &a = w.fields[i], &b = g.fields[i];
+        std::string at = "#" + std::to_string(i) + " ";
+        if (a.is_static != b.is_static) { *why = at + "static section differs"; return false; }
+        if (a.flags != b.flags) {
+            char buf[64];
+            snprintf(buf, sizeof buf, "flags 0x%x vs 0x%x", a.flags, b.flags);
+            *why = at + buf;
+            return false;
+        }
+        if (!same_text(w.str(a.name), g.str(b.name))) {
+            *why = at + "name \"" + (w.str(a.name) ? w.str(a.name) : "?") + "\" vs \"" +
+                   (g.str(b.name) ? g.str(b.name) : "?") + "\"";
+            return false;
+        }
+        if (!same_text(w.str(a.type), g.str(b.type))) {
+            *why = at + "type " + (w.str(a.type) ? w.str(a.type) : "?") + " vs " +
+                   (g.str(b.type) ? g.str(b.type) : "?");
+            return false;
+        }
+        if (a.init != b.init) {
+            *why = at + "init " + std::to_string(a.init) + " vs " + std::to_string(b.init);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool same_methods(const ClassUnit &w, const ClassUnit &g, std::string *why)
+{
+    if (w.methods.size() != g.methods.size()) {
+        *why = "count " + std::to_string(w.methods.size()) + " vs " +
+               std::to_string(g.methods.size());
+        return false;
+    }
+    for (size_t i = 0; i < w.methods.size(); i++) {
+        const MethodInfo &a = w.methods[i], &b = g.methods[i];
+        std::string at = "#" + std::to_string(i) + " ";
+        if (a.is_static != b.is_static) { *why = at + "static section differs"; return false; }
+        if (a.flags != b.flags) {
+            char buf[64];
+            snprintf(buf, sizeof buf, "flags 0x%x vs 0x%x", a.flags, b.flags);
+            *why = at + buf;
+            return false;
+        }
+        if (!same_text(w.str(a.name), g.str(b.name))) {
+            *why = at + "name \"" + (w.str(a.name) ? w.str(a.name) : "?") + "\" vs \"" +
+                   (g.str(b.name) ? g.str(b.name) : "?") + "\"";
+            return false;
+        }
+        if (!same_text(w.str(a.sig), g.str(b.sig))) {
+            *why = at + "sig " + (w.str(a.sig) ? w.str(a.sig) : "?") + " vs " +
+                   (g.str(b.sig) ? g.str(b.sig) : "?");
+            return false;
+        }
+        if (a.locals != b.locals) {
+            *why = at + "locals " + std::to_string(a.locals) + " vs " +
+                   std::to_string(b.locals);
+            return false;
+        }
+        if (a.body != b.body) {
+            *why = at + "body " + std::to_string(a.body) + " vs " + std::to_string(b.body);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool same_class(const ClassUnit &w, const ClassUnit &g, std::string *why)
+{
+    if (w.clss_unknown != g.clss_unknown) { *why = "unknown field differs"; return false; }
+    if (w.interface_flag != g.interface_flag) {
+        *why = "interface flag " + std::to_string(w.interface_flag) + " vs " +
+               std::to_string(g.interface_flag);
+        return false;
+    }
+    if (w.class_name(w.self_class) != g.class_name(g.self_class)) {
+        *why = "self " + w.class_name(w.self_class) + " vs " + g.class_name(g.self_class);
+        return false;
+    }
+    if (w.class_name(w.super_class) != g.class_name(g.super_class)) {
+        *why = "super " + w.class_name(w.super_class) + " vs " + g.class_name(g.super_class);
+        return false;
+    }
+    if (w.interfaces.size() != g.interfaces.size()) {
+        *why = "interface count differs";
+        return false;
+    }
+    for (size_t i = 0; i < w.interfaces.size(); i++)
+        if (w.class_name(w.interfaces[i]) != g.class_name(g.interfaces[i])) {
+            *why = "interface " + std::to_string(i) + " differs";
+            return false;
+        }
+    return true;
+}
+
+static bool same_const_set(const ClassUnit &w, const ClassUnit &g, std::string *why)
+{
+    std::set<std::string> want, got;
+    for (size_t i = 0; i < w.consts.size(); i++) want.insert(const_key(w, (int)i));
+    for (size_t i = 0; i < g.consts.size(); i++) got.insert(const_key(g, (int)i));
+    size_t missing = 0, extra = 0;
+    std::string first;
+    for (const std::string &k : want)
+        if (!got.count(k)) {
+            if (!missing && first.empty()) first = "missing " + k;
+            if (missing < 6 && first.size() < 900) first += " +" + k;
+            missing++;
+        }
+    for (const std::string &k : got)
+        if (!want.count(k)) {
+            if (!extra && first.empty()) first = "extra " + k;
+            if (extra < 6 && first.size() < 900) first += " -" + k;
+            extra++;
+        }
+    if (!missing && !extra) return true;
+    *why = first + " (" + std::to_string(missing) + " missing, " + std::to_string(extra) +
+           " extra)";
+    return false;
+}
+
+static int compile_check(int argc, char **argv)
+{
+    if (argc < 1) {
+        std::fprintf(stderr, "usage: classdump --compile-check <dir>...\n");
+        return 2;
+    }
+    std::vector<std::string> class_paths;
+    for (int i = 0; i < argc; i++) {
+        struct stat st;
+        if (stat(argv[i], &st) != 0 || !S_ISDIR(st.st_mode)) {
+            std::fprintf(stderr, "compile-check: not a directory: %s\n", argv[i]);
+            return 2;
+        }
+        collect_files(argv[i], ".class", &class_paths);
+    }
+    std::sort(class_paths.begin(), class_paths.end());
+    class_paths.erase(std::unique(class_paths.begin(), class_paths.end()), class_paths.end());
+
+    // The shipped classes are the symbol table the exe compiler had at load.
+    ClassIndex index;
+    for (const std::string &path : class_paths) {
+        std::vector<uint8_t> data;
+        if (!read_binary(path, &data) || data.empty()) continue;
+        ClassFile file;
+        std::string err;
+        if (!classfile_parse(data.data(), data.size(), &file, &err)) continue;
+        for (const ClassUnit &u : file.units) index.add(u);
+    }
+
+    size_t pairs = 0, units = 0, errs = 0;
+    size_t ok_header = 0, ok_fild = 0, ok_mthd = 0, ok_clss = 0, ok_cons = 0;
+    std::vector<std::string> first_mismatches, first_errors;
+
+    for (const std::string &class_path : class_paths) {
+        std::string src_path = source_for_class(class_path);
+        if (src_path.empty()) continue;
+        pairs++;
+
+        std::string src, err;
+        if (!read_text(src_path, &src)) {
+            errs++;
+            if (first_errors.size() < 10) first_errors.push_back(src_path + ": unreadable");
+            continue;
+        }
+        JavaUnit ju;
+        std::vector<Token> tokens;
+        if (!parse_java(src, &ju, &err, &tokens)) {
+            errs++;
+            if (first_errors.size() < 10) first_errors.push_back(src_path + ":" + err);
+            continue;
+        }
+        ClassFile ours;
+        if (!compile_unit(ju, tokens, index, &ours, &err)) {
+            errs++;
+            if (first_errors.size() < 10) first_errors.push_back(src_path + ": " + err);
+            continue;
+        }
+        std::vector<uint8_t> bytes;
+        classfile_write(ours, &bytes);
+        ClassFile check;
+        if (!classfile_parse(bytes.data(), bytes.size(), &check, &err)) {
+            errs++;
+            if (first_errors.size() < 10)
+                first_errors.push_back(src_path + ": writer produced invalid TUFA: " + err);
+            continue;
+        }
+        ClassFile want;
+        if (!classfile_load(class_path.c_str(), &want, &err)) {
+            errs++;
+            if (first_errors.size() < 10) first_errors.push_back(class_path + ": " + err);
+            continue;
+        }
+
+        for (size_t i = 0; i < want.units.size(); i++) {
+            units++;
+            bool h = false, f = false, m = false, s = false, c = false;
+            std::string why;
+            if (i < ours.units.size()) {
+                const ClassUnit &w = want.units[i], &g = check.units[i];
+                std::string fwhy, mwhy, swhy, cwhy;
+                h = w.version == g.version && w.stamp == g.stamp;
+                f = same_fields(w, g, &fwhy);
+                m = same_methods(w, g, &mwhy);
+                s = same_class(w, g, &swhy);
+                c = same_const_set(w, g, &cwhy);
+                if (!h) why = "header: version/stamp differ";
+                else if (!f) why = "FILD: " + fwhy;
+                else if (!m) why = "MTHD: " + mwhy;
+                else if (!s) why = "CLSS: " + swhy;
+                else if (!c) why = "CONS: " + cwhy;
+            } else {
+                why = "missing compiled unit";
+            }
+            ok_header += h;
+            ok_fild += f;
+            ok_mthd += m;
+            ok_clss += s;
+            ok_cons += c;
+            if (!(h && f && m && s && c) && first_mismatches.size() < 5000)
+                first_mismatches.push_back(class_path + ": " + why);
+        }
+        if (ours.units.size() > want.units.size()) {
+            units += ours.units.size() - want.units.size();
+            if (first_mismatches.size() < 10)
+                first_mismatches.push_back(class_path + ": extra compiled unit(s) " +
+                                           std::to_string(ours.units.size()) + " vs " +
+                                           std::to_string(want.units.size()));
+        }
+    }
+
+    std::printf("skeleton: %zu pairs, %zu units, identical: header %zu, FILD %zu, MTHD %zu, "
+                "CLSS %zu, CONS-set %zu\n",
+                pairs, units, ok_header, ok_fild, ok_mthd, ok_clss, ok_cons);
+    if (errs) std::printf("compile errors: %zu\n", errs);
+    for (const std::string &e : first_errors) std::printf("  error %s\n", e.c_str());
+    for (const std::string &m : first_mismatches) std::printf("  %s\n", m.c_str());
+    return 0; // report only
+}
+
 // ---- entry point -----------------------------------------------------------
 
 static int selfcheck(int argc, char **argv)
@@ -1221,7 +1536,8 @@ int main(int argc, char **argv)
                      "       classdump --corpus <file.class>...\n"
                      "       classdump --natives-check <natives.tsv>\n"
                      "       classdump --conformance <directory>\n"
-                     "       classdump --parse-java <file|dir>...\n");
+                     "       classdump --parse-java <file|dir>...\n"
+                     "       classdump --compile-check <dir>...\n");
         return 2;
     }
     if (strcmp(argv[1], "--selfcheck") == 0)
@@ -1265,5 +1581,7 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "--parse-java") == 0)
         return parse_java_cmd(argc - 2, argv + 2);
+    if (strcmp(argv[1], "--compile-check") == 0)
+        return compile_check(argc - 2, argv + 2);
     return dump_files(argc - 1, argv + 1);
 }
