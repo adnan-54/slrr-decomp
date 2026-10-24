@@ -388,6 +388,73 @@ CarData *car_data(Runtime &rt, Runtime::Resource *r)
     return p;
 }
 
+// 0x4c1f90 Part__initInstance (body part) + 0x4992e0 Vehicle__createCar
+// (body part). The cfg `body` line handler 0x4bf4e0 sets M+0xff0; no body line
+// (-1) means neither body exists.
+void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
+                       Runtime::Resource *type, const std::string &params)
+{
+    CfgFile cfg;
+    if (!type || !load_native_cfg(rt, type, "car", &cfg) || cfg.bodies.empty()) return;
+    CarData *car = car_data(rt, inst);
+    if (!car) return;
+    World &world = process_world();
+
+    // Str__scan(params, "%f,%f,%f,%f,%f,%f,%d"); Vehicle.java:111 passes
+    // "0,0,0,0,0,0". Missing fields stay 0.
+    float x = 0.0f, y = 0.0f, z = 0.0f, yaw = 0.0f, pitch = 0.0f, roll = 0.0f;
+    int tail = 0;
+    sscanf(params.c_str(), "%f,%f,%f,%f,%f,%f,%d", &x, &y, &z, &yaw, &pitch,
+           &roll, &tail);
+    float ypr[3] = {yaw, pitch, roll};
+    Mat34 mat;
+    euler_to_mat(&mat, ypr); // 0x5666d0 ypr_to_matrix
+
+    // 0x4c1f90: "part_comp" body, then PhysBody__sleep(PhysBody__root(body)).
+    auto chassis = std::make_unique<RigidBody>();
+    // INVENTED: Poly box template of a mesh-less type 6 not ported; the exe's
+    // createBox(1.0f, 6, 0, 0, 0, 0) builds a mass-1 body without a mesh.
+    chassis->def.shape.type = SHAPE_MESH;
+    compute_mass_props(&chassis->def, 1.0f);
+    chassis->pos = Vec3{x, y, z};
+    mat_to_quat(&chassis->rot, &mat);
+    world.add_body(chassis.get());
+    car->chassis_body = chassis.get();
+    world.sleep(chassis.get()); // 0x506d90
+    chassis->def.flags |= 8u;   // body+0x58 |= 8
+    car->chassis_body_storage = std::move(chassis);
+    car->root_body = nullptr;
+    car->root_body_storage.reset();
+
+    // 0x4992e0: "car_root" box at the chassis root's active pose; the chassis
+    // is unlinked and becomes its child. addBody head-inserts into the active
+    // root (0x4f7830), so cr comes before the chassis root.
+    RigidBody *root = car->chassis_body;
+    if (root) {
+        if (root->asleep) world.wake(root); // 0x507060
+        auto cr = std::make_unique<RigidBody>();
+        cr->set_box(Vec3{1.0f, 1.0f, 1.0f}, 1.0f); // createBox(1.0f, 5, 1, 1, 1, 0)
+        cr->pos = root->pos;
+        cr->rot = root->rot;
+        world.add_body(cr.get());
+        car->root_body = cr.get();
+        world.unlink(root);                 // 0x501d00
+        world.attach_child(root, cr.get()); // 0x4f7b20
+        car->root_body_storage = std::move(cr);
+    }
+    // 0x5032d0 compound mass refresh: NOT this card.
+    root = car->root_body ? car->root_body : car->chassis_body; // PhysBody__root
+    if (root && !root->asleep) world.sleep(root);               // 0x506d90
+}
+
+int car_body_instances()
+{
+    int n = 0;
+    for (const auto &kv : g_cars)
+        if (kv.second->root_body) n++;
+    return n;
+}
+
 void bind_wheel(Object *wrapper, WheelData *w)
 {
     if (wrapper && w) g_wheels[wrapper] = w;
@@ -472,6 +539,13 @@ void refresh_engine_curve(CarData &c)
 // at the same address would see stale entries (tools create one per process).
 void reset(Runtime *rt)
 {
+    // INVENTED: the exe never discards one runtime's bodies; src tools create
+    // several. Unlink before the payloads (and their bodies) are freed.
+    World &world = process_world();
+    for (const auto &kv : g_cars) {
+        if (kv.second->chassis_body) world.unlink(kv.second->chassis_body);
+        if (kv.second->root_body) world.unlink(kv.second->root_body);
+    }
     g_wheels.clear();
     g_sfx_tables.clear();
     g_dynos.clear();

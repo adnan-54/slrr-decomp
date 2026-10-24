@@ -127,6 +127,13 @@ struct RigidBody {
     // Other-state flags bit0: set by the integration (0x5001c0), cleared at step
     // start (0x4f8460) and by a contact that touches the body (0x4f0dd0).
     bool integrated = false;
+    // Compound link (+0x20 parent, +0x24/+0x28 child list). A body with a parent
+    // is carried by its root: it lives on the parent's children list, not in
+    // World::bodies, and is not integrated on its own.
+    RigidBody *parent = nullptr;
+    std::vector<RigidBody *> children;
+    // PhysBody sleep flag (+0x58 bit 0x80, 0x506d90/0x507060).
+    bool asleep = false;
 
     Pose pose() const { return Pose{pos, rot}; }
     Mat34 rotation() const;
@@ -202,12 +209,22 @@ struct World {
     float last_dt = 0.02f;     // +0x0c
     Vec3 gravity{0.0f, -9.81f, 0.0f}; // notes/11 §6 (PhysicsWorld__init 0x4fffb0)
     float air_density = 1.2928f;      // +0x364 = 0x3fa57a78, buoyancy path (body def flag 0x80) TODO
-    std::vector<RigidBody *> bodies;  // root bodies
+    std::vector<RigidBody *> bodies;  // root bodies (active root, w+0x84)
+    std::vector<RigidBody *> sleeping; // sleeping root bodies (w+0x88)
+    int body_count = 0;                // w+0x54, incremented by add_body
     std::vector<Contact> contacts;    // world+0x1d8
     int last_iterations = 0;
     unsigned unsupported_pairs = 0;   // pairs with a TODO shape kind, no contacts
 
     void add_body(RigidBody *b);
+    // 0x501d00: remove from the list/parent that holds it. 0x4f7b20: head
+    // insert into a parent's child list.
+    void unlink(RigidBody *b);
+    void attach_child(RigidBody *child, RigidBody *parent);
+    // 0x506d90 / 0x507060: only root-level bodies change lists; children are
+    // recursed.
+    void sleep(RigidBody *b);
+    void wake(RigidBody *b);
     int step(float dt);
 };
 

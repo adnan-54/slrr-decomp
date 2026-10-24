@@ -130,6 +130,74 @@ void RigidBody::set_static_shape(const Shape &s)
 void World::add_body(RigidBody *b)
 {
     bodies.insert(bodies.begin(), b); // 0x4f7830: head insert into the root's child list
+    body_count++;                     // w+0x54
+}
+
+void World::unlink(RigidBody *b)
+{
+    if (!b) return;
+    if (b->parent) { // 0x501d00: body is on its parent's child list
+        std::vector<RigidBody *> &c = b->parent->children;
+        for (size_t i = 0; i < c.size(); i++)
+            if (c[i] == b) {
+                c.erase(c.begin() + (long)i);
+                break;
+            }
+        b->parent = nullptr;
+        return;
+    }
+    for (size_t i = 0; i < bodies.size(); i++)
+        if (bodies[i] == b) {
+            bodies.erase(bodies.begin() + (long)i);
+            return;
+        }
+    for (size_t i = 0; i < sleeping.size(); i++)
+        if (sleeping[i] == b) {
+            sleeping.erase(sleeping.begin() + (long)i);
+            return;
+        }
+}
+
+void World::attach_child(RigidBody *child, RigidBody *parent)
+{
+    if (!child || !parent) return; // 0x4f7b20: head insert into the child list
+    child->parent = parent;
+    parent->children.insert(parent->children.begin(), child);
+}
+
+// 0x506d90 PhysBody__sleep. Root-level bodies move from the active list to the
+// sleeping root (w+0x88); bodies that already have a parent just follow it.
+void World::sleep(RigidBody *b)
+{
+    if (!b || b->asleep) return;
+    if (!b->parent) {
+        unlink(b);
+        sleeping.insert(sleeping.begin(), b);
+    }
+    b->asleep = true;
+    b->vel = Vec3{0.0f, 0.0f, 0.0f};
+    b->angular_momentum = Vec3{0.0f, 0.0f, 0.0f};
+    b->force = Vec3{0.0f, 0.0f, 0.0f};
+    b->torque = Vec3{0.0f, 0.0f, 0.0f};
+    b->pos_correction = Vec3{0.0f, 0.0f, 0.0f};
+    // INVENTED: the exe also copies the active state onto the other state here;
+    // src has one state, so only the flags bit (integrated) is cleared.
+    b->integrated = false;
+    for (RigidBody *c : b->children) sleep(c);
+}
+
+// 0x507060 PhysBody__wake. Root-level bodies move back to the active list.
+void World::wake(RigidBody *b)
+{
+    if (!b || !b->asleep) return;
+    b->asleep = false;
+    // INVENTED: the exe resets body+0xc (0), +0x10 (100000.0f) and +0x14 (0)
+    // when !(body+0x58 & 4); RigidBody has no matching fields.
+    if (!b->parent) {
+        unlink(b);
+        bodies.insert(bodies.begin(), b);
+    }
+    for (RigidBody *c : b->children) wake(c);
 }
 
 World &process_world()
@@ -557,6 +625,7 @@ int World::step(float dt)
     const float h = t;
 
     // Force model (FUN_004f8460): gravity + linear drag, once per step, per root.
+    // shortcut: child bodies are carried but not integrated as a compound (0x4f7990/0x5032d0), upgrade with the compound card.
     std::vector<StepState> states(bodies.size());
     for (size_t i = 0; i < bodies.size(); i++) {
         RigidBody &b = *bodies[i];

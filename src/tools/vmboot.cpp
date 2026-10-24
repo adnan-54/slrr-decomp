@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "app/boot.h"
+#include "game/car.h"
 #include "input/backend.h"
 #include "input/device.h"
 #include "platform/fs.h"
@@ -587,6 +588,34 @@ void game_init_check(Boot &boot, Checker &c)
             "back from the used dealer: actualState is java.game.Garage at the testdrive "
             "cmd (got " + testdrive_from + ")");
     c.check(player_car != nullptr, "buying the shown used car sets GameLogic.player.car");
+
+    // Vehicle.java:49 holds the Chassis script object; its handle target is the
+    // instance create_car_bodies bound the payload to (0x4c1f90/0x4992e0).
+    game::CarData *car_payload = nullptr;
+    {
+        Value chv;
+        std::string cherr;
+        Runtime::Handle *ch = nullptr;
+        if (player_car &&
+            boot.vm()->get_instance_field(player_car, "chassis", &chv, &cherr) &&
+            chv.kind == Value::Obj && chv.obj)
+            ch = boot.runtime()->handle(chv.obj);
+        if (ch && ch->target) car_payload = game::car_data(*boot.runtime(), ch->target);
+    }
+    bool root_sleeping = false;
+    if (car_payload && car_payload->root_body)
+        for (RigidBody *b : process_world().sleeping)
+            if (b == car_payload->root_body) root_sleeping = true;
+    c.check(car_payload && car_payload->chassis_body && car_payload->root_body &&
+                car_payload->chassis_body->parent == car_payload->root_body,
+            "player car chassis body hangs under its car_root body (0x4992e0)");
+    c.check(root_sleeping, "car_root body is in the world's sleeping list (0x506d90)");
+    int cars_with_bodies = game::car_body_instances();
+    std::printf("  car bodies: %d car instance(s) with bodies, world body_count %d\n",
+                cars_with_bodies, process_world().body_count);
+    c.check(process_world().body_count >= 2 &&
+                process_world().body_count == 2 * cars_with_bodies,
+            "world body_count counts both bodies of every car (0x4f7830)");
     // Track.java:291-299: the freeride race builds Track(game = the event's
     // careerGM, map = new GroundRef(td.map_id)).
     c.check(class_after == "java.game.Track",

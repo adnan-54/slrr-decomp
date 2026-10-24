@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "game/car.h"
 #include "platform/fs.h"
 #include "script/natives.h"
 #include "script/vm.h"
@@ -498,7 +499,6 @@ Runtime::Resource *Runtime::instantiate(Resource *type, Resource *parent,
                                         const std::string &params, bool scripted,
                                         std::string *err)
 {
-    (void)params;  // constructor params are script data; no ctor thread is run
     auto up = std::make_unique<Resource>();
     Resource *r = up.get();
     instances_.push_back(std::move(up));
@@ -522,6 +522,12 @@ Runtime::Resource *Runtime::instantiate(Resource *type, Resource *parent,
         if (parent->instance) r->world_root = parent->world_root ? parent->world_root : parent;
     }
     if (scripted) r->script = script_instance(r);
+    // 0x523c80: the type record's native manager vf3 runs before the script
+    // <init>. Only `native car` (Vehicle__createCar 0x4992e0) builds bodies in
+    // src; create_car_bodies is a no-op for every other native kind.
+    // shortcut: other native type-manager kinds (part, ground, camera, ...) are
+    // not dispatched (0x523c80/0x5240e0).
+    game::create_car_bodies(*this, r, type, params);
     // 0x523c80: a script class runs its <init> (signature "(I)" in this class
     // format, no return type) in a THRD-CREATE thread (prio 10,
     // flags 0) with the new instance id as the single int argument, untimed.
@@ -595,6 +601,10 @@ Object *Runtime::script_instance(Resource *r)
     Object *o = vm_->new_object(cs, &err);
     if (!o) return nullptr;
     r->script = o;
+    // INVENTED call site: the exe's typed+0x50 script instance refers back to
+    // its node (ResourceRef natives resolve through it); C++-side creation
+    // binds it here because script constructors do not always call set(id).
+    bind(attach(o), r);
     return o;
 }
 

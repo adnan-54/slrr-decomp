@@ -16,6 +16,7 @@
 #include "audio/sfx.h"
 #include "engine/math.h"
 #include "game/runtime.h"
+#include "physics/physics.h"
 
 class Vm;
 struct Object;
@@ -199,6 +200,13 @@ struct CarData {
     float heat_capacity = 320000.0f;  // +0x1ebc  0x489c4000
     float cooling_coeff = 9.375e-05f; // +0x1ec8  0x38c49ba6 = 30 / 320000
 
+    // Vehicle__createCar 0x4992e0: "part_comp" body (car+0x13ec) and the
+    // "car_root" box it hangs under. Owned here; the process world links them.
+    std::unique_ptr<RigidBody> chassis_body_storage;
+    std::unique_ptr<RigidBody> root_body_storage;
+    RigidBody *chassis_body = nullptr;
+    RigidBody *root_body = nullptr;
+
     // Engine torque curves: (rpm, torque) pairs, e+0/e+4 and e+8/e+0xc.
     std::vector<float> torque_rpm, torque_nm;
     std::vector<float> nitro_rpm, nitro_nm;
@@ -212,6 +220,14 @@ struct CarData {
 // Lazy per-resource payloads, created on first native access.
 PartData *part_data(Runtime &rt, Runtime::Resource *r);
 CarData *car_data(Runtime &rt, Runtime::Resource *r);
+// 0x4c1f90 (Part__initInstance) + 0x4992e0 (Vehicle__createCar) body parts:
+// create the car's "part_comp" and "car_root" bodies in the process world,
+// asleep. No-op unless the type chain's car cfg has a `body` line
+// (0x4bf4e0 sets M+0xff0; -1 = no body line).
+void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
+                       Runtime::Resource *type, const std::string &params);
+// Number of CarData payloads that own car bodies (vmboot body_count check).
+int car_body_instances();
 void bind_wheel(Object *wrapper, WheelData *w);
 WheelData *wheel_data(Object *wrapper);
 // SfxTable native handle payload. No producer yet (Chassis.getSfxTable 0x4b3890
