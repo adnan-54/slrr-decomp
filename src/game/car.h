@@ -258,6 +258,10 @@ CarData *car_data(Runtime &rt, Runtime::Resource *r);
 // The `car` cfg on the record/super-record chain (same walk as car_data).
 bool load_car_cfg(Runtime &rt, Runtime::Resource *r, CfgFile *cfg,
                   const Package **pkg = nullptr);
+// The `part` cfg of an instance: its own chain, else the type record kept by
+// create_car_bodies (0x4c1f90; the instance chain does not reach the type).
+bool load_part_cfg(Runtime &rt, Runtime::Resource *r, CfgFile *cfg,
+                   const Package **pkg = nullptr);
 // 0x4c1f90 (Part__initInstance) + 0x4992e0 (Vehicle__createCar) body parts:
 // create the car's "part_comp" and "car_root" bodies in the process world,
 // asleep. No-op unless the type chain's car cfg has a `body` line

@@ -720,6 +720,7 @@ void game_init_check(Boot &boot, Checker &c)
     c.check(crank_slot && crank_slot->attached,
             "the block's slot 40 holds the crankshaft (Duhen_D18V_block.java:99)");
     int installed_parts = 0;
+    float installed_cfg_mass = 0.0f;
     {
         std::vector<Runtime::Resource *> stack;
         std::set<Runtime::Resource *> seen;
@@ -735,13 +736,20 @@ void game_init_check(Boot &boot, Checker &c)
                 Runtime::Resource *t = sh ? sh->target : nullptr;
                 if (t && seen.insert(t).second) {
                     installed_parts++;
+                    // 0x5032d0: every installed part's cfg `body` lines join the
+                    // compound. Read them from the shipped files, not the payload.
+                    CfgFile part_cfg;
+                    if (game::load_part_cfg(*rt, t, &part_cfg))
+                        for (const CfgBody &pb : part_cfg.bodies)
+                            if (pb.mass > 0.0f) installed_cfg_mass += pb.mass;
                     stack.push_back(t);
                 }
             }
         }
     }
-    std::printf("  installed parts on the car (recursive slot walk): %d\n",
-                installed_parts);
+    std::printf("  installed parts on the car (recursive slot walk): %d, "
+                "cfg body mass %.3f kg\n",
+                installed_parts, (double)installed_cfg_mass);
 
     // 0x4992e0 wheel loop + 0x5032d0 compound mass. Re-read the shipped cfg so
     // the mass comes from the file, not from the payload under test.
@@ -768,20 +776,37 @@ void game_init_check(Boot &boot, Checker &c)
             root_mass = 1.0f / car_payload->root_body->def.inv_mass;
     }
     int wheel_count = car_payload ? (int)car_payload->wheels.size() : 0;
+    float expected_root = cfg_body_mass + cfg_wheel_mass + installed_cfg_mass;
     if (wheel_count > 0) {
         const game::WheelData &w0 = car_payload->wheels[0];
         std::printf("  car mass (0x5032d0): part_comp %.3f kg, car_root %.3f kg; "
-                    "wheel 0 k %.2f bump %.2f rebound %.2f (cfg body %.3f kg, "
-                    "%d wheel(s))\n",
-                    (double)part_mass, (double)root_mass, (double)w0.spring_k,
-                    (double)w0.bump, (double)w0.rebound, (double)cfg_body_mass,
-                    cfg_wheels);
+                    "expected %.3f kg (cfg bodies %.3f + wheels %.3f + parts "
+                    "%.3f); wheel 0 k %.2f bump %.2f rebound %.2f\n",
+                    (double)part_mass, (double)root_mass, (double)expected_root,
+                    (double)cfg_body_mass, (double)cfg_wheel_mass,
+                    (double)installed_cfg_mass, (double)w0.spring_k,
+                    (double)w0.bump, (double)w0.rebound);
+    }
+    // Card 153 done-when d: the compound inertia before the drive checks.
+    if (car_payload && car_payload->root_body) {
+        Mat34 inv = car_payload->root_body->def.inv_inertia;
+        float det = inv.m[0] * (inv.m[5] * inv.m[10] - inv.m[6] * inv.m[9]) -
+                    inv.m[1] * (inv.m[4] * inv.m[10] - inv.m[6] * inv.m[8]) +
+                    inv.m[2] * (inv.m[4] * inv.m[9] - inv.m[5] * inv.m[8]);
+        if (std::isfinite(det) && std::fabs(det) > 1e-12f) {
+            Mat34 inertia{};
+            mat_inverse(&inertia, &inv);
+            std::printf("  car_root inertia diag (Ixx Iyy Izz): %.2f %.2f %.2f "
+                        "kg m^2\n",
+                        (double)inertia.m[0], (double)inertia.m[5],
+                        (double)inertia.m[10]);
+        }
     }
     c.check(have_car_cfg && std::fabs(part_mass - cfg_body_mass) < 1e-3f,
             "part_comp mass is the cfg body-line mass sum (0x5032d0)");
-    c.check(have_car_cfg &&
-                std::fabs(root_mass - (cfg_body_mass + cfg_wheel_mass)) < 1e-2f,
-            "car_root mass adds the wheelbone and sensor children (0x5032d0)");
+    c.check(have_car_cfg && std::fabs(root_mass - expected_root) < 1e-2f,
+            "car_root mass = cfg bodies + wheelbones/sensors + installed part "
+            "cfg bodies (0x5032d0)");
     c.check(have_car_cfg && wheel_count == cfg_wheels && cfg_wheels >= 4,
             "car wheel count equals the cfg type-line count (0x4992e0)");
     bool springs_ok = wheel_count > 0;
@@ -942,29 +967,49 @@ void game_init_check(Boot &boot, Checker &c)
                     "after 300 frames, vel.y %.3f, %zu contact(s)\n",
                     (double)floor_y, (double)y_before, (double)root->pos.y,
                     (double)root->vel.y, process_world().contacts.size());
+        float mass = root->def.inv_mass > 0.0f ? 1.0f / root->def.inv_mass : 0.0f;
+        float weight = mass * 9.81f;
+        // Card 153 done-when b: static share from the compound COM and the hub
+        // z; front each = W*(zr-c)/(zr-zf)/2, rear = W*(c-zf)/(zr-zf)/2.
+        float zf = 0.0f, zr = 0.0f, com_z = car_payload->com[2];
+        for (size_t i = 0; i < car_payload->wheels.size(); i++) {
+            float z = car_payload->wheels[i].hub[2];
+            if (i == 0 || z < zf) zf = z;
+            if (i == 0 || z > zr) zr = z;
+        }
+        bool shares_ok = sim && weight > 0.0f && zr - zf > 1e-3f;
         float load_sum = 0.0f;
         bool wheels_ok = sim != nullptr && !sim->wheels.empty();
         if (sim)
             for (size_t i = 0; i < sim->wheels.size(); i++) {
                 const Wheel &w = sim->wheels[i];
                 float compression = w.rest_ray() - w.ray_len;
+                bool front = i < car_payload->wheels.size() &&
+                             car_payload->wheels[i].hub[2] < 0.5f * (zf + zr);
+                float share = 0.0f;
+                if (weight > 0.0f && zr - zf > 1e-3f)
+                    share = front ? weight * (zr - com_z) / (zr - zf) / 2.0f
+                                  : weight * (com_z - zf) / (zr - zf) / 2.0f;
                 std::printf("    wheel %zu: ray_len %.3f load %.1f compression %.3f "
-                            "contact %d\n",
+                            "contact %d, static share %.1f N (%s)\n",
                             i, (double)w.ray_len, (double)w.load,
-                            (double)compression, w.contact ? 1 : 0);
+                            (double)compression, w.contact ? 1 : 0,
+                            (double)share, front ? "front" : "rear");
                 load_sum += w.load;
                 if (!w.contact || !(w.load > 0.0f) || !(compression > 0.0f))
                     wheels_ok = false;
+                if (!(share > 0.0f) || std::fabs(w.load - share) / share >= 0.10f)
+                    shares_ok = false;
             }
         c.check(wheels_ok, "every wheel rests on its spring (contact, load > 0, "
                            "compression > 0)");
-        float mass = root->def.inv_mass > 0.0f ? 1.0f / root->def.inv_mass : 0.0f;
-        float weight = mass * 9.81f;
+        c.check(shares_ok, "every wheel load is within 10% of its static share "
+                           "from the compound COM and hub z (0x5032d0)");
         char lw[128];
         snprintf(lw, sizeof lw, "spring loads %.1f N vs weight %.1f N",
                       (double)load_sum, (double)weight);
         c.check(weight > 0.0f &&
-                    std::fabs(load_sum - weight) / weight < 0.10f,
+                    std::fabs(load_sum - weight) / weight < 0.02f,
                 std::string("the car is carried by its springs (") + lw + ")");
         bool box_contact = false;
         for (const Contact &ct : process_world().contacts)

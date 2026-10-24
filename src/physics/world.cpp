@@ -5,9 +5,64 @@
 // the start state and act through every later re-integration.
 #include <math.h>
 
+#include "physics/mesh.h"
 #include "physics/physics.h"
 
-void compute_mass_props(BodyDef *def, float mass)
+namespace {
+
+// 0x508820 Poly__massProps: Mirtich volume integrals of the triangle hull in
+// doubles. Each triangle plus the origin forms a signed tetrahedron:
+//   T0 = int dV, T1[k] = int x_k dV, T2[k] = int x_k^2 dV,
+//   TP = int (xy, yz, zx) dV.
+bool poly_integrals(const CollisionMesh &m, double *volume, double t1[3],
+                    double t2[3], double tp[3], double centroid[3])
+{
+    double T0 = 0.0;
+    double T1[3] = {0.0, 0.0, 0.0};
+    double T2[3] = {0.0, 0.0, 0.0};
+    double TP[3] = {0.0, 0.0, 0.0};
+    for (const CollisionMesh::Triangle &t : m.triangles) {
+        const Vec3 &a = m.vertices[t.v[0]];
+        const Vec3 &b = m.vertices[t.v[1]];
+        const Vec3 &c = m.vertices[t.v[2]];
+        double v = (a.x * ((double)b.y * c.z - (double)b.z * c.y) +
+                    a.y * ((double)b.z * c.x - (double)b.x * c.z) +
+                    a.z * ((double)b.x * c.y - (double)b.y * c.x)) / 6.0;
+        if (v == 0.0) continue;
+        T0 += v;
+        T1[0] += v * (a.x + b.x + c.x) / 4.0;
+        T1[1] += v * (a.y + b.y + c.y) / 4.0;
+        T1[2] += v * (a.z + b.z + c.z) / 4.0;
+        T2[0] += v * ((double)a.x * a.x + (double)b.x * b.x + (double)c.x * c.x +
+                      (double)a.x * b.x + (double)a.x * c.x + (double)b.x * c.x) / 10.0;
+        T2[1] += v * ((double)a.y * a.y + (double)b.y * b.y + (double)c.y * c.y +
+                      (double)a.y * b.y + (double)a.y * c.y + (double)b.y * c.y) / 10.0;
+        T2[2] += v * ((double)a.z * a.z + (double)b.z * b.z + (double)c.z * c.z +
+                      (double)a.z * b.z + (double)a.z * c.z + (double)b.z * c.z) / 10.0;
+        TP[0] += v * (((double)a.x * a.y + (double)b.x * b.y + (double)c.x * c.y) / 10.0 +
+                      ((double)a.x * b.y + (double)b.x * a.y + (double)a.x * c.y +
+                       (double)c.x * a.y + (double)b.x * c.y + (double)c.x * b.y) / 20.0);
+        TP[1] += v * (((double)a.y * a.z + (double)b.y * b.z + (double)c.y * c.z) / 10.0 +
+                      ((double)a.y * b.z + (double)b.y * a.z + (double)a.y * c.z +
+                       (double)c.y * a.z + (double)b.y * c.z + (double)c.y * b.z) / 20.0);
+        TP[2] += v * (((double)a.z * a.x + (double)b.z * b.x + (double)c.z * c.x) / 10.0 +
+                      ((double)a.z * b.x + (double)b.z * a.x + (double)a.z * c.x +
+                       (double)c.z * a.x + (double)b.z * c.x + (double)c.z * b.x) / 20.0);
+    }
+    if (fabs(T0) < 1e-12) return false;
+    *volume = T0;
+    for (int k = 0; k < 3; k++) {
+        t1[k] = T1[k];
+        t2[k] = T2[k];
+        tp[k] = TP[k];
+        centroid[k] = T1[k] / T0;
+    }
+    return true;
+}
+
+}  // namespace
+
+void compute_mass_props(BodyDef *def, float mass, Vec3 *center)
 {
     def->inv_mass = mass > 0.0f ? 1.0f / mass : 0.0f;
     def->inv_inertia = Mat34{};
@@ -43,9 +98,38 @@ void compute_mass_props(BodyDef *def, float mass)
         }
         break;
     }
+    case SHAPE_MESH: {
+        // Poly__massProps 0x508d20: unit-density tensor about the centroid, then
+        // inverse and scale by invMass (the caller does the 1/m).
+        if (!s.mesh || !(mass > 0.0f)) break;
+        double vol, I1[3], I2[3], IP[3], c[3];
+        if (!poly_integrals(*s.mesh, &vol, I1, I2, IP, c)) break;
+        if (center) *center = Vec3{(float)c[0], (float)c[1], (float)c[2]};
+        double cx = c[0], cy = c[1], cz = c[2];
+        double i00 = (I2[1] + I2[2]) / vol - (cy * cy + cz * cz);
+        double i11 = (I2[0] + I2[2]) / vol - (cx * cx + cz * cz);
+        double i22 = (I2[0] + I2[1]) / vol - (cx * cx + cy * cy);
+        double i01 = -IP[0] / vol + cx * cy;
+        double i12 = -IP[1] / vol + cy * cz;
+        double i02 = -IP[2] / vol + cz * cx;
+        Mat34 inertia{};
+        inertia.m[0] = (float)i00;
+        inertia.m[1] = inertia.m[4] = (float)i01;
+        inertia.m[2] = inertia.m[8] = (float)i02;
+        inertia.m[5] = (float)i11;
+        inertia.m[6] = inertia.m[9] = (float)i12;
+        inertia.m[10] = (float)i22;
+        // mat_inverse 0x566830 has no singular guard; a flat hull stays static.
+        double det = i00 * (i11 * i22 - i12 * i12) - i01 * (i01 * i22 - i12 * i02) +
+                     i02 * (i01 * i12 - i11 * i02);
+        if (fabs(det) < 1e-9) break;
+        Mat34 inv{};
+        mat_inverse(&inv, &inertia);
+        float k = 1.0f / mass;
+        for (int i = 0; i < 12; i++) def->inv_inertia.m[i] = inv.m[i] * k;
+        break;
+    }
     default:
-        // TODO(notes/11 §1): mesh mass props need Poly__massProps (Mirtich
-        // volume integrals, 0x508d20); mesh bodies are static for now.
         break;
     }
 }

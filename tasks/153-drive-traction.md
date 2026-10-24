@@ -1,6 +1,6 @@
 ---
 id: 153
-status: todo
+status: implemented
 branch: card/153
 depends: [152]
 ---
@@ -94,3 +94,39 @@ No unit tests or synthetic inputs; cite exe addresses; no tuning constants; do n
 vehicle.cpp.
 
 ## Result
+
+Implemented on `card/153`. `make -C src check` (its 1.5 GB / 300 s
+vmboot cap): **96 checks, 0 failures**, 0 failed threads.
+
+- `compute_mass_props(BodyDef*, float, Vec3 *center)` (`physics/world.cpp`): SHAPE_MESH
+  runs the 0x508d20 block over the hull with the 0x508820 Mirtich integrals in doubles
+  (T0/T1/T2/TP, centroid, I about the centroid, `inverse(I)/m`); the centroid is the out
+  param because src keeps meshes shared.
+- `game::rebuild_compound` (`game/car.cpp`, anonymous ns): car cfg body lines + per-wheel
+  wheelbone sphere (`type` radius) and 0.01 kg sensor (`free_len/2`, r 0.05) + every
+  installed part (`car->children` recursive, `PartData::installed > 0`) with its cfg body
+  lines at the 0x4c1a10 pose; 0x5032d0 mass/COM/I (R_c I_c R_c^T + parallel axis); root
+  `inv_mass`/`inv_inertia`/drags, pose moved by `R*(com_new - com_old)`, `car->com`,
+  `sim->wheels[i].mount = hub - com`. Called by `create_car_bodies` (replaces the
+  point-mass block) and by `part_attach` after the 0x4c7d20 car ref.
+- `load_part_cfg` exposed (`car.h`): instance chain, else `PartData::type` (0x4c1f90).
+- vmboot: expected root mass adds the installed parts' cfg body masses, 0.01 kg tolerance;
+  per-wheel static share check (10%) and load sum (2%); prints mass breakdown, part count,
+  inertia diag, loads+shares.
+
+Measured (SunStrip 1.8 DVC, A1Ring soup): 76 installed parts, root **1280.294 kg**
+(742.297 cfg + 40.040 wheels + 497.957 parts); I diag 1471.43 / 1666.24 / 333.07 kg m^2;
+loads front 3084.2/3249.0 (share 3169.7), rear 3056.3/3171.0 (share 3110.2), sum 12560.5 N
+vs weight 12559.7 N; |vel.y| 0.079; Up held 1.75 m/s, driven kappa 0.494.
+
+Doubts:
+- 76 parts / 497.957 kg vs the RE tally 53 / 460.1 kg: the recursive slot walk includes
+  nested engine parts (~38 kg); the card's ~1242 kg figure was direct children only. The
+  flat sum is equivalent to the exe's nested 0x5032d0 compounds.
+- Roll inertia 333 kg m^2, not the card's ~30 (that was the old point-mass value; 333 is
+  m*W^2/12 for this car).
+- Part poses ignore the per-part COM re-centring 0x5032d0 applies to body frames; nested
+  part positions may be off by their own com (few cm). `R_P` in the slot subtraction is
+  INVENTED (card); the first flags&1 slot is taken as "my committed slot".
+- Wheelbone radius is the `type` line's 3rd value (0.315); the numeric-resource shape token
+  and the mesh hull's closed-surface assumption are untested/untraced (shortcut comments).

@@ -110,9 +110,12 @@ struct BodyDef {
     uint32_t flags = 0;          // +0xb4; bit2 = no integration
 };
 
-// Fills inv_mass/inv_inertia/drag from the shape (notes/11 §1 mass formulas).
-// Mesh kinds leave the inertia at zero (Poly__massProps is not ported).
-void compute_mass_props(BodyDef *def, float mass);
+// Fills inv_mass/inv_inertia/drag from a mass and the shape (notes/11 §1 mass
+// formulas). SHAPE_MESH runs Poly__massProps 0x508d20 (Mirtich integrals
+// 0x508820) over the hull; the exe shifts the hull vertices to the centroid and
+// returns it, so *center receives that offset (callers keep the mesh shared and
+// move the body instead). Unresolved shapes stay a point mass (zero inertia).
+void compute_mass_props(BodyDef *def, float mass, Vec3 *center = nullptr);
 
 struct RigidBody {
     BodyDef def;

@@ -15,7 +15,9 @@
 #include <utility>
 
 #include "input/controller.h"
+#include "mesh/scx.h"
 #include "parts/cfg.h"
+#include "physics/mesh.h"
 #include "resource/manager.h"
 #include "script/natives.h"
 #include "script/vm.h"
@@ -442,6 +444,236 @@ int32_t install_search(Runtime &rt, Runtime::Resource *P,
     return 0;
 }
 
+// ---- compound mass (0x5032d0, card 153) ------------------------------------
+
+Mat34 identity_rot()
+{
+    Mat34 m{};
+    m.m[0] = m.m[5] = m.m[10] = 1.0f;
+    return m;
+}
+
+// mat_inverse 0x566830 has no singular guard; no shape props means point mass.
+bool invert3(const Mat34 &m, Mat34 *out)
+{
+    float det = m.m[0] * (m.m[5] * m.m[10] - m.m[6] * m.m[9]) -
+                m.m[1] * (m.m[4] * m.m[10] - m.m[6] * m.m[8]) +
+                m.m[2] * (m.m[4] * m.m[9] - m.m[5] * m.m[8]);
+    if (!isfinite(det) || !(fabsf(det) > 1e-12f)) return false;
+    mat_inverse(out, &m);
+    return true;
+}
+
+// The `.scx` hull of a cfg body line. Cached: every install rebuilds the whole
+// compound and re-reads every installed part.
+std::shared_ptr<const CollisionMesh> body_hull(const std::string &path)
+{
+    static std::map<std::string, std::shared_ptr<const CollisionMesh>> cache;
+    auto it = cache.find(path);
+    if (it != cache.end()) return it->second;
+    std::string p = path;
+    for (char &ch : p)
+        if (ch == '\\') ch = '/';
+    mesh::Mesh m;
+    std::string err;
+    std::shared_ptr<const CollisionMesh> out;
+    if (mesh::load(p.c_str(), &m, &err)) out = build_collision_mesh(m);
+    cache[path] = out;
+    return out;
+}
+
+// 0x4bf4d0 body line shape: the primitive branches use the createBox sizes; any
+// other token is the kind-6 .scx hull.
+void body_line_shape(const CfgBody &b, Shape *shape)
+{
+    shape->type = SHAPE_NONE;
+    if (b.shape == "ball" || b.shape == "sphere") {
+        shape->type = SHAPE_SPHERE;
+        if (b.tail_count > 0) shape->radius = b.tail[0];
+    } else if (b.shape == "box") {
+        shape->type = SHAPE_BOX;
+        shape->half_extents = Vec3{b.tail[0], b.tail[1], b.tail[2]};
+    } else if (b.shape == "rodx" || b.shape == "rody" || b.shape == "rodz") {
+        shape->type = SHAPE_CAPSULE_X + (b.shape == "rody" ? 1 : b.shape == "rodz" ? 2 : 0);
+        if (b.tail_count > 0) shape->half_length = b.tail[0];
+        if (b.tail_count > 1) shape->radius = b.tail[1];
+    } else {
+        // shortcut: the numeric-resource form of the shape token is not
+        // resolved; the shipped car/part cfgs use .scx paths and primitives.
+        shape->mesh = body_hull(b.shape);
+        if (shape->mesh) shape->type = SHAPE_MESH;
+    }
+}
+
+struct CompoundChild {
+    float mass = 0.0f;
+    Vec3 pos{0.0f, 0.0f, 0.0f};  // car frame
+    Mat34 rot{};                 // child -> car frame
+    Mat34 inertia{};             // about the child's own COM, child frame
+};
+
+// 0x5032d0 child: the body's mass and I_c (def+0x60 = inverse of its inv
+// inertia); the 0x508d20 centroid offset moves the child, not the mesh.
+void add_compound_child(std::vector<CompoundChild> &out, float mass, const Shape &shape,
+                        const Mat34 &rot, Vec3 pos)
+{
+    if (!(mass > 0.0f)) return;
+    BodyDef def;
+    def.shape = shape;
+    Vec3 center{0.0f, 0.0f, 0.0f};
+    compute_mass_props(&def, mass, &center);
+    CompoundChild c;
+    c.mass = mass;
+    c.rot = rot;
+    c.pos = pos + mat_vec(rot, center);
+    if (!invert3(def.inv_inertia, &c.inertia)) c.inertia = Mat34{};
+    out.push_back(c);
+}
+
+// Every `body` line of cfg, whose frame sits at (rot, pos) in the car frame.
+void add_body_lines(std::vector<CompoundChild> &out, const CfgFile &cfg,
+                    const Mat34 &rot, Vec3 pos)
+{
+    for (const CfgBody &b : cfg.bodies) {
+        if (!(b.mass > 0.0f)) continue;
+        float ang[3] = {b.xform.rx, b.xform.ry, b.xform.rz};
+        Mat34 lr;
+        euler_to_mat(&lr, ang);
+        Mat34 cr;
+        mat_mul(&cr, &rot, &lr);
+        Vec3 cp = pos + mat_vec(rot, Vec3{b.xform.px, b.xform.py, b.xform.pz});
+        Shape shape;
+        body_line_shape(b, &shape);
+        add_compound_child(out, b.mass, shape, cr, cp);
+    }
+}
+
+// 0x4c1a10: car-space pose of part r, walking the committed slot up to the car
+// resource (the chassis has p = 0, R = I).
+// INVENTED: depth guard; the committed install graph is acyclic.
+void part_pose(Runtime &rt, Runtime::Resource *r, Mat34 *rot, Vec3 *pos, int depth)
+{
+    *rot = identity_rot();
+    *pos = Vec3{0.0f, 0.0f, 0.0f};
+    if (!r || depth > 64 || g_cars.count(r)) return;
+    auto pit = g_parts.find(r);
+    if (pit == g_parts.end()) return;
+    Slot *ms = nullptr;
+    for (Slot &s : pit->second->slots)
+        if ((s.flags & 1u) && s.attached) {
+            ms = &s;
+            break;
+        }
+    if (!ms) return;
+    Runtime::Resource *t = slot_part(rt, ms->attached);
+    Mat34 rT;
+    Vec3 pT;
+    part_pose(rt, t, &rT, &pT, depth + 1);
+    auto tit = g_parts.find(t);
+    Slot *ts = tit == g_parts.end() ? nullptr : slot_by_part(tit->second.get(), ms->mate_id);
+    if (!ts) return;
+    Mat34 mst, tmp;
+    mat_transpose(&mst, &ms->rot);
+    mat_mul(&tmp, &rT, &ts->rot);
+    mat_mul(rot, &tmp, &mst);
+    // INVENTED: the subtraction matrix (R_P vs R_T*Ts.rot) is hidden inside
+    // 0x567020; the card uses R_P. ms is the first committed slot.
+    *pos = pT + mat_vec(rT, Vec3{ts->pos[0], ts->pos[1], ts->pos[2]}) -
+           mat_vec(*rot, Vec3{ms->pos[0], ms->pos[1], ms->pos[2]});
+}
+
+// 0x5032d0 PhysBody__updateCompoundMass on the car: part_comp's children (car
+// cfg body lines) and car_root's children (installed parts, wheelbone spheres
+// and 0.01 kg sensors). Also 0x4c7d20's tail after every commitInstall.
+void rebuild_compound(Runtime &rt, Runtime::Resource *carres)
+{
+    auto cit = g_cars.find(carres);
+    if (cit == g_cars.end()) return;
+    CarData *car = cit->second.get();
+    if (!car->root_body) return;
+
+    std::vector<CompoundChild> children;
+    CfgFile car_cfg;
+    if (load_car_cfg(rt, carres, &car_cfg, nullptr))
+        add_body_lines(children, car_cfg, identity_rot(), Vec3{0.0f, 0.0f, 0.0f});
+    for (const WheelData &w : car->wheels) {
+        Vec3 hub{w.hub[0], w.hub[1], w.hub[2]};
+        // cfg `type`: "<bone mass> sphere <radius>" (fill_car reads the 3rd value).
+        Shape bone;
+        bone.type = SHAPE_SPHERE;
+        bone.radius = w.radius;
+        add_compound_child(children, w.bone_mass, bone, identity_rot(), hub);
+        Shape sensor;  // 0x4f3f10 createBox(0.01, 3, L/2, 0.05), L = W+0x5c
+        sensor.type = SHAPE_CAPSULE_Y;
+        sensor.half_length = 0.5f * w.free_len;
+        sensor.radius = 0.05f;
+        add_compound_child(children, 0.01f, sensor, identity_rot(),
+                           hub - Vec3{0.0f, 0.5f * w.free_len, 0.0f});
+    }
+    // INVENTED: every installed part joins car_root; 0x4c7d20's getInfo 0x2f
+    // slot->body mapping is not traced (0x5032d0 recurses to car_root anyway).
+    std::set<Runtime::Resource *> seen;
+    std::vector<Runtime::Resource *> stack(carres->children.begin(), carres->children.end());
+    while (!stack.empty()) {
+        Runtime::Resource *r = stack.back();
+        stack.pop_back();
+        if (!seen.insert(r).second) continue;
+        for (Runtime::Resource *child : r->children) stack.push_back(child);
+        auto pit = g_parts.find(r);
+        if (pit == g_parts.end() || pit->second->installed <= 0) continue;
+        CfgFile part_cfg;
+        if (!load_part_cfg(rt, r, &part_cfg)) continue;
+        Mat34 rot;
+        Vec3 pos;
+        part_pose(rt, r, &rot, &pos, 0);
+        add_body_lines(children, part_cfg, rot, pos);
+    }
+
+    float mass = 0.0f;
+    Vec3 com{0.0f, 0.0f, 0.0f};
+    for (const CompoundChild &c : children) {
+        mass += c.mass;
+        com += c.pos * c.mass;
+    }
+    RigidBody *root = car->root_body;
+    if (mass > 0.0f) {
+        com = com * (1.0f / mass);
+        Mat34 inertia{};
+        for (const CompoundChild &c : children) {
+            Mat34 ct, term, tmp;
+            mat_transpose(&ct, &c.rot);
+            mat_mul(&term, &c.rot, &c.inertia);
+            mat_mul(&tmp, &term, &ct);
+            for (int i = 0; i < 12; i++) inertia.m[i] += tmp.m[i];
+            add_point_inertia(&inertia, c.mass, c.pos - com);
+        }
+        // 0x5032d0: the body pose moves to the COM, the child offsets lose it;
+        // car_root's local frame is its COM.
+        Vec3 old{car->com[0], car->com[1], car->com[2]};
+        root->pos += mat_vec(root->rotation(), com - old);
+        Mat34 inv{};
+        if (!invert3(inertia, &inv)) inv = Mat34{};
+        root->def.inv_inertia = inv;
+        root->def.inv_mass = 1.0f / mass;
+        root->def.linear_drag = -0.005f * mass;
+        root->def.angular_drag = -0.01f * mass;
+        car->com[0] = com.x;
+        car->com[1] = com.y;
+        car->com[2] = com.z;
+    } else {
+        root->def.inv_mass = 0.0f;
+        root->def.flags |= 4u;  // static
+    }
+    // 0x5032d0 re-centres the children; the sim wheels are src's children.
+    Car *sim = car->sim.get();
+    if (sim && sim->wheels.size() == car->wheels.size())
+        for (size_t i = 0; i < sim->wheels.size(); i++) {
+            const WheelData &w = car->wheels[i];
+            sim->wheels[i].mount = Vec3{w.hub[0] - com.x, w.hub[1] - com.y,
+                                        w.hub[2] - com.z};
+        }
+}
+
 // 0x4cb1d0 + 0x4c7d20 (bolts = 0, so the install commits at once).
 int part_attach(Runtime &rt, Runtime::Resource *P, int32_t my_slot,
                 Runtime::Resource *tref, int32_t t_slot, Runtime::Resource *dest)
@@ -476,6 +708,15 @@ int part_attach(Runtime &rt, Runtime::Resource *P, int32_t my_slot,
     } else {
         pp->car_ref = tp->car_ref;
         pp->car_id = tp->car_id;
+    }
+    // 0x4c7d20 physics tail: 0x501d00/0x4f7b20 put the part body under the
+    // target and 0x5032d0 re-sums the compound through car_root.
+    // shortcut: the exe wakes the two roots and re-sleeps car_root when it was
+    // asleep; shipped installs happen on a sleeping car and only touch defs.
+    if (pp->car_ref) {
+        auto ci = g_cars.find(pp->car_ref);
+        if (ci != g_cars.end() && ci->second->root_body)
+            rebuild_compound(rt, pp->car_ref);
     }
     // 0x47dd50: script callback Part.install() (Part.java:707).
     if (pobj) {
@@ -725,6 +966,19 @@ bool load_car_cfg(Runtime &rt, Runtime::Resource *r, CfgFile *cfg,
     return load_native_cfg(rt, it->second->cfg_resource, "car", cfg, pkg);
 }
 
+bool load_part_cfg(Runtime &rt, Runtime::Resource *r, CfgFile *cfg,
+                   const Package **pkg)
+{
+    if (!r) return false;
+    if (load_native_cfg(rt, r, "part", cfg, pkg)) return true;
+    // 0x4c1f90: the instance's chain does not reach its type record, so the
+    // type create_car_bodies kept on the payload is the fallback.
+    if (g_rt != &rt) return false;
+    auto it = g_parts.find(r);
+    if (it == g_parts.end() || !it->second->type) return false;
+    return load_native_cfg(rt, it->second->type, "part", cfg, pkg);
+}
+
 // 0x4c1f90 Part__initInstance (body part) + 0x4992e0 Vehicle__createCar
 // (body part). The cfg `body` line handler 0x4bf4e0 sets M+0xff0; no body line
 // (-1) means neither body exists.
@@ -832,12 +1086,12 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
         world.attach_child(root, cr);      // 0x4f7b20
     }
     // 0x5032d0 PhysBody__updateCompoundMass on part_comp, then through the
-    // parent link on car_root. The body's own shape mass is not counted: only
-    // the cfg `body` children, the per-wheel wheelbone child and the 0.01 kg
-    // trigger-sensor capsule (0x4f3f10).
-    // shortcut: no child bodies exist yet, so the children's own shape inertia
-    // and the COM re-centring of child offsets/pose are not ported; the mass
-    // and the point-mass parallel-axis terms are summed from the cfg records.
+    // parent link on car_root. part_comp's own shape mass is not counted: the
+    // compound is the cfg `body` children, the per-wheel wheelbone child, the
+    // 0.01 kg trigger-sensor capsule (0x4f3f10) and every installed part, each
+    // with its own shape inertia. part_comp itself keeps the cfg body-line sum
+    // because 0x4992e0 fixes M+0x1f34 (the spring rate) from it before any part
+    // is installed (notes/09).
     float part_mass = 0.0f;
     for (const CfgBody &b : cfg.bodies)
         if (b.mass > 0.0f) part_mass += b.mass;
@@ -849,41 +1103,7 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
         car->chassis_body->def.inv_mass = 0.0f;
         car->chassis_body->def.flags |= 4u;  // static
     }
-    float mass = part_mass;
-    Vec3 com{0.0f, 0.0f, 0.0f};
-    for (const CfgBody &b : cfg.bodies) {
-        if (b.mass <= 0.0f) continue;
-        com += Vec3{b.xform.px, b.xform.py, b.xform.pz} * b.mass;
-    }
-    for (const WheelData &w : car->wheels) {
-        float m = (w.bone_mass > 0.0f ? w.bone_mass : 0.0f) + 0.01f;
-        mass += m;
-        com += Vec3{w.hub[0], w.hub[1], w.hub[2]} * m;
-    }
-    if (mass > 0.0f) com = com * (1.0f / mass);
-    Mat34 inertia{};
-    for (const CfgBody &b : cfg.bodies)
-        if (b.mass > 0.0f)
-            add_point_inertia(&inertia, b.mass,
-                              Vec3{b.xform.px, b.xform.py, b.xform.pz} - com);
-    for (const WheelData &w : car->wheels) {
-        float m = (w.bone_mass > 0.0f ? w.bone_mass : 0.0f) + 0.01f;
-        add_point_inertia(&inertia, m, Vec3{w.hub[0], w.hub[1], w.hub[2]} - com);
-    }
-    if (car->root_body) {
-        if (mass > 0.0f) {
-            car->root_body->def.inv_mass = 1.0f / mass;
-            car->root_body->def.linear_drag = -0.005f * mass;
-            car->root_body->def.angular_drag = -0.01f * mass;
-            mat_inverse(&car->root_body->def.inv_inertia, &inertia);
-        } else {
-            car->root_body->def.inv_mass = 0.0f;
-            car->root_body->def.flags |= 4u;  // static
-        }
-    }
-    car->com[0] = com.x;
-    car->com[1] = com.y;
-    car->com[2] = com.z;
+    rebuild_compound(rt, inst);
 
     // Wheel records -> simulation wheels. mount = W+0x78 hub in car_root space;
     // the suspension lengths are W+0x50/54/58 (rest_ray etc. add the radius at
@@ -898,7 +1118,8 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
         s.friction_eff = w.friction_eff;
         s.rolling_resistance = w.roll_res;
         for (int k = 0; k < kPacejkaSlots; k++) s.pacejka.p[k] = w.pacejka[k];
-        s.mount = Vec3{w.hub[0] - com.x, w.hub[1] - com.y, w.hub[2] - com.z};
+        s.mount = Vec3{w.hub[0] - car->com[0], w.hub[1] - car->com[1],
+                       w.hub[2] - car->com[2]};
         s.rest_len = w.rest_len;
         s.max_len = w.max_len;
         s.min_len = w.min_len;
