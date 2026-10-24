@@ -113,12 +113,6 @@ float Car::split_drive(float shaft_value, float *wheel_value) const
     return D;
 }
 
-void Car::step(World &world, float dt)
-{
-    update(dt);
-    world.step(dt);
-}
-
 void Car::update(float dt)
 {
     if (dt < 1e-4f)
@@ -127,7 +121,7 @@ void Car::update(float dt)
     update_suspension(dt);
     update_engine_and_drivetrain(dt);
     update_tyre_forces(dt);
-    apply_contact_impulses(dt);
+    apply_contact_forces();
 }
 
 // §0-§5 suspension solver and the spring force it applies (notes/09).
@@ -160,9 +154,9 @@ void Car::update_suspension(float dt)
             // 0x4fd110 crossings of the sensor segment 0x4f3f10 (mount - L .. mount)
             // -> 0x4f3d70: nearest crossing no more than r above the previous
             // length; its stored PHYS face normal is the contact normal.
-            // INVENTED: queried at the start of this tick instead of the previous
-            // sub-step's collide pass (same pose if that runs after integrate;
-            // UNRESOLVED, notes/19 §7). Equal d2 ties follow the AABB tree, not
+            // Hit on the previous step's final pose = the pose 0x4fc610's collide
+            // pass saw (notes/08 H); INVENTED: differs only after an in-loop
+            // resolveImpacts, and equal d2 ties follow the AABB tree rather than
             // the exe's node face order.
             std::vector<SegmentCross> hits;
             mesh_segment_cross(*cm, ground->pose(), origin - up * w.sensor_len, origin,
@@ -526,9 +520,9 @@ void Car::update_tyre_forces(float dt)
     }
 }
 
-void Car::apply_contact_impulses(float dt)
+void Car::apply_contact_forces()
 {
     for (const PendingForce &p : pending_)
-        body.apply_impulse_at(p.force * dt, p.point);
+        body.apply_force_at(p.force, p.point); // 0x504e70 / 0x5051e0
     pending_.clear();
 }

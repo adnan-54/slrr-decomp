@@ -1,6 +1,6 @@
 ---
 id: 158
-status: todo
+status: implemented
 branch: card/158
 depends: [157]
 ---
@@ -75,3 +75,20 @@ callees, no vmboot scenario where the box touches the ground), control callbacks
 0x502530, finishContacts 0x4fa900.
 
 ## Result
+Done. `World::drive` (0x47be30 slot) is called from `World::step` after the force
+pass/statics snapshot and before the first `update_contacts`/integrate; advance_sim
+installs `game::drive_cars` once (no more pre-step call). Tyre/spring forces go
+through `apply_force_at` (0x504e70/0x5051e0), `apply_contact_impulses` renamed
+`apply_contact_forces`, unused `Car::step` deleted. Both drive_cars INVENTED
+markers removed; the 157 hit-timing note now says the hit uses the previous step's
+final pose (= the 0x4fc610 pose) and keeps an INVENTED tag for in-loop
+resolveImpacts + equal-d2 tie order.
+
+`make -C src clean; make -C src -j4 check`: PASSED (105 checks, 0 failures).
+vmboot (capped 1 GB / 60 s):
+- drive hook: 300 calls with the car awake == 300 world steps with the car awake;
+  0 vel / 0 momentum bitwise changes (new checks).
+- settle loads 3069.3 / 3260.1 / 3097.9 / 3133.6 N (sum 12560.9 vs weight 12559.7,
+  0.01%); sensor crossings 1 per wheel at ray_len 0.5402-0.5434, PHYS normals,
+  0 gate rejections; 0 contacts on car_root/part_comp; |vel.y| 0.000.
+- auto drive unchanged: max gear 5, final speed 103.85 m/s vs v1 12.42.

@@ -201,15 +201,15 @@ struct Car {
     // D = sum |share|. Returns D. Used by the clutch coupling and tests.
     float split_drive(float shaft_value, float *wheel_value) const;
 
-    // Force pass, then one physics::World step (notes/09 §1-§6).
-    void step(World &world, float dt);
+    // Force pass; the physics step calls this between its own force pass and
+    // integrate (notes/09 §1-§6).
     void update(float dt); // exposed for tests; does not advance the world
 
 private:
     void update_suspension(float dt);
     void update_engine_and_drivetrain(float dt);
     void update_tyre_forces(float dt);
-    void apply_contact_impulses(float dt);
+    void apply_contact_forces();
 
     struct PendingForce {
         Vec3 force{0.0f, 0.0f, 0.0f};

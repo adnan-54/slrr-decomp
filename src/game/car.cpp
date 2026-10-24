@@ -1336,11 +1336,10 @@ int player_command(Runtime &rt, Runtime::Resource *player, uint32_t code,
 
 // 0x47be30 Game__runDriveCallbacks -> 0x47be90 -> type_car vf12
 // Vehicle__update 0x49c8e0, once per physics sub-step.
-// INVENTED: the call runs before World::step's force pass instead of between
-// runControllers and integrate (src integrates from the pre-force snapshot, so
-// the impulses must land first); sleeping roots are skipped (the exe's sensors
-// never touch the ground while the root sleeps, so the spring retires and no
-// force is applied, 0x4f2d70 step 1). The ray target is the map groundbody.
+// Called by World::step between the force pass and integrate (0x502060 C);
+// sleeping roots are skipped (the exe's sensors never touch the ground while
+// the root sleeps, so the spring retires and no force is applied, 0x4f2d70
+// step 1). The ray target is the map groundbody.
 void drive_cars(float dt)
 {
     RigidBody *ground = nullptr;

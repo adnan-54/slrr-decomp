@@ -758,6 +758,11 @@ int World::step(float dt)
         s.start = BodyState{b.pos, b.vel, b.angular_momentum, b.rot};
     }
 
+    // 0x502060 C: drive callbacks run inside the step, after the force pass
+    // (A) and the controllers (B), before the first integrate (D). Their
+    // forces land in the accumulators RK4 holds constant for the whole step.
+    if (drive) drive(h);
+
     update_contacts(*this, true);
 
     // 0x502060: integrate every root once, then sub-iterate. The exe skips

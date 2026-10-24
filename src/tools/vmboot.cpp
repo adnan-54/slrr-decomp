@@ -263,6 +263,38 @@ uint32_t float_bits(float f)
     return u;
 }
 
+// Card 158: 0x47be30 (World::step C) runs once per executed 0x502060 step.
+// The probe wraps the world's drive slot to see that call site; it forwards to
+// game::drive_cars and checks the hook only accumulates force/torque
+// (0x504e70/0x5051e0): car_root vel and angular_momentum stay bitwise equal.
+struct DriveProbe {
+    RigidBody *root = nullptr;
+    unsigned calls_awake = 0;
+    unsigned bad_velocity = 0;
+    unsigned bad_momentum = 0;
+};
+DriveProbe g_drive_probe;
+
+void probe_drive(float dt)
+{
+    DriveProbe &p = g_drive_probe;
+    RigidBody *root = p.root;
+    Vec3 vel = root ? root->vel : Vec3{0.0f, 0.0f, 0.0f};
+    Vec3 mom = root ? root->angular_momentum : Vec3{0.0f, 0.0f, 0.0f};
+    bool awake = root && !root->asleep;
+    game::drive_cars(dt);
+    if (!root) return;
+    if (awake) p.calls_awake++;
+    if (float_bits(root->vel.x) != float_bits(vel.x) ||
+        float_bits(root->vel.y) != float_bits(vel.y) ||
+        float_bits(root->vel.z) != float_bits(vel.z))
+        p.bad_velocity++;
+    if (float_bits(root->angular_momentum.x) != float_bits(mom.x) ||
+        float_bits(root->angular_momentum.y) != float_bits(mom.y) ||
+        float_bits(root->angular_momentum.z) != float_bits(mom.z))
+        p.bad_momentum++;
+}
+
 const ClassUnit *load_extra(Boot &boot, const std::string &rel, const std::string &cls,
                             std::string *err)
 {
@@ -444,6 +476,9 @@ void game_init_check(Boot &boot, Checker &c)
     // CMD_RACE -> freerideSetup() + java.game.Track.
     const int kTestDriveCmd = 18300, kRaceCmd = 20000;
     FrameLoop loop(0);
+    // Card 158: sit on the world's drive slot (0x502060 C); advance_sim only
+    // installs the default when the slot is empty.
+    process_world().drive = probe_drive;
     for (int i = 1; i < kPress; i++) loop.frame(i * 16);
     int show_before = -1, seek_before = -1;
     std::string perr;
@@ -983,7 +1018,36 @@ void game_init_check(Boot &boot, Checker &c)
         unsigned rejects_before = gate_rejects(car_payload->sim.get());
         boot.runtime()->queue_event(car_res, nullptr, 0x10,
                                     Value::make_str("wakeup"));
-        for (int i = kFrames + 1; i <= kFrames + 300; i++) loop.frame(i * 16);
+        // Card 158 checks over the 300 settle frames: the drive hook fires once
+        // per executed step with the car awake (0x47be30), and it leaves the
+        // body velocities untouched (forces only, 0x504e70/0x5051e0).
+        g_drive_probe.root = root;
+        const unsigned awake_calls0 = g_drive_probe.calls_awake;
+        const unsigned bad_vel0 = g_drive_probe.bad_velocity;
+        const unsigned bad_mom0 = g_drive_probe.bad_momentum;
+        unsigned awake_steps = 0;
+        for (int i = kFrames + 1; i <= kFrames + 300; i++) {
+            // One 16 ms frame executes exactly one world step here; the car is
+            // woken by the queued event at the end of the first frame.
+            bool awake = !root->asleep;
+            float t0 = process_world().time;
+            loop.frame(i * 16);
+            if (awake && process_world().time > t0) awake_steps++;
+        }
+        unsigned awake_calls = g_drive_probe.calls_awake - awake_calls0;
+        unsigned bad_vel = g_drive_probe.bad_velocity - bad_vel0;
+        unsigned bad_mom = g_drive_probe.bad_momentum - bad_mom0;
+        std::printf("  drive hook (0x47be30): %u call(s) with the car awake, "
+                    "%u world step(s) with the car awake\n",
+                    awake_calls, awake_steps);
+        c.check(awake_calls == awake_steps,
+                "the drive hook runs once per executed 0x502060 step (" +
+                    std::to_string(awake_calls) + " call(s), " +
+                    std::to_string(awake_steps) + " step(s))");
+        c.check(bad_vel == 0 && bad_mom == 0,
+                "the drive hook only accumulates force/torque (vel/momentum "
+                "bitwise equal, " + std::to_string(bad_vel) + " vel / " +
+                    std::to_string(bad_mom) + " momentum change(s))");
         unsigned settle_rejects =
             gate_rejects(car_payload->sim.get()) - rejects_before;
         bool awake = false;

@@ -220,6 +220,8 @@ struct World {
     std::vector<RigidBody *> statics;
     int body_count = 0;                // w+0x54, incremented by add_body
     std::vector<Contact> contacts;    // world+0x1d8
+    // 0x502060 order A-D: apply forces, controllers, drive callbacks, integrate.
+    void (*drive)(float dt) = nullptr; // 0x47be30 Game__runDriveCallbacks
     int last_iterations = 0;
     unsigned unsupported_pairs = 0;   // pairs with a TODO shape kind, no contacts
 

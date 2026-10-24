@@ -7647,6 +7647,9 @@ void advance_sim(Vm &vm, float dt)
     Scheduler &s = sched(vm);
     Runtime *rt = game_rt();
     World &world = process_world();
+    // 0x502060 C: the drive callbacks (0x47be30 -> Vehicle::update) run inside
+    // the step, between the force pass and integrate, once per executed step.
+    if (!world.drive) world.drive = game::drive_cars;
     float step = std::min(s.warp * dt, 0.1f);  // 0x5da468
     float done = 0.0f;
     if (!s.quit_request) {  // 0x5f0c74
@@ -7664,9 +7667,6 @@ void advance_sim(Vm &vm, float dt)
             if (step >= world.step_size)
                 sub = (step - world.step_size > world.step_size) ? world.step_size
                                                                  : step * 0.5f;
-            // 0x47be30 Game__runDriveCallbacks: Vehicle__update per sub-step,
-            // guarded like the step's own accumulator test (0x502060).
-            if (rt && world.accumulator + sub >= 1e-4f) game::drive_cars(sub);
             if (!world.step(sub)) break;
             step -= sub;
             done += sub;
