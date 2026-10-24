@@ -8,6 +8,7 @@ CPPFLAGS += -I.
 BUILD := build
 
 LIB_SRC  := script/classfile.cpp script/vm.cpp script/packages.cpp script/natives.cpp \
+            script/compiler/lexer.cpp script/compiler/decl.cpp \
             resource/rpk.cpp resource/rdb.cpp resource/manager.cpp \
             parts/cfg.cpp physics/shape.cpp physics/world.cpp physics/mesh.cpp \
             mesh/scx.cpp render/device.cpp render/scene.cpp render/ui.cpp \
@@ -61,6 +62,7 @@ check: all
 	$(BUILD)/classdump --corpus $(CORPUS)
 	$(BUILD)/classdump --natives-check ../analysis/natives.tsv
 	$(BUILD)/classdump --conformance "$(GAME)"
+	cd .. && src/$(BUILD)/classdump --parse-java "bin/the game"
 	cd .. && src/$(BUILD)/rpkdump $(ROOT_CHECK)
 	cd .. && src/$(BUILD)/resman --selfcheck
 	cd .. && src/$(BUILD)/resman --sounds "bin/the game"

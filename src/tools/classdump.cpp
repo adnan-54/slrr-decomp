@@ -20,6 +20,7 @@
 #include "platform/fs.h"
 #include "resource/manager.h"
 #include "script/classfile.h"
+#include "script/compiler/decl.h"
 #include "script/natives.h"
 #include "script/vm.h"
 
@@ -935,7 +936,8 @@ static std::string path_join(const std::string &dir, const std::string &name)
     return dir + "/" + name;
 }
 
-static void collect_class_files(const std::string &dir, std::vector<std::string> *out)
+static void collect_files(const std::string &dir, const char *suffix,
+                          std::vector<std::string> *out)
 {
     DIR *d = opendir(dir.c_str());
     if (!d) return;
@@ -946,8 +948,8 @@ static void collect_class_files(const std::string &dir, std::vector<std::string>
         struct stat st;
         if (stat(path.c_str(), &st) != 0) continue;
         if (S_ISDIR(st.st_mode))
-            collect_class_files(path, out);
-        else if (S_ISREG(st.st_mode) && ends_with(name, ".class"))
+            collect_files(path, suffix, out);
+        else if (S_ISREG(st.st_mode) && ends_with(name, suffix))
             out->push_back(path);
     }
     closedir(d);
@@ -978,7 +980,7 @@ static int conformance(const char *dir)
         return 2;
     }
     std::vector<std::string> paths;
-    collect_class_files(dir, &paths);
+    collect_files(dir, ".class", &paths);
 
     size_t scanned = paths.size();
     size_t empty = 0, parsed = 0, units = 0, bodies = 0, instrs = 0, failures = 0;
@@ -1114,6 +1116,50 @@ static int natives_check(const char *path)
     return c.failures ? 1 : 0;
 }
 
+// ---- script source declaration parse ---------------------------------------
+
+static int parse_java_cmd(int argc, char **argv)
+{
+    if (argc < 1) {
+        std::fprintf(stderr, "usage: classdump --parse-java <file|dir>...\n");
+        return 2;
+    }
+    std::vector<std::string> files;
+    size_t failures = 0;
+    for (int i = 0; i < argc; i++) {
+        struct stat st;
+        if (stat(argv[i], &st) != 0) {
+            std::fprintf(stderr, "%s: cannot stat\n", argv[i]);
+            failures++;
+        } else if (S_ISDIR(st.st_mode)) {
+            collect_files(argv[i], ".java", &files);
+        } else {
+            files.push_back(argv[i]);
+        }
+    }
+
+    size_t classes = 0, methods = 0;
+    for (const std::string &path : files) {
+        std::string src, err;
+        if (!read_text(path, &src)) {
+            std::fprintf(stderr, "%s: unreadable\n", path.c_str());
+            failures++;
+            continue;
+        }
+        JavaUnit unit;
+        if (!parse_java(src, &unit, &err)) {
+            std::fprintf(stderr, "%s:%s\n", path.c_str(), err.c_str());
+            failures++;
+            continue;
+        }
+        classes += unit.classes.size();
+        for (const ClassDecl &c : unit.classes) methods += c.methods.size();
+    }
+    std::printf("java parse: %zu files, %zu classes, %zu methods, %zu failures\n",
+                files.size(), classes, methods, failures);
+    return failures ? 1 : 0;
+}
+
 // ---- entry point -----------------------------------------------------------
 
 static int selfcheck(int argc, char **argv)
@@ -1151,7 +1197,8 @@ int main(int argc, char **argv)
                      "       classdump --selfcheck <file.class>...\n"
                      "       classdump --corpus <file.class>...\n"
                      "       classdump --natives-check <natives.tsv>\n"
-                     "       classdump --conformance <directory>\n");
+                     "       classdump --conformance <directory>\n"
+                     "       classdump --parse-java <file|dir>...\n");
         return 2;
     }
     if (strcmp(argv[1], "--selfcheck") == 0)
@@ -1193,5 +1240,7 @@ int main(int argc, char **argv)
         }
         return conformance(argv[2]);
     }
+    if (strcmp(argv[1], "--parse-java") == 0)
+        return parse_java_cmd(argc - 2, argv + 2);
     return dump_files(argc - 1, argv + 1);
 }
