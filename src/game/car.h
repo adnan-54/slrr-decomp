@@ -152,6 +152,8 @@ struct PartData {
 
 struct CarData {
     std::vector<WheelData> wheels;
+    // 0x4942b0 appends every reported part to the car list car+0xfc.
+    std::vector<Runtime::Resource *> part_list;
 
     uint32_t flags = 0;          // +0x70
     float throttle = 0.0f;       // +0x1de4

@@ -703,7 +703,8 @@ Object *Runtime::script_instance(Resource *r)
     ensure_script_class(r);
     if (!vm_) return nullptr;
     ClassState *cs = r->script_cls;
-    if (!cs && !r->script_class.empty()) cs = vm_->find_class(r->script_class);
+    // 0x51fcc0 -> 0x55add0: loads the class on demand.
+    if (!cs && !r->script_class.empty()) cs = vm_->get_class(r->script_class);
     if (!cs) return nullptr;
     std::string err;
     Object *o = vm_->new_object(cs, &err);

@@ -712,6 +712,43 @@ void rebuild_compound(Runtime &rt, Runtime::Resource *carres)
         }
 }
 
+// 0x4ca390 Part__installReport(param_2 == 0): the first block (0x4942b0
+// addpart) plus the child recursion. INVENTED: direct call instead of the exe's
+// "add_part %d" queue round-trip (the %d is a 32-bit native pointer).
+// shortcut: the P+0xac copy and the render +0x1b4/+0x1b8 copies stay unported.
+// shortcut: add_light/add_wing/add_rollbar/add_mslot/add_linked stay unported.
+// shortcut: 0x4942b0's engine-slot and wheel-pivot branches stay unported.
+// shortcut: the queued "updatevariables" tail and 0x4a8200 stay unported.
+static void report_install(Runtime &rt, Runtime::Resource *P, bool nested)
+{
+    (void)nested;  // only gates the unported P+0xac copy and updatevariables tail
+    PartData *pp = part_data(rt, P);
+    if (!pp) return;
+    if (pp->car_ref && pp->car_ref != P) {
+        auto ci = g_cars.find(pp->car_ref);
+        if (ci != g_cars.end()) ci->second->part_list.push_back(P);
+        // 0x4942b0 first block: the car's script (the Chassis) addpart(GameRef).
+        if (Object *car_obj = rt.script_instance(pp->car_ref)) {
+            std::string err;
+            if (Object *ref = rt.wrap(P, &err)) {
+                Value rv;
+                rt.call_method(car_obj, "addpart", {Value::make_obj(ref)}, &rv, &err);
+            }
+        }
+    }
+    // 0x4ca922: every child installed on P inherits the car fields and reports.
+    for (Slot &s : pp->slots) {
+        if (!(s.flags & 2u) || !s.attached) continue;
+        Runtime::Resource *child = slot_part(rt, s.attached);
+        if (!child) continue;
+        PartData *cp = part_data(rt, child);
+        cp->car_ref = pp->car_ref;
+        cp->car_id = pp->car_id;
+        cp->wheel_id = pp->wheel_id;
+        report_install(rt, child, true);
+    }
+}
+
 // 0x4cb1d0 + 0x4c7d20 (bolts = 0, so the install commits at once).
 int part_attach(Runtime &rt, Runtime::Resource *P, int32_t my_slot,
                 Runtime::Resource *tref, int32_t t_slot, Runtime::Resource *dest)
@@ -749,6 +786,8 @@ int part_attach(Runtime &rt, Runtime::Resource *P, int32_t my_slot,
     }
     // 0x4c7d20: P+0xd0 = 0x4c8b10(P, 0) once the car ref is set.
     pp->wheel_id = (int32_t)wheel_id_of(rt, P, 0, 0);
+    // 0x4c7d20 then 0x4ca390(P, 0).
+    report_install(rt, P, false);
     // 0x4c7d20 physics tail: 0x501d00/0x4f7b20 put the part body under the
     // target and 0x5032d0 re-sums the compound through car_root.
     // shortcut: the exe wakes the two roots and re-sleeps car_root when it was

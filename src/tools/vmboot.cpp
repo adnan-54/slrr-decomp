@@ -142,11 +142,24 @@ bool menu_probe(Boot &boot, int *show, int *seek, std::string *err)
     return true;
 }
 
+// Vehicle.isDriveable (Vehicle.java:279): null when the car can be driven, else
+// the script's error String.
+std::string is_driveable_text(Boot &boot, Object *vehicle)
+{
+    std::string err;
+    Value rv;
+    if (!vehicle || !boot.runtime()->call_method(vehicle, "isDriveable", {}, &rv, &err))
+        return "(call failed" + (err.empty() ? "" : ": " + err) + ")";
+    if (rv.kind == Value::Null) return "null";
+    if (rv.kind == Value::Str) return rv.s;
+    return "(not a String)";
+}
+
 // INVENTED: stands in for a player picking the car this check is written for.
 // True when the dealer's shown car (CarMarket.cars[curcar]) has a Duhen_D18V_block
-// in its chassis slot 401 (_main_200S.cfg:387). Chassis.addStockParts rolls each
-// stock part at random (Chassis.java:931-937), so some used cars come without
-// an engine and other models carry other blocks.
+// in its chassis slot 401 (_main_200S.cfg:387) and Vehicle.isDriveable() is null.
+// Chassis.addStockParts rolls each stock part at random (Chassis.java:931-937),
+// so some used cars come without an engine and other models carry other blocks.
 bool shown_car_has_engine(Boot &boot, Object *market)
 {
     std::string e;
@@ -160,15 +173,20 @@ bool shown_car_has_engine(Boot &boot, Object *market)
     const Value &car = cars.arr->elems[(size_t)cur.i];
     if (car.kind != Value::Obj || !car.obj) return false;
     Runtime *rt = boot.runtime();
+    // INVENTED harness filter: the shown car must also be driveable.
+    const std::string drive = is_driveable_text(boot, car.obj);
+    std::printf("  browse car %s: isDriveable %s\n", object_class(boot, car.obj).c_str(),
+                drive.c_str());
     Runtime::Handle *h = rt->handle(car.obj);
     game::PartData *pd = h && h->target ? game::part_data(*rt, h->target) : nullptr;
     if (!pd) return false;
+    bool engine = false;
     for (game::Slot &sl : pd->slots)
         if (sl.id == 401)
-            return sl.attached &&
-                   object_class(boot, sl.attached).find("Duhen_D18V_block") !=
-                       std::string::npos;
-    return false;
+            engine = sl.attached &&
+                     object_class(boot, sl.attached).find("Duhen_D18V_block") !=
+                         std::string::npos;
+    return engine && drive == "null";
 }
 
 // Spawned like the runtime's THRD-CREATE threads so a dialog that sleeps or waits
@@ -401,6 +419,16 @@ void answer_dialogs(Boot &boot, std::vector<Object *> &answered, int frame)
         answered.push_back(d);
         const std::string cls = object_class(boot, d);
         std::string err;
+        // TextDialog.text (Dialog.java:530): the buy dialog's body carries the price.
+        if (is_a(boot, d->cls, "java.render.osd.dialog.NoYesDialog")) {
+            Value text;
+            if (boot.vm()->get_instance_field(d, "text", &text, &err) &&
+                text.kind == Value::Str)
+                std::printf("  NoYesDialog text: %s\n", text.s.c_str());
+            else
+                std::printf("  NoYesDialog text: (unread%s%s)\n",
+                            err.empty() ? "" : ": ", err.c_str());
+        }
         if (is_a(boot, d->cls, "java.render.osd.dialog.StringRequesterDialog")) {
             Value input;
             if (!boot.vm()->get_instance_field(d, "input", &input, &err) ||
@@ -806,6 +834,60 @@ void game_init_check(Boot &boot, Checker &c)
     std::printf("  installed parts on the car (recursive slot walk): %d, "
                 "cfg body mass %.3f kg\n",
                 installed_parts, (double)installed_cfg_mass);
+
+    // Card 163: 0x4ca390 reports every committed part through 0x4942b0, which
+    // appends it to the car list (car+0xfc) and calls the Chassis script's
+    // addpart(GameRef) -> Part.attachedParts (Part.java:263).
+    int attached_count = -1;
+    std::vector<Value> attached;
+    Object *chassis_obj = car_res ? car_res->script : nullptr;
+    {
+        Value apv, cnt, data;
+        std::string aerr;
+        if (chassis_obj &&
+            boot.vm()->get_instance_field(chassis_obj, "attachedParts", &apv, &aerr) &&
+            apv.kind == Value::Obj && apv.obj &&
+            boot.vm()->get_instance_field(apv.obj, "elementCount", &cnt, &aerr) &&
+            cnt.kind == Value::Int && cnt.i >= 0) {
+            attached_count = cnt.i;
+            if (boot.vm()->get_instance_field(apv.obj, "elementData", &data, &aerr) &&
+                data.kind == Value::Array && data.arr)
+                for (int i = 0; i < attached_count && i < (int)data.arr->elems.size(); i++)
+                    attached.push_back(data.arr->elems[(size_t)i]);
+        }
+    }
+    int part_list_n = car_payload ? (int)car_payload->part_list.size() : 0;
+    // The walk reaches the chassis again through the engine's back-pointer.
+    const int walk_parts = installed_parts - (installed_parts > 0 ? 1 : 0);
+    std::printf("  attachedParts count %d, recursive slot walk %d (%d without the chassis), "
+                "car+0xfc list %d\n",
+                attached_count, installed_parts, walk_parts, part_list_n);
+    c.check(attached_count >= 0 && attached_count == walk_parts &&
+                attached_count == part_list_n,
+            "Part.attachedParts count = installed parts = car+0xfc list (0x4942b0)");
+    std::set<Object *> distinct;
+    bool all_parts = attached_count > 0 && (int)attached.size() == attached_count;
+    bool battery = false, block = false;
+    for (const Value &v : attached) {
+        if (v.kind != Value::Obj || !v.obj || v.obj == chassis_obj) {
+            all_parts = false;
+            continue;
+        }
+        if (!is_a(boot, v.obj->cls, "java.game.parts.Part")) all_parts = false;
+        if (is_a(boot, v.obj->cls, "java.game.parts.enginepart.Battery")) battery = true;
+        if (is_a(boot, v.obj->cls, "java.game.parts.enginepart.Block")) block = true;
+        distinct.insert(v.obj);
+    }
+    c.check(all_parts && (int)distinct.size() == attached_count,
+            "every attachedParts element is a distinct Part, not the chassis");
+    const std::string drive_text =
+        player_car ? is_driveable_text(boot, player_car) : "(no player car)";
+    c.check(drive_text == "null",
+            "player.car.isDriveable() is null (Vehicle.java:279, got " + drive_text + ")");
+    c.check(battery && block,
+            "attachedParts has a Battery and a Block (got battery " +
+                std::string(battery ? "yes" : "no") + ", block " +
+                (block ? "yes" : "no") + ")");
 
     // 0x4992e0 wheel loop + 0x5032d0 compound mass. Re-read the shipped cfg so
     // the mass comes from the file, not from the payload under test.

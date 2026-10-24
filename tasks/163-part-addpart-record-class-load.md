@@ -1,6 +1,6 @@
 ---
 id: 163
-status: todo
+status: implemented
 branch: card/163
 depends: [162]
 ---
@@ -124,3 +124,25 @@ rem_part / uninstall 0x4cb510, 0x4942b0 engine-slot/wheel branches, 0x4a8200, th
 `updatevariables`, add_light/add_wing/add_rollbar/add_mslot/add_linked.
 
 ## Result
+`make -C src clean check` green (exit 0). vmboot: `selfcheck: PASSED (131 checks, 0
+failure(s))`; 30000 frames, 1532 threads, **failed: 0** (was 127 checks + 4 new).
+- Card 163 check 1: `attachedParts.elementCount` 76 = recursive slot walk 77 - 1
+  (the walk reaches the chassis again through the engine's slot-99 back-pointer) =
+  `car+0xfc` list 76.
+- Checks 2-4 ok: 76 distinct `java.game.parts.Part` elements, none the chassis; one
+  `enginepart.Battery` and one `enginepart.Block`; `player.car.isDriveable()` null.
+- Bought car: Duhen SunStrip 1.8 DVC, NoYesDialog text price **$20568** (browse shows
+  isDriveable texts: no engine / no tyre / missing a battery / null ...).
+- Freeride `car_root` mass **1280.294 kg** unchanged (cfg bodies 742.297 + wheels
+  40.040 + installed parts 497.957); part_comp 742.297 kg.
+- `get_class` on demand: class-load corpus counts unchanged (package tree 335
+  classes, 260 resolved; compile on load 635 ok), `make check` well under 300 s.
+
+INVENTED: dealer browse filter now also requires `Vehicle.isDriveable()` null;
+`report_install` calls the Chassis `addpart` directly instead of the exe's
+`"add_part %d"` queue string round-trip. Shortcut comments cover P+0xac/render
++0x1b4, add_light/wing/rollbar/mslot/linked, the queued `updatevariables`,
+0x4942b0's engine-slot/wheel-pivot branches and 0x4a8200.
+Note: the four new hard checks read the player car after the 30000-frame loop
+(the same `player.car` object the kTestDriveCmd step sees) instead of inside that
+frame step; the state compared is unchanged by the test drive.
