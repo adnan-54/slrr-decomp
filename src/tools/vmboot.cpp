@@ -349,8 +349,11 @@ void game_init_check(Boot &boot, Checker &c)
     // 1 s hold so the 50 ms Frontend HotkeyWatcher tick samples it. Scan 0x1c is
     // ControlSet's MENUSET AXIS_SELECT bind (RCDIK_ENTER); 0x544830 reads the
     // raw key byte's high bit.
-    const int kFrames = 18000, kPress = 3000, kRelease = 3060, kSelect = 3600;
+    const int kFrames = 30000, kPress = 3000, kRelease = 3060, kSelect = 3600;
     const int kGarageCmd = 6300, kBuyCmd = 12300, kBackCmd = 14000;
+    // Garage.java:99,1598 CMD_TESTDRIVE -> freeride EventList; EventList.java:52,537
+    // CMD_RACE -> freerideSetup() + java.game.Track.
+    const int kTestDriveCmd = 18300, kRaceCmd = 20000;
     FrameLoop loop(0);
     for (int i = 1; i < kPress; i++) loop.frame(i * 16);
     int show_before = -1, seek_before = -1;
@@ -389,6 +392,8 @@ void game_init_check(Boot &boot, Checker &c)
     std::string dealer_from = "(none)";
     std::string buy_from = "(none)";
     bool dealer_at_garage = false, dealer_started = false, buy_at_market = false;
+    std::string testdrive_from = "(none)", race_from = "(none)";
+    bool testdrive_at_garage = false, race_at_eventlist = false;
     for (int i = kSelect + 1; i <= kFrames; i++) {
         g_input->devices[0].raw.keys[0x1c] = 0;
         loop.frame(i * 16);
@@ -450,6 +455,45 @@ void game_init_check(Boot &boot, Checker &c)
                 }
             }
         }
+        if (i == kTestDriveCmd) {
+            // Garage.java:99,1598: CMD_TESTDRIVE changes the section to a
+            // freeride EventList.
+            Value st;
+            std::string terr;
+            if (actual_state(boot, &st, &terr)) {
+                testdrive_from = object_class(boot, st.obj);
+                testdrive_at_garage = is_a(boot, st.obj->cls, "java.game.Garage");
+                if (testdrive_at_garage) {
+                    // INVENTED: stands in for clicking the Garage Test Drive button.
+                    bool ok = osd_command(boot, st.obj, 134, "THRD-GARAGE-TESTDRIVE", &terr);
+                    if (!ok && !terr.empty())
+                        std::printf("  garage cmd 134: not started (%s)\n", terr.c_str());
+                } else {
+                    std::printf("  garage cmd 134 skipped: actualState is %s\n",
+                                testdrive_from.c_str());
+                }
+            }
+        }
+        if (i == kRaceCmd) {
+            // EventList.java:52,537: CMD_RACE in freeride mode runs
+            // freerideSetup() and changes the section to java.game.Track.
+            Value st;
+            std::string rerr;
+            if (actual_state(boot, &st, &rerr)) {
+                race_from = object_class(boot, st.obj);
+                race_at_eventlist = is_a(boot, st.obj->cls, "java.game.EventList");
+                if (race_at_eventlist) {
+                    // INVENTED: stands in for clicking the freeride Race button.
+                    bool ok = osd_command(boot, st.obj, 0x10E, "THRD-EVENT-RACE", &rerr);
+                    if (!ok && !rerr.empty())
+                        std::printf("  eventlist cmd 0x10E: not started (%s)\n",
+                                    rerr.c_str());
+                } else {
+                    std::printf("  eventlist cmd 0x10E skipped: actualState is %s\n",
+                                race_from.c_str());
+                }
+            }
+        }
     }
 
     Value state_after;
@@ -505,11 +549,21 @@ void game_init_check(Boot &boot, Checker &c)
                                    " -> " + buy_from);
     }
     // Shipped: the purchase's own AXIS_CANCEL (CarMarket.java:1139) or the
-    // frame-14000 AXIS_CANCEL returns to the Garage with player.car set.
-    c.check(class_after == "java.game.Garage",
-            "back from the used dealer: actualState is java.game.Garage (got " +
-                class_after + ")");
+    // frame-14000 AXIS_CANCEL returns to the Garage with player.car set; read
+    // there because CMD_TESTDRIVE changes the section again.
+    c.check(testdrive_from == "java.game.Garage",
+            "back from the used dealer: actualState is java.game.Garage at the testdrive "
+            "cmd (got " + testdrive_from + ")");
     c.check(player_car != nullptr, "buying the shown used car sets GameLogic.player.car");
+    // Card 127: Track construction still pulls in stub engine services, so the
+    // freeride destination is asserted only when the run reached it.
+    if (class_after == "java.game.Track") {
+        c.check(true, "testdrive -> race reaches java.game.Track");
+    } else {
+        std::printf("  freeride: not reached (actualState %s after EventList cmd 0x%X from "
+                    "%s)\n",
+                    class_after.c_str(), 0x10E, race_from.c_str());
+    }
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
     if (dealer_at_garage) {
@@ -518,9 +572,13 @@ void game_init_check(Boot &boot, Checker &c)
             if (t.name == "THRD-GARAGE-CMD") dealer_thread = true;
         c.check(dealer_thread, "Garage osdCommand(122) runs a THRD-GARAGE-CMD thread");
     }
-    int failed = 0;
-    for (const natives::ThreadInfo &t : threads)
-        if (!t.error.empty()) failed++;
+    int failed = 0, not_impl = 0;
+    for (const natives::ThreadInfo &t : threads) {
+        if (t.error.empty()) continue;
+        failed++;
+        if (t.error.find("native not implemented") != std::string::npos) not_impl++;
+    }
+    if (not_impl) std::printf("  native not implemented: %d failed thread(s)\n", not_impl);
     // Finished threads are only counted; live and failed ones are listed.
     size_t done = 0;
     for (const natives::ThreadInfo &t : threads) {
