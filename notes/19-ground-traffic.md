@@ -442,3 +442,49 @@ source's import list in order: e.g. `Block_Vee_OHC.java` (package `...block.bloc
 lines in one run). The same run reports `compile on load: 635 sources, ok 635, failed 0` and
 `selfcheck: PASSED`. The exe has the string `"Class not found: "` (0x5b46e4) but whether it prints it on
 import probes is not traced; src could silence probe misses (cosmetic, no card).
+
+## 8. Race bots: `native bot` (sl:0x6E "botbrain"), RE 2026-10-24 (cards 169+)
+
+**Script side (what the race asks for).** `CircuitRacing` (`gmcEvent.racers` > 0) -> `Gamemode.createBotCars`
+(Gamemode.java:581: `Bot.createCar(map, 1)` builds a `Vehicle`) -> `joinBotCars` -> `Bot.enterCar`
+(Bot.java:217): `brain = new GameRef(world, sl:0x0000006Er, "", "BOTBRAIN")` and the brain is driven only by
+`EVENT_COMMAND` strings: `AI_level n`, `renderinstance id`, `controllable <car id>`, `AI_suspend`, then
+`ai_cheat ...` (joinBotCars), `AI_BeginRace 0.5/1.0` (prepareBots) and at `beginRace` ->
+`applySplines` -> `Bot.followSplineTrack` = `AI_spline <width> <splinesAI[i]> <opponent car id>`
+(Bot.java:491). `sl.rpk` record 0x6E is `botbrain`, rsd `native bot` (no script). The
+script never steers; the whole driver is the exe's native bot type. `Navigator.updateNavigator` (0x4df470)
+is the player's GPS/minimap, not a driver.
+
+**Exe side (all under `native bot`, vtable 0x59aaf0).**
+- `0x4803a0` vf0 create: `"%d,%f"` params, `new 0x2730` (ctor 0x47ed10), `+0x2690` flag, skill
+  `+0x26a8 = ((clamp01(f) - 0.5) + 1) * 0.5`, name `"BOT%d"`, frontend.rpk 0x23 resource, event mask 0x10.
+- `0x480850` vf11 event handler: 0x10 = command parser (~25 commands; `FUN_0057c11e` = stricmp, strings
+  around 0x59a5c8 `AI_BeginRace`, 0x59a5e0 `AI_spline`, 0x59aa78 `controllable`; controlled cars live in
+  `+0x2310 + i*0x10` (count `+0x230c`, active `+0x2424`); `controllable` also sends the car
+  `"control %d"`); 0x20/0x40 = its own `bot_trigger` sphere sensor contacts (obstacle list `+0x26d4`).
+- `0x482630` `AI_spline` loader: reads the whole file (0x565610), per line
+  `"%lf %lf %lf %lf %lf %lf %lf %lf %d %lf %lf %d"` (pos xyz, dir xyz, width, ...; >5 fields kept), each
+  pair of consecutive points -> `0x4122b0` spline segment of the 0x3c-byte spline object (ctor 0x411fb0)
+  at `+0x2604`; then mode `+0x259c = 3`, opponent = 0x51f9b0(id), start time `+0x2720`, and sends the car
+  `"transmission 0"`. Shipped .spl lines have 7 fields: `x y z<TAB>dx dy dz<TAB>width`.
+- `0x47f980` per-frame update -> `0x484b90` mode switch (`+0x259c`: 2 race, 3 spline -> `0x485e10`,
+  4, 5/6 traffic, 7, 8, default `0x482910` stop) -> `0x486020` planner (~600 lines: curvature speed limit
+  from the spline, look-ahead target, opponent avoidance) -> `0x483bd0` (creates the `"bot_trigger"`
+  sphere r 100 via 0x523c80, obstacle steering through 0x40ab10/0x40a8a0/0x40a7d0) -> `0x482910` controls.
+  Spline queries: 0x414830 (project xz -> param), 0x412ed0 (tangent at param), 0x4133f0 (offset point),
+  0x414a80 (width), 0x413360, 0x418b40, 0x413fd0, 0x414a00, 0x414050.
+- **Direction**: every look-ahead in 0x486020 is at `param - d` (`local_28 - 20`, `local_28 - 5.1`,
+  `local_28 - (local_28 - local_30) * 0.8`): bots drive the spline in **decreasing** order. Norisring
+  `route_1.spl` (38 points, first == last) listed backwards matches the script's `raceposData` order
+  (rp6 57.5,-430 / rp7 71.3,-503 lie near spline points 35/34, rp9..12 near points 28..25) and passes
+  cp0 (48.8,-542.4) at point 28 (48.3,-538.5) just after the hairpin (points 33..29).
+
+**Verdict (2026-10-24).** The bot is not a small blocker: first missing piece is the `native bot` manager
+itself (src `create_*` dispatch only knows `native car`/`native trigger`, so `GameRef(world, sl:0x6E)` makes a
+plain instance and every `AI_*` command is dropped), then the 0x2730 object, the command parser, the spline
+class (~10 functions at 0x411fb0-0x418b40) and the planner/obstacle path (0x486020, 0x483bd0, 0x40a7d0..).
+Not checked: whether the vmboot career event has `racers > 0` (bot cars on the grid). Stopgap: card 169 =
+vmboot-only INVENTED pure-pursuit harness on the same `.spl` (reverse order like 0x486020) that drives
+the player car to cp0. Bot cards later, in this order: (a) native bot create + `controllable`/`AI_spline`
+parse + spline loader 0x482630/0x4122b0, (b) spline queries 0x414830/0x412ed0/0x4133f0/0x414a80,
+(c) 0x485e10/0x486020 planner without opponents -> 0x482910 controls, (d) bot_trigger obstacle path.
