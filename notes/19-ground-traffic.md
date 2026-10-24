@@ -362,6 +362,40 @@ notes/11).
   `mesh_contacts` (sphere/box/capsule vs soup), static bodies (`inv_mass == 0`), but nothing creates a ground.
 - `Runtime::instantiate` ignores native kinds other than car (shortcut comment ~runtime.cpp:528).
 
+### Sensor segment vs PHYS faces (0x4ff6b0 sensor branch -> 0x4fd110), RE 2026-10-24 (cards 156/157)
+`Collide__groundSoup` 0x4ff6b0, for a body with shape kind 3/4 (capsule y/z), flag 0x40, not 0x1000 (the
+wheel sensors of 0x4f3f10): seg P0 = state * (0, −a, 0), P1 = state * (0, +a, 0) (kind 3; kind 4 uses z;
+a = shape +0xb4 half length; 0x4a2b40 = local -> world with the body's active state), then for **every** face
+of the node (`T+0x18` faces, no per-face AABB) `0x4fd110(body, T+0x14 verts, face, groundBody, seg)`:
+```
+v0 = verts[face.i0]; n = face.n (PHYS +0x10, stored normal, not recomputed)
+d0 = n·(P0 − v0); d1 = n·(P1 − v0)
+if !(d1 > 0 && d0 <= 0) return 0                 // one-sided: bottom behind / on the plane, top in front
+if (|d0| > 0.02 || |d1| > 0.02):                 // crossing
+  t = |d0 / (d0 − d1)|;  q = (P0 − v0) + t·(P1 − P0)
+  (i, j) = 0x5043d0(face): |ny|<|nx| ? (|nz|<=|nx| ? (1,2) : (0,1)) : (|nz|<=|ny| ? (0,2) : (0,1))
+  a = v1 − v0, b = v2 − v0, inv = 1/(b_j·a_i − b_i·a_j)
+  s = (b_j·q_i − b_i·q_j)·inv;  u = (a_i·q_j − a_j·q_i)·inv
+  if (0<=s<=1 && u>=0 && s+u<=1) { X = v0 + q; if body: addTriggerContact 0x502d60(body, ground, face,
+       pA = 0x4af9a0(X) (body frame), pB = X, n = &face.n, 0); return t }
+  return 0
+else (segment within 0.02 of the plane): 2D clip of P0->P1 against the 3 edges in axes (i,j), entering t
+  max / leaving t min, break (return 0) when outside or empty; hit point = P0 + t_enter·(P0 − P1) (sign as
+  decompiled), same 0x502d60 call; return t_enter
+```
+0x502d60 without body flag 0x1000 fills a temporary c_collision (0x4f2770: A = sensor, B = ground, c+0x74 = pA,
+c+0x80 = pB, c+0x8c = n, c+0x60 = face) and `Game__queueEvent(sensor+0x38, 0, 0x20, c)` (synchronous) ->
+car handler 0x4a2e60 -> `c_triggerspring__onSensorContact` 0x4f3d70 (notes/09 "Who writes the ray hit").
+So the exe wheel "ray" is: segment from the car_root mount down by the createCar-time `L = W+0x5c`, only
+PHYS faces whose stored normal faces the top end, nearest crossing to the top wins (strict `<`, first face
+in node order on ties), rejected when it lies more than `r` above the previous length, and counted only
+when `d < max_ray`. src (card 144/146) instead casts a two-sided ray of length `max_ray` against the
+merged soup and uses the geometric normal flipped toward the ray (`mesh_raycast`): cards 156/157 port the
+exe rule; the merged-soup collider stays (geometrically the same face set as the per-node walk as long
+as every face lies inside its node AABB; streaming is a residency/script effect, not a collision one).
+UNRESOLVED: order of `IntervalMgr__collidePass` vs controllers inside `Game__physicsTick` 0x47e050 (if the
+collide pass runs after integrate, src's query at the start of `update_suspension` sees the same pose).
+
 ### Side note: `Class not found: java.game.parts.bodypart.Block_Vee` (vmboot --selfcheck)
 Not real misses. They come from `jvm::load_class` (src/script/packages.cpp:272) being called by the VM
 class-loader callback (src/app/boot.cpp:79) while compile-on-load resolves a simple name through the
