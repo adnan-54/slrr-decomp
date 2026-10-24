@@ -488,3 +488,21 @@ vmboot-only INVENTED pure-pursuit harness on the same `.spl` (reverse order like
 the player car to cp0. Bot cards later, in this order: (a) native bot create + `controllable`/`AI_spline`
 parse + spline loader 0x482630/0x4122b0, (b) spline queries 0x414830/0x412ed0/0x4133f0/0x414a80,
 (c) 0x485e10/0x486020 planner without opponents -> 0x482910 controls, (d) bot_trigger obstacle path.
+
+## 9. Career circuit race: laps, finish and exit (script side, CircuitRacing.java; RE 2026-10-24, cards 171/172)
+Exe provides only triggers/timers/OSD/controls; the rules are script (memory: exe is a shell).
+- Norisring career event (vmboot): `laps = gmcEvent.specialSlots[0]` = 2, `cpTrigger.length` 4, `fines` null (no
+  useFines, so no runout/pit logic), `raceActive` 1 after the countdown.
+- `handleCheckpoint` (507): player cp i == nextTrigger[0] -> nextTrigger[0]++ until the last cp (start line, index 3);
+  there `current_lap+1 <= laps` -> current_lap++, `nextTrigger[0] = 0`, else `stopTimer(0)`, `gmThread.execute(7)`.
+  Lap 1 -> lap 2 needs cp0..cp3 once; the finish needs them twice (8 checkpoint hits).
+- THOR method 7 in `run()` (1183): raceActive 0, clearScreen, `controller.command("controllable 0")`,
+  `finishRace(0)` (Gamemode 1218: `erWindow = new endRaceWindow(osd, 0)`), timers 12 (2 s, stopCars) and 11 (4 s).
+- Timer 11 (handleEvent 392): erWindow.hide until windowStatus -1, then `fWindow = new finishWindowCircuitRacing(this,
+  bot_laps)` (prize via `gmcEvent.getPrizeCash`). `finishWindowCircuitRacing.osdCommand(0x01)` -> hide(); on
+  windowStatus 3 it sets `game.addTimer(1.0, 13)`; timer 13 waits for windowStatus -1 then `unlaunch()` ->
+  `gTrack.getOut()` (Track 2831): freeride -> EventList(FREERIDE); `!game.failable` -> `GameLogic.changeActiveSection(
+  new Garage())`; failable (career) -> `new EventList(EventList.MODE_AMATEUR)`. So a career race returns to the
+  EventList, not directly to the Garage.
+- First blocker after cp0 found by the probe: physics (notes/11 "Contact refresh 0x4f9af0"), card 171. Finish flow
+  (erWindow/fWindow/Enter/exit) is card 172 and is untested until 171 lets the car lap.

@@ -330,3 +330,28 @@ Script caveat: Trigger.pos for race-position triggers is the shared raceposData 
 position update rp[k].pos.y is 0.0 while the sensor body keeps the creation y. Every script assignment converts
 to the target's declared type (JVM::assignmentConversion 0x5552e0 from assign 0x55e020), fields included,
 so that 0 is a float.
+
+## Contact refresh `PhysicsWorld__updateContacts` 0x4f9af0 for hull-vs-soup pairs (RE 2026-10-24, card 171)
+Probe (scratch vmboot, spline driver run on past cp0, 30000 frames): the car reaches cp1 (nt 2, f5182), then at
+f6011 (-38.9,-3.9,-101.9, ~7 m/s into a wall) one hull-vs-soup contact (child 10, tri 28594, n (0,0,-1)) refreshes
+with sep -0.53 and keeps the SAME world point (-39.98,-3.66,-99.64) for 4 frames while the car moves 8 m: |v| 6 ->
+50 -> 94 -> 116 m/s, |w| at the 19.68 cap, car launched 40 m high, lands 86 m off the route. Second one at f8801
+(stationary at a wall, child 10 tri 65385 sep -0.78, n (0.99,-0.12,0)): 0 -> 118 m/s, then contacts with n (0,-1,0)
+and the car falls through the map (y -81780 at f30000). Cause in src `refresh_hull_contacts` (world.cpp ~1112):
+`Contact c = old` keeps the old points/normal and only replaces the separation, and the INVENTED signed fallback
+`hull_plane_distance` measures against the INFINITE face plane (stays -0.5 m wherever the car is along the wall).
+Exe 0x4f9af0, per pair (A = +0x48, B = +0x50, shape B = override +0x58 (+0x2c) when set; states idx^1 = integrated):
+```
+d = 0x50d9d0(stA, stB, shA, shB, &+0x64, &+0x68, &+0x74 ptA, &+0x80 ptB, &+0x8c n)  // writes points/normal/features
+if d == 0 or d > rA + rB + 0.05: delete pair
+if d < rA + rB + 0.02: wake both roots (state flag bit0), w+0x39c = 0
+if (d > rA+rB) or (d > -(rA+rB)) or (old +0xa4 >= rA+rB):        // for a mesh pair (r = 0): d > 0 or old sep >= 0
+    if d <= rA + rB: 10-step bisection t = 0.5, step 0.25 (0x506c00 both bodies, same rule as 0x4fc7e0:
+        d > r: if d < r+0.02 and n.(pA - pB) < 0 (0x505d60) break; t += step;  else t -= step); still <= r: 0x50d9d0 again
+        at the integrated states
+    margins: +0x74 -= rA * R_A^T n, +0x80 += rB * R_B^T n, +0xa4 = d - rA - rB
+    +0x98 world point = R_A * +0x74 + posA  (state used for the last 0x50d9d0)
+else (d <= -(rA+rB) and old sep < rA+rB, i.e. already deep last time): margins as above, +0xa4 = d, +0x98 NOT updated
+```
+So: no plane fallback, the cached features/points/normal come from 0x50d9d0 every refresh, a 0.0 result deletes the
+contact. Script-side race state at that point is fine (laps 2, `fines` null = event has no useFines, 4 checkpoints).

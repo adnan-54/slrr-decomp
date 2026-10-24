@@ -1,0 +1,40 @@
+---
+id: 172
+status: todo
+branch: card/172
+depends: [171]
+---
+# vmboot: drive both laps, the script finishes the race and leaves the track
+
+## Why (notes/19 s9)
+Career circuit race: `laps` 2, 4 checkpoints (index 3 = start line). The finish is all script: last cp of lap 2 ->
+`gmThread.execute(7)` -> THOR method 7 (CircuitRacing.java:1183: raceActive 0, `controllable 0`, `finishRace(0)`
+= endRaceWindow, timers 12/11) -> timer 11 -> `finishWindowCircuitRacing` -> `osdCommand(0x01)` hides it ->
+timer 13 -> `unlaunch()` -> `Track.getOut()`: career (failable) -> `GameLogic.changeActiveSection(new
+EventList(EventList.MODE_AMATEUR))` (Garage only for non-failable events).
+Script does: all of the above. Exe provides: timers, OSD, controls, section switch (already ported, unverified here).
+
+## What to change (vmboot only)
+1. Spline driver block: run on (same loop, INVENTED) until `fWindow` is non-null or 20000 frames; print each
+   nt/current_lap change.
+2. INVENTED harness: once `fWindow` exists, release keys and send the OSD command / key the finish window binds to
+   0x01 (find it in finishWindowCircuitRacing.show(); reuse the vmboot Enter path of the card-121 menu block), then
+   run up to 600 frames.
+
+## vmboot checks
+1. **Hard check**: `current_lap` reaches 2 and `fWindow` becomes non-null (handleCheckpoint called execute(7)).
+2. **Hard check**: after the key, the active section is the EventList (`GameLogic` active section class name, as
+   the existing Garage-return checks read it), 0 failed threads.
+3. All existing checks pass.
+
+## Done when
+`make -C src -j4 check` green; vmboot --selfcheck (`ulimit -v 4000000; timeout 290`) PASSED with 1-3. Result:
+frames per lap, race time (time[0]), first unported native or failed thread if any.
+
+## Rules
+Stop and report after 2 failed vmboot runs (status `blocked`, Result names the first blocker: harness corner,
+missing native, thread error, dialog not answered). No engine changes beyond a missing native that is a one-line
+stub with exe address; anything bigger = report. No unit tests, no map names in engine code.
+
+## Not this card
+Native bot, HUD rendering, rewards/save checks beyond printing the prize text.
