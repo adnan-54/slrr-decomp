@@ -1,6 +1,6 @@
 ---
 id: 124
-status: todo
+status: merged
 branch:
 depends: [123]
 ---

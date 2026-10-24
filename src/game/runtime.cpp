@@ -800,8 +800,10 @@ void Runtime::run_timers(float now)
         } else if (t->due <= now) {
             queue_event(t->handle.target, nullptr, t->flags & 0x0fffffffu,
                         Value::make_int(t->param));
-            if ((int32_t)t->flags < 0)  // sign bit = one-shot
+            if ((int32_t)t->flags < 0) {  // sign bit = one-shot
+                unlink(&t->handle);  // the node's handle must leave the target's ref list
                 timers_.erase(it);
+            }
             else
                 t->due = t->period + t->due;
         }

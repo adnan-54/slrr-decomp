@@ -267,7 +267,6 @@ void answer_dialogs(Boot &boot, std::vector<Object *> &answered, int frame)
         Object *d = t.wait_on;
         if (!t.waiting || !d || !is_a(boot, d->cls, "java.render.osd.dialog.Dialog"))
             continue;
-        if (!is_a(boot, d->cls, "java.render.osd.dialog.StringRequesterDialog")) continue;  // TEMP
         // One OK per dialog: several threads may wait on the same object.
         if (std::find(answered.begin(), answered.end(), d) != answered.end()) continue;
         answered.push_back(d);
@@ -388,7 +387,6 @@ void game_init_check(Boot &boot, Checker &c)
     for (int i = kSelect + 1; i <= kFrames; i++) {
         g_input->devices[0].raw.keys[0x1c] = 0;
         loop.frame(i * 16);
-        if (i % 300 == 0) std::printf("  frame %d\n", i);  // TEMP debug
         if (i >= kDialog && (i - kDialog) % kDialogStep == 0)
             answer_dialogs(boot, answered, i);
     }
@@ -671,7 +669,6 @@ int selfcheck()
     vector3_check(boot, c);
     game_init_check(boot, c);
 
-    std::printf("  boot.reset (TEMP debug)\n");  // TEMP debug
     boot.reset();
     std::printf("selfcheck: %s (%d checks, %d failure(s))\n",
                 c.failures ? "FAILED" : "PASSED", c.checks, c.failures);
@@ -682,10 +679,8 @@ int selfcheck()
 
 int main(int argc, char **argv)
 {
-    setvbuf(stdout, nullptr, _IONBF, 0);  // TEMP debug
     if (argc == 2 && strcmp(argv[1], "--selfcheck") == 0) {
         int rc = selfcheck();
-        std::printf("main: selfcheck returned %d\n", rc);  // TEMP debug
         return rc;
     }
     std::fprintf(stderr, "usage: vmboot --selfcheck\n");
