@@ -2667,6 +2667,10 @@ int selfcheck()
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--selfcheck") == 0) {
+        // INVENTED: harness switch (not in the exe): seed Math.randomize
+        // (0x4dee90) and System.currentTime (0x4e5500) from the frame clock
+        // instead of wall time, so runs pick the same dealer car.
+        natives::use_frame_clock(true);
         int rc = selfcheck();
         return rc;
     }

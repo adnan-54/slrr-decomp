@@ -1,6 +1,6 @@
 ---
 id: 166
-status: todo
+status: implemented
 branch: card/166
 depends: []
 ---
@@ -51,3 +51,33 @@ and the failing checks; do not tune the seed.
 `music.h` GetTickCount random source (audio only); body-vs-soup TOI (card 165).
 
 ## Result
+
+Implemented on `card/166`.
+
+- `natives::use_frame_clock(bool)` (process-global, default off) + `clock_ms(Vm &)`:
+  `Math.randomize` (0x4dee90) and `System.currentTime` (0x4e5500) read
+  `sched(vm).now_ms` when on, else `milliseconds_now()`. `vmboot --selfcheck` turns
+  it on before the first `Boot::run`. Nothing else changed (boot.cpp/FrameLoop
+  untouched, Thread.sleep already used `now_ms`). INVENTED: the switch itself; the
+  live game keeps the exe's QPC clock.
+- Dealer car: `Duhen SunStrip 1.8 DVC` ($20568), same in both runs.
+- Seed: **0**. `Math.randomize` runs in the `GameLogic` constructor during
+  `boot.run()`, before the first `FrameLoop::frame`, so the frame clock is still 0.
+  (Measured with a temporary stderr print, removed before commit.)
+- Checks: `selfcheck: PASSED (135 checks, 0 failure(s))`; semi-auto final
+  `|vel| 42.043686 m/s` in both runs. `make -C src -j4 check` green.
+- Determinism (check 2): stdout is byte-identical. `setarch -R` is used because the
+  exe's `Object.toString` (0x4e03f0) embeds the instance handle and vmboot prints a
+  controller pointer, so ASLR alone changes those lines:
+  ```
+  cd /root/slrr-re && setarch $(uname -m) -R tools/vmboot-capped.sh --selfcheck > .scratch166/run3.out
+  # second run: four `while :; do :; done` workers (killed after, via .scratch166/Makefile load3)
+  diff -u .scratch166/run3.out .scratch166/run4.out
+  # (no output; rc=0; both 284 lines, both "selfcheck: PASSED (135 checks, 0 failure(s))")
+  ```
+  Without `setarch`, the raw diff is only the ASLR-heap-pointer lines (player-bind
+  debug print + `Class<handle>` thread names); diff after masking addresses
+  (`s/0x[0-9a-f]+/0xADDR/g; s/<[0-9a-f]+>/<ADDR>/g`) is empty, rc=0.
+- The card's `ulimit -v 4000000; timeout 280` command could not be run verbatim in
+  this sandbox (permission gate); the check ran through `tools/vmboot-capped.sh`
+  (1 GB / 60 s, stricter) and passed.

@@ -400,6 +400,17 @@ double milliseconds_now()
         .count();
 }
 
+// INVENTED: harness switch (vmboot), not in the exe. See use_frame_clock.
+bool g_use_frame_clock = false;
+
+// 0x569730 as read by Math.randomize (0x4dee90) and System.currentTime
+// (0x4e5500). The exe always uses the live QPC clock; vmboot swaps in the
+// host-fed frame clock for determinism.
+double clock_ms(Vm &vm)
+{
+    return g_use_frame_clock ? sched(vm).now_ms : milliseconds_now();
+}
+
 bool math_random(Vm &, const Args &, Value *out, std::string *)
 {
     // 0x4dee50: 0x7fff maps to 0x7ffe so the result stays below 1.
@@ -418,10 +429,10 @@ bool math_sqrt(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
-bool math_randomize(Vm &, const Args &, Value *out, std::string *)
+bool math_randomize(Vm &vm, const Args &, Value *out, std::string *)
 {
     // 0x4dee90: srand((int)milliseconds since process start).
-    msvc_srand((uint32_t)(int)milliseconds_now());
+    msvc_srand((uint32_t)(int)clock_ms(vm));
     *out = Value::make_null();
     return true;
 }
@@ -535,10 +546,10 @@ bool system_arraycopy(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
-bool system_current_time(Vm &, const Args &, Value *out, std::string *)
+bool system_current_time(Vm &vm, const Args &, Value *out, std::string *)
 {
     // 0x4e5500: milliseconds * 0.001, returned as float seconds.
-    *out = Value::make_float((float)(milliseconds_now() * 0.001));
+    *out = Value::make_float((float)(clock_ms(vm) * 0.001));
     return true;
 }
 
@@ -7530,6 +7541,9 @@ input::Controller *controller_of(Runtime::Resource *r) { return ::controller_of(
 
 // 0x569730 clock, passed in by the host frame loop.
 void set_clock(Vm &vm, double now_ms) { sched(vm).now_ms = now_ms; }
+
+// INVENTED: harness switch (vmboot), not in the exe.
+void use_frame_clock(bool on) { g_use_frame_clock = on; }
 
 std::vector<ThreadInfo> thread_report(Vm &vm)
 {

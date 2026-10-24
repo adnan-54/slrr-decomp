@@ -33,6 +33,10 @@ bool spawn_untimed(Vm &vm, std::unique_ptr<Thread> runner, int32_t priority,
                    const std::string &name);
 // 0x569730: the frame loop's millisecond clock, read by Thread.sleep.
 void set_clock(Vm &vm, double now_ms);
+// INVENTED: harness switch, not in the exe. When on, Math.randomize (0x4dee90)
+// and System.currentTime (0x4e5500) read the host-fed frame clock (now_ms)
+// instead of the real steady_clock, so vmboot runs are deterministic.
+void use_frame_clock(bool on);
 // 0x54d3a0: drain an object's monitor wait list (Object.notifyAll body).
 void monitor_notify_all(Vm &vm, Object *o);
 // 0x47e050: sub-step the process world by min(warp * dt, 0.1f), timers + flush each sub-step.
