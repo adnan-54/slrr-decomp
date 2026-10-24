@@ -786,8 +786,41 @@ void drive_cars(float dt)
     for (auto &kv : g_cars) {
         CarData *c = kv.second.get();
         if (!c->sim || !c->root_body || c->root_body->asleep) continue;
-        c->sim->ground = ground;
-        c->sim->update(dt);
+        Car &sim = *c->sim;
+        // INVENTED glue: the exe keeps one struct; src has CarData (natives) and
+        // vehicle::Car (simulation), so copy the control inputs and the engine
+        // block across per tick (notes/09 "Control path").
+        sim.engine.running = (c->flags & 0x4000u) != 0;
+        sim.throttle = c->throttle;
+        sim.brake = c->brake_input;
+        sim.handbrake = c->handbrake_input;
+        sim.steer = c->steer_input;
+        sim.clutch = c->clutch_input;
+        sim.nitro = c->nitro_input;
+        sim.gear = c->gear;
+        sim.max_steer = c->max_steer;
+        sim.final_drive = c->rearend_ratio;
+        for (int i = 0; i < kMaxGears; i++) sim.ratios[i] = c->ratio[i];
+        Engine &e = sim.engine;
+        e.idle = c->idle_omega;
+        e.inertia = c->inertia;
+        e.starter_torque = c->starter_torque;
+        e.friction_fwd = c->friction_fwd;
+        e.friction_rev = c->friction_rev;
+        e.max_rpm = c->max_rpm;
+        e.rpm_limit = c->rpm_limit;
+        e.torque_health = c->torque_health;
+        e.torque_curve.resize(c->torque_nm.size());
+        for (size_t i = 0; i < c->torque_nm.size(); i++) {
+            e.torque_curve[i].rpm = i < c->torque_rpm.size() ? c->torque_rpm[i] : 0.0f;
+            e.torque_curve[i].value = c->torque_nm[i];
+        }
+        sim.ground = ground;
+        sim.update(dt);
+        c->rpm_raw = e.omega;
+        c->rpm_smoothed = e.smoothed_omega;
+        c->shaft_speed = sim.shaft_speed;
+        c->gear_ratio = c->gear >= 0 && c->gear < 8 ? c->ratio[c->gear] : 0.0f;
     }
 }
 

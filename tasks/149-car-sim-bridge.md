@@ -1,7 +1,7 @@
 ---
 id: 149
-status: todo
-branch:
+status: implemented
+branch: card/149
 depends: [147]
 ---
 # CarData -> vehicle::Car bridge in drive_cars

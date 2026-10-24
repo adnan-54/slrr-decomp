@@ -934,6 +934,40 @@ void game_init_check(Boot &boot, Checker &c)
                     car_payload->flags, tr, car_payload->flags & 0x70u);
     }
 
+    // Card 149: drive_cars copies CarData's control inputs and engine block into
+    // vehicle::Car before the sub-step (INVENTED glue, notes/09 "Control path").
+    Car *sim = car_payload ? car_payload->sim.get() : nullptr;
+    c.check(sim && sim->engine.running == ((car_payload->flags & 0x4000u) != 0),
+            "drive bridge sets engine.running from the createCar flag");
+    float curve_max = 0.0f;
+    bool curve_ok = sim && sim->engine.torque_curve.size() == car_payload->torque_nm.size();
+    if (sim && curve_ok)
+        for (size_t i = 0; i < sim->engine.torque_curve.size(); i++) {
+            const TorquePoint &p = sim->engine.torque_curve[i];
+            if (p.value > curve_max) curve_max = p.value;
+            if (p.value != car_payload->torque_nm[i] ||
+                (i < car_payload->torque_rpm.size() &&
+                 p.rpm != car_payload->torque_rpm[i]))
+                curve_ok = false;
+        }
+    // No engine part is installed yet (card 150), so no max > 0 requirement.
+    c.check(curve_ok, "drive bridge copies the engine torque curve (" +
+                          std::to_string(sim ? sim->engine.torque_curve.size() : 0) +
+                          " points, max " + std::to_string((double)curve_max) + " Nm)");
+    bool ratios_ok = sim && car_payload->ratio[7] < 0.0f;
+    for (int i = 0; ratios_ok && i < kMaxGears; i++)
+        if (sim->ratios[i] != car_payload->ratio[i]) ratios_ok = false;
+    c.check(ratios_ok, "drive bridge copies ratios[] and reverse is negative");
+    if (sim) {
+        std::printf("  drive bridge: engine running %d, curve %zu points max %.1f Nm,"
+                    " ratios",
+                    (int)sim->engine.running, sim->engine.torque_curve.size(),
+                    (double)curve_max);
+        for (int i = 0; i < kMaxGears; i++)
+            std::printf(" %.3f", (double)sim->ratios[i]);
+        std::printf("\n");
+    }
+
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
     if (dealer_at_garage) {
         bool dealer_thread = false;
