@@ -38,6 +38,7 @@ class Runtime {
         uint32_t type = 0;                 // resource type code (8 type, 1 instance)
         std::string name;                  // record name, or instance alias
         std::string script_class;          // `script` ref of the backing record
+        bool script_class_checked = false; // node+0x94 bit0: typed data parsed (0x51f790)
         const Package *package = nullptr;
         const RpkRecord *record = nullptr; // null for created instances
         std::string data;                  // 0x518410 descriptor data (created nodes)
@@ -247,6 +248,9 @@ class Runtime {
     // `script <dir>\<Name>.class` ref; returns the FQN, "" on failure.
     std::function<std::string(const std::string &dir, const std::string &base)>
         path_class_loader;
+    // 0x51fc50 (vf10 +0x28) / 0x51fcc0: resolve the record's `script` ref once,
+    // on the first typed-data need; never at package mount.
+    void ensure_script_class(Resource *r);
 
   private:
     std::string script_class_of(const Package &pkg, const RpkRecord &rec) const;

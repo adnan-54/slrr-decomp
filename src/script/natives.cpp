@@ -2304,6 +2304,7 @@ bool gr_is_scripted(Vm &, const Args &a, Value *out, std::string *err)
     if (a.size() > 1 && a[1].kind == Value::Str) name = &a[1].s;
     std::string cls;
     int32_t scripted = 0;
+    if (r) game_rt()->ensure_script_class(r);   // 0x468b00 -> getTyped path
     if (r && r->type == 1 && r->script) {
         scripted = 1;
         cls = r->script_class;  // the instance was made from the type's class

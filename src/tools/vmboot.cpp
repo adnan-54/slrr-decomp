@@ -181,7 +181,7 @@ void game_init_check(Boot &boot, Checker &c)
     int failed = 0;
     for (const natives::ThreadInfo &t : threads)
         if (!t.error.empty()) failed++;
-    const size_t kShown = 40;
+    const size_t kShown = 400;  // TEMP
     for (size_t i = 0; i < threads.size() && i < kShown; i++)
         std::printf("  thread %s: %s\n", threads[i].name.c_str(),
                     thread_state(threads[i]).c_str());

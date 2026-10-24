@@ -176,6 +176,7 @@ bool Boot::game_init(std::string *err)
         return false;
     }
     runtime_->bind(&game_init_, inst);
+    runtime_->ensure_script_class(inst);
     result_.game_init_type = type->name;
     result_.game_init_class = inst->script_class;
     result_.game_init_created = true;
