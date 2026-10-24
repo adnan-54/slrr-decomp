@@ -279,6 +279,69 @@ static void create_ground_body(Runtime &rt, Runtime::Resource *r)
     r->ground_body = std::move(b);
 }
 
+// The type record's refs name the `native trigger` handler (vtable 0x5a00e0).
+static bool native_trigger_type(Runtime &rt, Runtime::Resource *ty)
+{
+    if (!ty || !ty->package || !ty->record) return false;
+    for (const DataRef &ref : rt.resources().refs(*ty->package, *ty->record))
+        if (ref.kind == DataRef::Native && ref.native == "trigger") return true;
+    return false;
+}
+
+// 0x4d4700 type_trigger vf3 create: a mass-0 sensor body from the params
+// "px,py,pz,yaw,pitch,roll,kind,sx,sy,sz"; the script's Trigger.java sends a
+// sphere (3-arg ctor) or a box (4-arg ctor).
+static void create_trigger_body(Runtime &rt, Runtime::Resource *r,
+                                Runtime::Resource *type, const std::string &params)
+{
+    if (r->trigger_body || !native_trigger_type(rt, type)) return;
+    // Defaults and scan order from 0x4d4700: sx 10, sy/sz 0, pos/ypr 0, kind
+    // empty; the scan stops at the first mismatch, keeping what it parsed.
+    float pos[3] = {0.0f, 0.0f, 0.0f}, ypr[3] = {0.0f, 0.0f, 0.0f};
+    float sx = 10.0f, sy = 0.0f, sz = 0.0f;
+    std::string kind;
+    size_t i = 0;
+    bool ok = true;
+    for (int k = 0; k < 3 && ok; k++)
+        ok = scan_float(params, &i, &pos[k]) && scan_char(params, &i, ',');
+    for (int k = 0; k < 3 && ok; k++)
+        ok = scan_float(params, &i, &ypr[k]) && scan_char(params, &i, ',');
+    if (ok) ok = scan_str(params, &i, ',', &kind) && scan_char(params, &i, ',');
+    if (ok) ok = scan_float(params, &i, &sx);
+    if (ok) ok = scan_char(params, &i, ',') && scan_float(params, &i, &sy);
+    if (ok) ok = scan_char(params, &i, ',') && scan_float(params, &i, &sz);
+    (void)ok;
+
+    auto b = std::make_unique<RigidBody>();
+    if (kind.empty() || kind == "sphere") {
+        b->set_sphere(sx, 0.0f);             // createBox(0, 1, sx, 0, 0, 0)
+    } else if (kind == "box") {
+        b->set_box(Vec3{sx, sy, sz}, 0.0f);  // createBox(0, 5, sx, sy, sz, 0)
+    } else if (kind == "rod") {
+        // createBox(0, 4, sx, sy, sz, 0): capsule along z: sx half length,
+        // sy radius (notes/11 §1).
+        b->set_capsule(2, sx, sy, 0.0f);
+    } else {
+        // shortcut: kind 6 named .scx hull (createBox(0, 6, 1, 1, 1, kind)) is
+        // not ported; no shipped Track/Gamemode passes a named kind.
+        std::fprintf(stderr, "trigger: named hull \"%s\" not supported\n", kind.c_str());
+        return;
+    }
+    b->def.flags = (b->def.flags | 0x20u) & ~4u; // not the flag-4 static kind
+    b->body_flags = 0x15040u;  // body+0x58: 0x40 sensor, 0x1000 keep records
+    b->owner_id = r->id;       // body+0x40: id the EVENT_TRIGGER parameter reports
+    b->owner = r;              // body+0x38 ResourceRef target
+    // shortcut: the exe composes the full parent pose in 0x4e8a50; the shipped
+    // map instance sits at the origin, so the params pos is the world pos here.
+    if (r->parent) b->pos = Vec3{r->parent->pos[0], r->parent->pos[1], r->parent->pos[2]};
+    b->pos += Vec3{pos[0], pos[1], pos[2]};
+    Mat34 m;
+    euler_to_mat(&m, ypr);  // Math__eulerToMat 0x5666d0
+    mat_to_quat(&b->rot, &m);
+    process_world().add_body(b.get());
+    r->trigger_body = std::move(b);
+}
+
 // 0x4bade0 type_ground vf3 create: check the type is a native ground, then
 // load the named .trc (File__readAll 0x565610, Traffic__load 0x41a000).
 // INVENTED: lazy creation at the first lookup and the failure log; the exe
@@ -639,6 +702,9 @@ Runtime::Resource *Runtime::instantiate(Resource *type, Resource *parent,
     // shortcut: other native type-manager kinds (part, camera, ...) are
     // not dispatched (0x523c80/0x5240e0).
     game::create_car_bodies(*this, r, type, params);
+    // 0x523c80 also runs the type record's native manager vf3; type_trigger
+    // 0x4d4700 builds the sensor body from the same params string.
+    create_trigger_body(*this, r, type, params);
     // 0x523c80: a script class runs its <init> (signature "(I)" in this class
     // format, no return type) in a THRD-CREATE thread (prio 10,
     // flags 0) with the new instance id as the single int argument, untimed.
@@ -858,6 +924,11 @@ void Runtime::unload(Resource *r)
     if (r->ground_body) {
         process_world().remove_body(r->ground_body.get());
         r->ground_body.reset();
+    }
+    // type_trigger vf4 0x4d4a60: detach and release the sensor body.
+    if (r->trigger_body) {
+        process_world().remove_body(r->trigger_body.get());
+        r->trigger_body.reset();
     }
     // U2: 0x54c600 unroots the script object then the slot is zeroed.
     // shortcut: the src VM has no root list; dropping the pointer is the whole effect.

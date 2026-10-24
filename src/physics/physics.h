@@ -148,6 +148,12 @@ struct RigidBody {
     std::vector<RigidBody *> children;
     // PhysBody sleep flag (+0x58 bit 0x80, 0x506d90/0x507060).
     bool asleep = false;
+    // PhysBody +0x58 flag word. Only 0x40 (sensor pair, no physical contact)
+    // and 0x1000 (keep trigger records) exist here; type_trigger vf3 0x4d4700
+    // writes (flags & ~1) | 0x15040.
+    uint32_t body_flags = 0;
+    uint32_t owner_id = 0;    // +0x40: resource id reported in event params
+    void *owner = nullptr;    // +0x38 ResourceRef target
 
     Pose pose() const { return Pose{pos, rot}; }
     Mat34 rotation() const;

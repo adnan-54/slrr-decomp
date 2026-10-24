@@ -32,6 +32,7 @@
 #include "script/compiler/decl.h"
 #include "script/natives.h"
 #include "script/packages.h"
+#include "script/vm.h"
 
 // INVENTED: world.cpp harness counter (card 165), read only by vmboot.
 unsigned hull_deep_contacts();
@@ -113,6 +114,17 @@ bool is_a(Boot &boot, ClassState *cls, const std::string &name)
         s = super.empty() ? nullptr : boot.vm()->find_class(super);
     }
     return false;
+}
+
+// Card 167: contacts with a 0x40 sensor body as a side (0x4fb370 step 4).
+int sensor_contacts_now()
+{
+    int n = 0;
+    for (const Contact &ct : process_world().contacts)
+        if ((ct.a && (ct.a->body_flags & 0x40u)) ||
+            (ct.b && (ct.b->body_flags & 0x40u)))
+            n++;
+    return n;
 }
 
 // INVENTED instrumentation: reads the shipped script state.
@@ -962,12 +974,19 @@ void game_init_check(Boot &boot, Checker &c)
     }
     c.check(springs_ok, "every wheel has spring_k/bump/rebound > 0 (0x4992e0)");
     int cars_with_bodies = game::car_body_instances();
-    std::printf("  car bodies: %d car instance(s) with bodies, world body_count %d\n",
-                cars_with_bodies, process_world().body_count);
+    // Card 167: every `native trigger` instance adds one mass-0 sensor body.
+    int trigger_bodies = 0;
+    for (RigidBody *b : process_world().bodies)
+        if (b->body_flags & 0x40u) trigger_bodies++;
+    std::printf("  car bodies: %d car instance(s) with bodies, %d trigger sensor(s), "
+                "world body_count %d\n",
+                cars_with_bodies, trigger_bodies, process_world().body_count);
     c.check(process_world().body_count >= 2 &&
-                process_world().body_count ==
-                    2 * cars_with_bodies + (int)process_world().statics.size(),
-            "world body_count counts both bodies of every car and the grounds (0x4f7830)");
+                process_world().body_count == 2 * cars_with_bodies +
+                                                 (int)process_world().statics.size() +
+                                                 trigger_bodies,
+            "world body_count counts both bodies of every car, the grounds and the "
+            "trigger sensors (0x4f7830)");
     // Track.java:291-309: the career race builds Track(game = the event's
     // careerGM, map = new GroundRef(td.map_id)).
     c.check(class_after == "java.game.Track",
@@ -1086,8 +1105,177 @@ void game_init_check(Boot &boot, Checker &c)
     const unsigned vclip_overrun0 = (unsigned)vclip_overruns();
     const unsigned hull_deep0 = hull_deep_contacts();
     unsigned vclip_overrun_auto = vclip_overrun0;  // captured before the forced drag
+    // Card 167: the trigger bodies and the sensor-contact frame counter span
+    // both the settle block and the drive block below.
+    std::vector<RigidBody *> trig_bodies;
+    std::vector<Vec3> trig_start;
+    int sensor_contact_frames = 0;
     if (car_res && car_payload && car_payload->root_body) {
         RigidBody *root = car_payload->root_body;
+        // Card 167 check 1 at the drive start (before the 300 settle frames):
+        // the countdown timers already ran in the script (CircuitRacing.java
+        // :460-496) and beginRace/unlockCars sent the car "start" (0x4a3fa6).
+        {
+            Value cdv, rav;
+            std::string te;
+            int count_down = -1, race_active = -1;
+            if (game_object &&
+                boot.vm()->get_instance_field(game_object, "countDown", &cdv, &te) &&
+                cdv.kind == Value::Int)
+                count_down = cdv.i;
+            if (game_object &&
+                boot.vm()->get_instance_field(game_object, "raceActive", &rav, &te) &&
+                rav.kind == Value::Int)
+                race_active = rav.i;
+            c.check(count_down == 0 && race_active == 1,
+                    "the script countdown finished before the drive start (countDown " +
+                        std::to_string(count_down) + ", raceActive " +
+                        std::to_string(race_active) + ")");
+            c.check((car_payload->flags & 0x40004u) == 0,
+                    "beginRace/unlockCars cleared the car lock flags 0x40004 (0x4a3fa6, "
+                    "got 0x" + std::to_string(car_payload->flags & 0x40004u) + ")");
+        }
+        // Card 167 check 2: every Trigger of the race arrays is a `native
+        // trigger` instance (GameRef.create -> 0x523c80 -> 0x4d4700) with a
+        // mass-0 sensor box at the script's Vector3 pos.
+        float rp_size = 40.0f;  // Gamemode.java:117
+        {
+            Value rv;
+            std::string te;
+            if (game_object &&
+                boot.vm()->get_instance_field(game_object, "rpTriggerSize", &rv, &te) &&
+                rv.kind == Value::Float)
+                rp_size = rv.f;
+        }
+        int cp_n = 0, rp_n = 0, pit_n = 0, trig_bad = 0;
+        auto check_triggers = [&](const char *field, int *count, Vec3 half,
+                                  const char *label) {
+            Value av;
+            std::string te;
+            *count = 0;
+            if (!game_object ||
+                !boot.vm()->get_instance_field(game_object, field, &av, &te) ||
+                av.kind != Value::Array || !av.arr)
+                return;
+            *count = (int)av.arr->elems.size();
+            bool printed = false;
+            for (size_t idx = 0; idx < av.arr->elems.size(); idx++) {
+                const Value &el = av.arr->elems[idx];
+                auto bad = [&](const char *why) {
+                    trig_bad++;
+                    std::printf("    %s[%zu]: %s\n", label, idx, why);
+                };
+                if (el.kind != Value::Obj || !el.obj) {
+                    bad("no Trigger object");
+                    continue;
+                }
+                Value tgv, pv;
+                if (!boot.vm()->get_instance_field(el.obj, "trigger", &tgv, &te) ||
+                    tgv.kind != Value::Obj || !tgv.obj) {
+                    bad("no trigger GameRef");
+                    continue;
+                }
+                Runtime::Handle *th = rt->handle(tgv.obj);
+                Runtime::Resource *tr = th ? th->target : nullptr;
+                RigidBody *tb = tr ? tr->trigger_body.get() : nullptr;
+                if (!tb) {
+                    bad("no sensor body");
+                    continue;
+                }
+                Value xv, yv, zv;
+                if (!boot.vm()->get_instance_field(el.obj, "pos", &pv, &te) ||
+                    pv.kind != Value::Obj || !pv.obj) {
+                    std::printf("    %s[%zu]: pos field kind %d (%s)\n", label, idx,
+                                (int)pv.kind, te.c_str());
+                    bad("no script pos Vector3");
+                    continue;
+                }
+                if (!boot.vm()->get_instance_field(pv.obj, "x", &xv, &te) ||
+                    !boot.vm()->get_instance_field(pv.obj, "y", &yv, &te) ||
+                    !boot.vm()->get_instance_field(pv.obj, "z", &zv, &te) ||
+                    xv.kind != Value::Float || yv.kind != Value::Float ||
+                    zv.kind != Value::Float) {
+                    std::printf("    %s[%zu]: pos xyz kinds %d/%d/%d (%s) y.i %d y.f %.3f "
+                                "cls %s body %.3f %.3f %.3f\n",
+                                label, idx, (int)xv.kind, (int)yv.kind, (int)zv.kind,
+                                te.c_str(), yv.i, (double)yv.f,
+                                pv.obj->cls ? pv.obj->cls->name.c_str() : "?",
+                                (double)tb->pos.x, (double)tb->pos.y, (double)tb->pos.z);
+                    bad("no script pos Vector3");
+                    continue;
+                }
+                Vec3 tp{xv.f, yv.f, zv.f};
+                const Shape &sh = tb->def.shape;
+                bool body_ok = sh.type == SHAPE_BOX &&
+                               std::fabs(sh.half_extents.x - half.x) < 1e-3f &&
+                               std::fabs(sh.half_extents.y - half.y) < 1e-3f &&
+                               std::fabs(sh.half_extents.z - half.z) < 1e-3f &&
+                               tb->def.inv_mass == 0.0f &&
+                               tb->body_flags == 0x15040u && tb->owner_id == th->id;
+                float pos_d = vec_length(tb->pos - tp);
+                if (!body_ok)
+                    bad("shape/half extents/mass/flags/owner differ");
+                else if (pos_d > 1e-3f)
+                    bad("body pos differs from the script Vector3");
+                if (!printed) {
+                    std::printf("    %s[0]: pos %.3f %.3f %.3f, half %.3f %.3f %.3f, "
+                                "flags 0x%x, owner 0x%x\n",
+                                label, (double)tb->pos.x, (double)tb->pos.y,
+                                (double)tb->pos.z, (double)sh.half_extents.x,
+                                (double)sh.half_extents.y, (double)sh.half_extents.z,
+                                tb->body_flags, tb->owner_id);
+                    printed = true;
+                }
+                trig_bodies.push_back(tb);
+                trig_start.push_back(tb->pos);
+            }
+        };
+        // Gamemode.java:361 (cp 30/30/5), :275 (rp size/size/5), :382 (pit 2/2/5).
+        check_triggers("cpTrigger", &cp_n, Vec3{30.0f, 30.0f, 5.0f}, "cp");
+        check_triggers("rpTrigger", &rp_n, Vec3{rp_size, rp_size, 5.0f}, "rp");
+        check_triggers("pitTrigger", &pit_n, Vec3{2.0f, 2.0f, 5.0f}, "pit");
+        // Count source: the shipped track_data Vectors that size the arrays
+        // (Norisring data/track_data.java:42 checkpoints, :57 pits, :69
+        // raceposData); gamemode rpTriggerSize drives the race-position size.
+        Object *track_data = nullptr;
+        {
+            Value ev, tv;
+            std::string e;
+            if (game_object &&
+                boot.vm()->get_instance_field(game_object, "gmcEvent", &ev, &e) &&
+                ev.kind == Value::Obj && ev.obj &&
+                boot.vm()->get_instance_field(ev.obj, "track", &tv, &e) &&
+                tv.kind == Value::Obj)
+                track_data = tv.obj;
+        }
+        auto vector_size = [&](const char *field, int *out) {
+            Value ov, sz;
+            std::string e;
+            *out = -1;
+            if (!track_data ||
+                !boot.vm()->get_instance_field(track_data, field, &ov, &e) ||
+                ov.kind != Value::Obj || !ov.obj ||
+                !rt->call_method(ov.obj, "size", {}, &sz, &e) ||
+                sz.kind != Value::Int)
+                return;
+            *out = sz.i;
+        };
+        int td_cp = -1, td_rp = -1, td_pit = -1;
+        vector_size("checkpoints", &td_cp);
+        vector_size("raceposData", &td_rp);
+        vector_size("pits", &td_pit);
+        std::printf("  triggers (0x4d4700): cp %d/%d, rp %d/%d (size %.1f), pit %d/%d "
+                    "(built/track_data)\n",
+                    cp_n, td_cp, rp_n, td_rp, (double)rp_size, pit_n, td_pit);
+        c.check(cp_n == td_cp && rp_n == td_rp && pit_n == td_pit && td_cp > 0 &&
+                    td_rp > 0 && td_pit > 0,
+                "the race script builds one trigger per track_data Vector entry "
+                "(Gamemode.java:361,275,382)");
+        c.check(trig_bad == 0 && !trig_bodies.empty(),
+                "every trigger has a mass-0 box sensor body at the script pos with "
+                "body flags 0x15040 and its resource id as owner (0x4d4700, " +
+                    std::to_string(trig_bad) + " bad of " +
+                    std::to_string(trig_bodies.size() + (size_t)trig_bad) + ")");
         // Floor = highest soup surface under the car's start (x,z): a downward
         // ray against the merged map collider (card 144).
         float floor_y = 0.0f;
@@ -1189,6 +1377,7 @@ void game_init_check(Boot &boot, Checker &c)
             bool awake = !root->asleep;
             float t0 = process_world().time;
             loop.frame(i * 16);
+            sensor_contact_frames += sensor_contacts_now();
             if (awake && process_world().time > t0) awake_steps++;
         }
         unsigned awake_calls = g_drive_probe.calls_awake - awake_calls0;
@@ -1691,8 +1880,11 @@ void game_init_check(Boot &boot, Checker &c)
         auto key = [](int dik, bool down) {
             g_input->devices[0].raw.keys[dik] = down ? 0x80 : 0;
         };
-        auto frames = [&fr, &loop](int n) {
-            for (int i = 0; i < n; i++) loop.frame(++fr * 16);
+        auto frames = [&fr, &loop, &sensor_contact_frames](int n) {
+            for (int i = 0; i < n; i++) {
+                loop.frame(++fr * 16);
+                sensor_contact_frames += sensor_contacts_now();
+            }
         };
         auto report = [car_payload, root](const char *phase) {
             // car+0x1e7c is rad/s; getRPM reports it * 9.549296.
@@ -2179,6 +2371,21 @@ void game_init_check(Boot &boot, Checker &c)
                 "transmission restored to " + std::to_string(tr) + " (flags " +
                     std::to_string(car_payload->flags & 0x70u) + " == " +
                     std::to_string(tr_bits) + ")");
+        // Card 167 check 2 (re-check): mass-0 sensor bodies live in the
+        // non-static world list but never integrate, so their pose is unchanged.
+        bool trig_pos_ok = !trig_bodies.empty();
+        for (size_t i = 0; i < trig_bodies.size(); i++)
+            if (vec_length(trig_bodies[i]->pos - trig_start[i]) > 1e-3f)
+                trig_pos_ok = false;
+        c.check(trig_pos_ok,
+                "trigger sensor bodies keep their pose over the career block (mass 0, "
+                "0x4d4700)");
+        // Card 167 check 3: Collide__bodyPair 0x4fb370 step 4 never turns a
+        // sensor pair into a world contact (the car crosses cp #3 and the
+        // race-position boxes on the straight).
+        c.check(sensor_contact_frames == 0,
+                "no world contact has a sensor body as a side over the career block (" +
+                    std::to_string(sensor_contact_frames) + " frame(s), 0x4fb370 step 4)");
         // Card 165 check 1: on the integrated pose with the 0x4fc7e0 TOI the
         // walk never runs out of steps in the whole career-race block.
         unsigned race_overruns = (unsigned)vclip_overruns() - vclip_overrun0;

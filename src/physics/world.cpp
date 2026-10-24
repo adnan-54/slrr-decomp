@@ -642,6 +642,10 @@ static bool pair_unsupported_mesh(const Shape &a, const Shape &b)
 static void consider_pair(World &w, RigidBody &a, RigidBody &b, bool add_new,
                           std::vector<Contact> &next)
 {
+    // Collide__bodyPair 0x4fb370 step 4: a body flagged 0x40 is a sensor and
+    // makes no physical contact (0x4fd910 -> addTriggerContact, card 168).
+    if ((a.body_flags | b.body_flags) & 0x40u)
+        return;
     if (!is_dynamic(a) && !is_dynamic(b))
         return;
     bool existing = pair_has_contacts(w, &a, &b);

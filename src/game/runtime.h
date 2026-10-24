@@ -132,6 +132,8 @@ class Runtime {
         std::shared_ptr<traffic::Graph> traffic;
         // 0x4bade0 type_ground vf3 body part: static kind-0 "groundbody".
         std::unique_ptr<RigidBody> ground_body;
+        // 0x4d4700 type_trigger vf3: mass-0 sensor box/sphere/capsule.
+        std::unique_ptr<RigidBody> trigger_body;
         bool instance = false;
         Object *script = nullptr;          // script instance (typed +0x50)
         int refs = 0;                      // handles attached (RI+0x78 list)
