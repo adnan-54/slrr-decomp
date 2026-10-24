@@ -2710,12 +2710,27 @@ bool gt_create_native_instance(Vm &, const Args &a, Value *out, std::string *err
     Runtime::Handle *h = rt->handle(o);
     *out = Value::make_null();
     if (!h) return true;
-    Runtime::Resource *type =
-        type_id ? rt->resolve((uint32_t)type_id) : h->target;
+    // 0x4dc510: type 0 -> the receiver class's own type node, made once by 0x5243d0
+    // under DAT_005fde80 and cached at class+0x1d4.
+    // INVENTED: node type 8 and name = class name (0x5243d0/0x549ff0 not traced).
+    static std::map<const ClassState *, Runtime::Resource *> class_types;
+    Runtime::Resource *type = nullptr;
+    if (type_id) {
+        type = rt->resolve((uint32_t)type_id);
+    } else if (o->cls) {
+        Runtime::Resource *&t = class_types[o->cls];
+        if (!t) {
+            t = rt->define_script_resource(8, object_class_name(o), "", nullptr);
+            t->script_class = object_class_name(o);
+        }
+        type = t;
+    }
     if (!type) return true;
+    // 0x4dc510: a null parent (or one with id 0) -> game root ref DAT_005fde50.
+    Runtime::Resource *parent = value_resource(a[1]);
+    if (!parent || parent->id == 0) parent = rt->game_root();
     Runtime::Resource *inst =
-        rt->instantiate(type, value_resource(a[1]), value_string(a, 4),
-                        value_string(a, 3), false, err);
+        rt->instantiate(type, parent, value_string(a, 4), value_string(a, 3), false, err);
     if (!inst) return false;
     rt->bind(h, inst);
     // 0x5240e0: typed+0x50 = the receiver script object, unconditionally

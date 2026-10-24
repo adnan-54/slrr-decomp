@@ -69,24 +69,6 @@ check: all
 	cd .. && ulimit -v 1500000 && timeout 300 src/$(BUILD)/vmboot --selfcheck
 	cd .. && src/$(BUILD)/scxcheck --selfcheck
 
-dump118:
-	$(BUILD)/classdump "$(GAME)/system/scripts/io/MouseCursor.class"
-
-dump118b:
-	$(BUILD)/classdump "$(GAME)/system/scripts/lang/GameType.class"
-	$(BUILD)/classdump "$(GAME)/system/scripts/util/resource/ResourceRef.class"
-	$(BUILD)/classdump "$(GAME)/system/scripts/render/RenderRef.class"
-
-dump118c:
-	$(BUILD)/classdump "$(GAME)/system/scripts/lang/GameType.class" | grep -n -A2 -B2 'createNativeInstance\|typeID'
-
-dump118d:
-	$(BUILD)/classdump "$(GAME)/system/scripts/util/resource/ResourceRef.class" | grep -n -A2 -B2 'typeID'
-
-dump118e:
-	$(BUILD)/classdump --disasm "$(GAME)/system/scripts/lang/GameType.class" | sed -n '/ body 81/,/ body 84/p'
-	$(BUILD)/classdump --disasm "$(GAME)/system/scripts/util/resource/ResourceRef.class" | sed -n '/ body 25/,/ body 28/p'
-
 clean:
 	rm -rf $(BUILD)
 
