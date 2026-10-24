@@ -258,18 +258,10 @@ void Runtime::deactivate()
     active_ = nullptr;
 }
 
-static int g_mount_depth = 0;  // TEMP instrumentation (card 119)
-
 std::string Runtime::script_class_of(const Package &pkg, const RpkRecord &rec) const
 {
-    if (g_mount_depth > 0)
-        std::fprintf(stderr, "TEMP_CLASS_OF_DURING_MOUNT %s\n", rec.name.c_str());
-    bool trace = rec.name == "track_data";
-    if (trace) std::fprintf(stderr, "TEMP_TRACK refs=%zu\n", resources_->refs(pkg, rec).size());
     for (const DataRef &ref : resources_->refs(pkg, rec)) {
         if (ref.kind != DataRef::Script) continue;
-        if (trace) std::fprintf(stderr, "TEMP_TRACK script text='%s' file=%d path='%s'\n",
-                                ref.text.c_str(), (int)ref.file, ref.path.c_str());
         if (classes_) {
             for (const auto &kv : classes_->entries())
                 if (!ref.path.empty() && kv.second.path == ref.path) return kv.first;
@@ -283,8 +275,6 @@ std::string Runtime::script_class_of(const Package &pkg, const RpkRecord &rec) c
         if (base.size() > 6 && base.compare(base.size() - 6, 6, ".class") == 0)
             base.resize(base.size() - 6);
         std::string fqn = path_class_loader(ref.text.substr(0, sep), base);
-        if (trace) std::fprintf(stderr, "TEMP_TRACK loader(%s,%s) -> '%s'\n",
-                                ref.text.substr(0, sep).c_str(), base.c_str(), fqn.c_str());
         if (!fqn.empty()) return fqn;
     }
     return std::string();
@@ -316,9 +306,7 @@ void Runtime::mount_package(const Package *p)
     // is missing; src's resolve() creates a forward-referenced parent on
     // demand. Shipped packages list parents before children, so the result
     // is the same; only a malformed forward reference would differ.
-    g_mount_depth++;  // TEMP instrumentation (card 119)
     for (const RpkRecord &rec : p->rpk.records) resolve(rec.id, p);
-    g_mount_depth--;
     // 0x518410 tail insert: child order = record order in the .rpk.
     // shortcut: order across packages is mount-completion order, not the
     // exe's per-record interleaving inside 0x51e6b0 (not fully traced).
@@ -525,16 +513,12 @@ Runtime::Resource *Runtime::instantiate(Resource *type, Resource *parent,
         if (parent->instance) r->world_root = parent->world_root ? parent->world_root : parent;
     }
     if (scripted) r->script = script_instance(r);
-    if (scripted && !r->script)
-        std::fprintf(stderr, "TEMP_NOSCRIPT %u type=%s cls='%s'\n", r->id,
-                     type ? type->name.c_str() : "(null)", r->script_class.c_str());
     // 0x523c80: a script class runs its <init> (signature "(I)" in this class
     // format, no return type) in a THRD-CREATE thread (prio 10,
     // flags 0) with the new instance id as the single int argument, untimed.
     // INVENTED: the exe binds the script object's native handle first (0x4ed320);
     // src resolves it lazily via handle(obj), so there is nothing to bind here.
     if (scripted && r->script && vm_) {
-        std::fprintf(stderr, "TEMP_SPAWN %u %s\n", r->id, r->script_class.c_str());
         std::vector<Value> args{Value::make_int((int32_t)r->id)};
         ClassState *decl = nullptr;
         std::string e;
