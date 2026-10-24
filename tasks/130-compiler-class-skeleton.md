@@ -14,26 +14,28 @@ an empty/placeholder TREE for now and exclude it from the comparison. Format: FO
 "SLRR TUFA" (bin/tools/slrr-script-decompiler/FORMAT.md) and our reader src/script/classfile.*
 (reuse its structs; add a writer next to it if it fits there).
 
-## How to derive the rules (data, not guesses)
-Use the pairs: every `<dir>/src/Name.java` with a shipped `<dir>/Name.class` (2,742; each
-source also ships as `<dir>/Name.java` - use the src/ copy). Dump shipped classes with
-`src/build/classdump <file>` to see the CONS order, which constants exist (names,
-descriptors, class refs, member refs, nameType, string/resource literals used by bodies),
-flags per modifier, field/method ordering, localSlots, body indices. CONS also holds
-constants only TREE uses (literals, member refs): collect them in the order the exe does
-(find the rule from the pairs: likely first-use order during a walk of declarations and
-bodies). The `stamp` to write: the value the shipped .class files of the 2.3.1 install carry
-(check; 0x00024F9D or 0x00011AE1; notes/03 says the loader accepts both).
-localSlots and treeBodyIdx need the body AST (count locals; init bodies/method bodies order).
+## Scope (narrowed after a first attempt ran out of turns)
+- This card: header (magic, version, stamp = the value shipped 2.3.1 .class files carry),
+  FILD, MTHD, CLSS, and a CONS that contains the right constants. Compare SEMANTICALLY:
+  resolve every constant index to its value (string text / class name / member
+  class+name+desc / resource a,b) on both sides, so CONS ORDER does not matter yet.
+  FILD: per section, same fields in the same order with same flags, name, type, and
+  init (-1 vs has-initializer; exact body index only if easy). MTHD: per section same
+  methods/order/flags/name/sig, localSlots, treeBodyIdx (exact if easy, else just
+  -1/0 vs present). CLSS: same fields. CONS: same SET of constants (report missing/extra).
+- Do NOT explore the corpus broadly. Pick 3 small pairs first (e.g.
+  `bin/the game/cars/racers/Axis_data/scripts/src/*.java` vs `../*.class`; also
+  bin/Axis_FL_door.java + bin/Axis_FL_door.class) with `src/build/classdump <file>`, get
+  them identical, then run the whole corpus once and report.
+- Exact CONS order = next card.
 
 ## Changes
-- new: `src/script/compiler/emit.h/.cpp` (class unit writer; TREE placeholder).
-- `src/tools/classdump.cpp`: `--compile-check <dir>...`: for each pair, compile the src
-  .java, compare unit count, header, CONS, FILD, MTHD, CLSS with the shipped .class; print
-  `skeleton: P pairs, U units, identical: header H, CONS C, FILD F, MTHD M, CLSS S` and the
-  first 10 mismatches with a one-line reason (section + first differing entry).
-- Makefile `check`: run `--compile-check "bin/the game"` as a REPORT (do not fail the build
-  on mismatches yet; fail only on a crash or unreadable file).
+- new: `src/script/compiler/emit.h/.cpp` (unit writer; TREE written as zero bodies).
+- `src/tools/classdump.cpp`: `--compile-check <dir>...` walking pairs (`<dir>/src/X.java` +
+  `<dir>/X.class`), compile, compare as above; print
+  `skeleton: P pairs, U units, identical: header H, FILD F, MTHD M, CLSS S, CONS-set C`
+  plus the first 10 mismatches (file, section, first differing entry).
+- Makefile `check`: run it as a REPORT only (no failure on mismatches).
 
 ## Done when
 - `make -C src clean check` green; report the skeleton summary line. Aim: all sections
