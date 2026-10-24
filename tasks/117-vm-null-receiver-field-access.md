@@ -1,6 +1,6 @@
 ---
 id: 117
-status: draft
+status: rejected  # evidence only: exe faults on null.length, so shipped data never hits it; see card 118
 branch:
 depends: []
 ---
