@@ -129,8 +129,11 @@ void RigidBody::set_static_shape(const Shape &s)
 
 void World::add_body(RigidBody *b)
 {
-    bodies.insert(bodies.begin(), b); // 0x4f7830: head insert into the root's child list
-    body_count++;                     // w+0x54
+    body_count++; // w+0x54, every add
+    if (b->def.flags & 4u) // 0x4f7830: flag 4 skips the active root list
+        statics.insert(statics.begin(), b);
+    else
+        bodies.insert(bodies.begin(), b); // head insert into the root's child list
 }
 
 void World::unlink(RigidBody *b)
@@ -154,6 +157,11 @@ void World::unlink(RigidBody *b)
     for (size_t i = 0; i < sleeping.size(); i++)
         if (sleeping[i] == b) {
             sleeping.erase(sleeping.begin() + (long)i);
+            return;
+        }
+    for (size_t i = 0; i < statics.size(); i++)
+        if (statics[i] == b) {
+            statics.erase(statics.begin() + (long)i);
             return;
         }
 }
@@ -534,6 +542,75 @@ static bool pair_unsupported_mesh(const Shape &a, const Shape &b)
            (a.type == SHAPE_MESH && b.type == SHAPE_MESH);
 }
 
+// One candidate pair: broad-phase filters and per-point contact generation.
+static void consider_pair(World &w, RigidBody &a, RigidBody &b, bool add_new,
+                          std::vector<Contact> &next)
+{
+    if (!is_dynamic(a) && !is_dynamic(b))
+        return;
+    bool existing = pair_has_contacts(w, &a, &b);
+    if (!add_new && !existing)
+        return;
+    int ta = a.def.shape.type, tb = b.def.shape.type;
+    // Collide__bodyPair skips shape 0 and 7 on either side.
+    if (ta == SHAPE_NONE || tb == SHAPE_NONE || ta == SHAPE_MESH_NO_POLY ||
+        tb == SHAPE_MESH_NO_POLY)
+        return;
+    if (!shape_kind_resolved(ta) || !shape_kind_resolved(tb) ||
+        (ta == SHAPE_PLANE && tb == SHAPE_PLANE) ||
+        pair_unsupported_mesh(a.def.shape, b.def.shape)) {
+        // Unsupported kind/pair, no contacts are invented.
+        if (add_new)
+            w.unsupported_pairs++;
+        return;
+    }
+    ShapeHit hits[4];
+    int count = collide_shapes_within(a.def.shape, a.pose(), b.def.shape, b.pose(), hits, 4,
+                                      existing ? kKeepSlop : kAddSlop);
+    int mode = existing ? existing_mode(w, &a, &b) : 6;
+    Mat34 ra = a.rotation(), rb = b.rotation();
+    for (int k = 0; k < count; k++) {
+        Contact c;
+        c.a = &a;
+        c.b = &b;
+        c.normal = hits[k].normal;
+        c.separation = hits[k].separation;
+        c.world_point = (hits[k].point_a + hits[k].point_b) * 0.5f;
+        c.local_a = mat_tvec(ra, hits[k].point_a - a.pos);
+        c.local_b = mat_tvec(rb, hits[k].point_b - b.pos);
+        c.friction = a.def.shape.friction < b.def.shape.friction
+                         ? a.def.shape.friction
+                         : b.def.shape.friction;
+        c.restitution = 0.5f * (a.def.shape.restitution + b.def.shape.restitution);
+        c.mode = mode;
+        c.feature_a = hits[k].feature_a;
+        c.feature_b = hits[k].feature_b;
+        if (!add_new) {
+            // Sub-iteration refresh: keep the accumulated normal impulse
+            // (+0xb8) of the nearest matching point. Witness points move
+            // and re-sort between passes, so match by A-local position.
+            const Contact *match = nullptr;
+            float best = 1e-4f;
+            for (const Contact &old : w.contacts) {
+                if (old.a != &a || old.b != &b)
+                    continue;
+                Vec3 diff = old.local_a - c.local_a;
+                float d2 = vec_dot(diff, diff);
+                if (d2 < best) {
+                    best = d2;
+                    match = &old;
+                }
+            }
+            if (match) {
+                c.normal_impulse = match->normal_impulse;
+                c.bias_force = match->bias_force;
+                c.friction_force = match->friction_force;
+            }
+        }
+        next.push_back(c);
+    }
+}
+
 // PhysicsWorld__updateContacts 0x4f9af0 plus Collide__bodyPair 0x4fb370.
 // add_new: the broad phase pass at the start of a step may create pairs; later
 // sub-iteration refreshes only update pairs that already exist.
@@ -542,72 +619,12 @@ static void update_contacts(World &w, bool add_new)
     std::vector<Contact> next;
     for (size_t i = 0; i < w.bodies.size(); i++) {
         RigidBody &a = *w.bodies[i];
-        for (size_t j = i + 1; j < w.bodies.size(); j++) {
-            RigidBody &b = *w.bodies[j];
-            if (!is_dynamic(a) && !is_dynamic(b))
-                continue;
-            bool existing = pair_has_contacts(w, &a, &b);
-            if (!add_new && !existing)
-                continue;
-            int ta = a.def.shape.type, tb = b.def.shape.type;
-            // Collide__bodyPair skips shape 0 and 7 on either side.
-            if (ta == SHAPE_NONE || tb == SHAPE_NONE || ta == SHAPE_MESH_NO_POLY ||
-                tb == SHAPE_MESH_NO_POLY)
-                continue;
-            if (!shape_kind_resolved(ta) || !shape_kind_resolved(tb) ||
-                (ta == SHAPE_PLANE && tb == SHAPE_PLANE) ||
-                pair_unsupported_mesh(a.def.shape, b.def.shape)) {
-                // Unsupported kind/pair, no contacts are invented.
-                if (add_new)
-                    w.unsupported_pairs++;
-                continue;
-            }
-            ShapeHit hits[4];
-            int count = collide_shapes_within(a.def.shape, a.pose(), b.def.shape, b.pose(), hits, 4,
-                                              existing ? kKeepSlop : kAddSlop);
-            int mode = existing ? existing_mode(w, &a, &b) : 6;
-            Mat34 ra = a.rotation(), rb = b.rotation();
-            for (int k = 0; k < count; k++) {
-                Contact c;
-                c.a = &a;
-                c.b = &b;
-                c.normal = hits[k].normal;
-                c.separation = hits[k].separation;
-                c.world_point = (hits[k].point_a + hits[k].point_b) * 0.5f;
-                c.local_a = mat_tvec(ra, hits[k].point_a - a.pos);
-                c.local_b = mat_tvec(rb, hits[k].point_b - b.pos);
-                c.friction = a.def.shape.friction < b.def.shape.friction
-                                 ? a.def.shape.friction
-                                 : b.def.shape.friction;
-                c.restitution = 0.5f * (a.def.shape.restitution + b.def.shape.restitution);
-                c.mode = mode;
-                c.feature_a = hits[k].feature_a;
-                c.feature_b = hits[k].feature_b;
-                if (!add_new) {
-                    // Sub-iteration refresh: keep the accumulated normal impulse
-                    // (+0xb8) of the nearest matching point. Witness points move
-                    // and re-sort between passes, so match by A-local position.
-                    const Contact *match = nullptr;
-                    float best = 1e-4f;
-                    for (const Contact &old : w.contacts) {
-                        if (old.a != &a || old.b != &b)
-                            continue;
-                        Vec3 diff = old.local_a - c.local_a;
-                        float d2 = vec_dot(diff, diff);
-                        if (d2 < best) {
-                            best = d2;
-                            match = &old;
-                        }
-                    }
-                    if (match) {
-                        c.normal_impulse = match->normal_impulse;
-                        c.bias_force = match->bias_force;
-                        c.friction_force = match->friction_force;
-                    }
-                }
-                next.push_back(c);
-            }
-        }
+        for (size_t j = i + 1; j < w.bodies.size(); j++)
+            consider_pair(w, a, *w.bodies[j], add_new, next);
+        // Flag-4 bodies sit outside the active root list (0x4f7830); pair them
+        // with every active root. The shape 0/7 filter drops the ground itself.
+        for (size_t j = 0; j < w.statics.size(); j++)
+            consider_pair(w, a, *w.statics[j], add_new, next);
     }
     w.contacts.swap(next);
 }

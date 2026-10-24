@@ -90,6 +90,7 @@ struct Shape {
     Vec3 plane_normal{0.0f, 1.0f, 0.0f}; // SHAPE_PLANE, shape-local, unit
     std::shared_ptr<const CollisionMesh> mesh; // +0xb8..: SHAPE_MESH geometry
     float friction = 0.6f;            // +0x50
+    float rolling_resistance = 0.0f;  // +0x54
     float restitution = 0.2f;         // +0x58
 
     // notes/11 §1: broad-phase radius; primitives already carry the +0.05 slack.
@@ -211,6 +212,9 @@ struct World {
     float air_density = 1.2928f;      // +0x364 = 0x3fa57a78, buoyancy path (body def flag 0x80) TODO
     std::vector<RigidBody *> bodies;  // root bodies (active root, w+0x84)
     std::vector<RigidBody *> sleeping; // sleeping root bodies (w+0x88)
+    // INVENTED: flag-4 (static / no-integration) bodies are never linked under
+    // the exe's active root (0x4f7830); src keeps them here to own and pair them.
+    std::vector<RigidBody *> statics;
     int body_count = 0;                // w+0x54, incremented by add_body
     std::vector<Contact> contacts;    // world+0x1d8
     int last_iterations = 0;

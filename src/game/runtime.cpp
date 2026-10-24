@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "game/car.h"
+#include "physics/physics.h"
 #include "platform/fs.h"
 #include "script/natives.h"
 #include "script/vm.h"
@@ -144,49 +145,111 @@ static bool scan_ground_params(const std::string &s, std::string *trc)
     return true;
 }
 
-// 0x4bade0 type_ground vf3 create: read the record's `gametype` and `params`
-// lines, check the type is a native ground, then load the named .trc
-// (File__readAll 0x565610, Traffic__load 0x41a000).
-// INVENTED: lazy creation at the first lookup and the failure log; the exe
-// creates the graph when the instance is made resident and has no failure log.
-static void load_ground(Runtime &rt, Runtime::Resource *r)
+// The type-1 record's data is an instance blob; its RSD chunk carries the
+// descriptor lines `gametype <id>` and `params <text>` (0x519940).
+static bool ground_rsd(Runtime::Resource *r, uint32_t *gametype, std::string *params)
 {
-    if (!r->package || !r->record) return;
-    const char *data = (const char *)r->package->rpk.data(*r->record);
-    size_t size = r->record->data_size;
-    uint32_t gametype = 0;
-    std::string params;
+    if (!r->package || !r->record) return false;
+    RpkInstanceData inst;
+    std::string err;
+    if (!r->package->rpk.parse_instance(*r->record, &inst, &err)) return false;
     bool has_type = false;
+    const std::string &data = inst.rsd;
     size_t pos = 0;
-    while (pos < size) {
+    while (pos < data.size()) {
         size_t end = pos;
-        while (end < size && data[end] != '\n') end++;
-        std::string line(data + pos, end - pos);
+        while (end < data.size() && data[end] != '\n') end++;
+        std::string line(data, pos, end - pos);
         if (!line.empty() && line.back() == '\r') line.pop_back();
         size_t k = 0;
         while (k < line.size() && !scan_ws(line[k])) k++;
         std::string key = line.substr(0, k);
         while (k < line.size() && scan_ws(line[k])) k++;
         if (key == "gametype") {
-            gametype = (uint32_t)std::strtoul(line.c_str() + k, nullptr, 16);
+            *gametype = (uint32_t)std::strtoul(line.c_str() + k, nullptr, 16);
             has_type = true;
         } else if (key == "params") {
-            params = line.substr(k);
+            *params = line.substr(k);
         }
         pos = end + 1;
     }
-    if (!has_type) return;
+    return has_type;
+}
 
-    Runtime::Resource *ty = rt.resolve(gametype, r->package);
-    if (!ty || !ty->package || !ty->record) return;
-    bool native_ground = false;
+// The record's gametype chain names the `native ground` type.
+static bool native_ground_type(Runtime &rt, uint32_t gametype, const Package *base)
+{
+    Runtime::Resource *ty = rt.resolve(gametype, base);
+    if (!ty || !ty->package || !ty->record) return false;
     for (const DataRef &ref : rt.resources().refs(*ty->package, *ty->record))
-        if (ref.kind == DataRef::Native && ref.native == "ground") {
-            native_ground = true;
-            break;
-        }
+        if (ref.kind == DataRef::Native && ref.native == "ground") return true;
     // shortcut: a scripted type's getInfo (0x47dd50) is not modelled.
-    if (!native_ground) return;
+    return false;
+}
+
+// 0x4bade0 type_ground vf3, body part: mass-0 kind-0 box with flag 4 (static,
+// no integration) added to the process world and kept on the resource.
+// INVENTED timing: the exe builds it when the map node becomes resident
+// (Collide__groundTree 0x4fe6f0 requestLoad); src builds it once at mount.
+static void create_ground_body(Runtime &rt, Runtime::Resource *r)
+{
+    if (r->ground_body) return;
+    uint32_t gametype = 0;
+    std::string params;
+    if (!ground_rsd(r, &gametype, &params)) return;
+    if (!native_ground_type(rt, gametype, r->package)) return;
+
+    // params "%x,%f,%f,%f,...": floats 1..3 are the body position.
+    // INVENTED: a failed scan leaves the remaining fields at 0.
+    size_t i = 0;
+    uint32_t id = 0;
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+    scan_hex(params, &i, &id);
+    scan_char(params, &i, ',');
+    scan_float(params, &i, &x);
+    scan_char(params, &i, ',');
+    scan_float(params, &i, &y);
+    scan_char(params, &i, ',');
+    scan_float(params, &i, &z);
+
+    World &w = process_world();
+    // 0x47c080 Config("gravity") / Config("ground_friction").
+    // INVENTED: Config.java's 9.81 / 1.0 when the statics are not loaded.
+    float gravity = 9.81f, friction = 1.0f;
+    if (rt.vm()) {
+        Value v;
+        std::string e;
+        if (rt.vm()->get_static_field("java.util.Config", "gravity", &v, &e) &&
+            v.kind == Value::Float)
+            gravity = v.f;
+        if (rt.vm()->get_static_field("java.util.Config", "ground_friction", &v, &e) &&
+            v.kind == Value::Float)
+            friction = v.f;
+    }
+    if (-gravity <= 0.0f) w.gravity = vec3(0.0f, -gravity, 0.0f);
+    if (friction <= 0.0f) friction = 1.0f;
+
+    auto b = std::make_unique<RigidBody>();
+    b->def.flags |= 4u;                      // static, no integration
+    b->def.shape.type = SHAPE_NONE;          // createBox(0, 0, ...)
+    b->def.shape.friction = friction;        // shape +0x50
+    b->def.shape.rolling_resistance = 0.01f; // shape +0x54
+    b->def.shape.restitution = 0.2f;         // shape +0x58
+    b->pos = vec3(x, y, z);
+    w.add_body(b.get());
+    r->ground_body = std::move(b);
+}
+
+// 0x4bade0 type_ground vf3 create: check the type is a native ground, then
+// load the named .trc (File__readAll 0x565610, Traffic__load 0x41a000).
+// INVENTED: lazy creation at the first lookup and the failure log; the exe
+// creates the graph when the instance is made resident and has no failure log.
+static void load_ground(Runtime &rt, Runtime::Resource *r)
+{
+    uint32_t gametype = 0;
+    std::string params;
+    if (!ground_rsd(r, &gametype, &params)) return;
+    if (!native_ground_type(rt, gametype, r->package)) return;
 
     std::string trc;
     if (!scan_ground_params(params, &trc) || trc.empty()) return;
@@ -319,11 +382,14 @@ void Runtime::mount_package(const Package *p)
     // exe's per-record interleaving inside 0x51e6b0 (not fully traced).
     for (const RpkRecord &rec : p->rpk.records) {
         Resource *r = resolve(rec.id, p);    // cached by the loop above
-        if (!r || !r->parent) continue;
-        std::vector<Resource *> &ch = r->parent->children;
-        if (!ch.empty()) ch.back()->next_sibling = r;
-        r->next_sibling = nullptr;
-        ch.push_back(r);
+        if (!r) continue;
+        if (r->parent) {
+            std::vector<Resource *> &ch = r->parent->children;
+            if (!ch.empty()) ch.back()->next_sibling = r;
+            r->next_sibling = nullptr;
+            ch.push_back(r);
+        }
+        if (rec.type == 1) create_ground_body(*this, r);
     }
 }
 
@@ -525,7 +591,7 @@ Runtime::Resource *Runtime::instantiate(Resource *type, Resource *parent,
     // 0x523c80: the type record's native manager vf3 runs before the script
     // <init>. Only `native car` (Vehicle__createCar 0x4992e0) builds bodies in
     // src; create_car_bodies is a no-op for every other native kind.
-    // shortcut: other native type-manager kinds (part, ground, camera, ...) are
+    // shortcut: other native type-manager kinds (part, camera, ...) are
     // not dispatched (0x523c80/0x5240e0).
     game::create_car_bodies(*this, r, type, params);
     // 0x523c80: a script class runs its <init> (signature "(I)" in this class

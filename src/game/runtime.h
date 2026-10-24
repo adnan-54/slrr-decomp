@@ -25,6 +25,7 @@
 class Vm;
 struct ClassState;
 struct Object;
+struct RigidBody;
 struct Value;
 
 class Runtime {
@@ -129,6 +130,8 @@ class Runtime {
         // creates it in type_ground vf3 0x4bade0 when the instance is made resident.
         bool ground_checked = false;
         std::shared_ptr<traffic::Graph> traffic;
+        // 0x4bade0 type_ground vf3 body part: static kind-0 "groundbody".
+        std::unique_ptr<RigidBody> ground_body;
         bool instance = false;
         Object *script = nullptr;          // script instance (typed +0x50)
         int refs = 0;                      // handles attached (RI+0x78 list)

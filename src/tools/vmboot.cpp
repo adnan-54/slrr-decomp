@@ -642,8 +642,9 @@ void game_init_check(Boot &boot, Checker &c)
     std::printf("  car bodies: %d car instance(s) with bodies, world body_count %d\n",
                 cars_with_bodies, process_world().body_count);
     c.check(process_world().body_count >= 2 &&
-                process_world().body_count == 2 * cars_with_bodies,
-            "world body_count counts both bodies of every car (0x4f7830)");
+                process_world().body_count ==
+                    2 * cars_with_bodies + (int)process_world().statics.size(),
+            "world body_count counts both bodies of every car and the grounds (0x4f7830)");
     // Track.java:291-299: the freeride race builds Track(game = the event's
     // careerGM, map = new GroundRef(td.map_id)).
     c.check(class_after == "java.game.Track",
@@ -725,6 +726,23 @@ void game_init_check(Boot &boot, Checker &c)
         std::printf("  note: %s has no corpus table row (multibot map)\n", leaf.c_str());
     }
 
+    // 0x4bade0: the map's type-1 record built the static kind-0 groundbody at
+    // mount (2.3.1 builds it when the node becomes resident).
+    RigidBody *ground = map_res ? map_res->ground_body.get() : nullptr;
+    bool ground_static = false, ground_active = false;
+    for (RigidBody *b : process_world().statics)
+        if (b == ground) ground_static = true;
+    for (RigidBody *b : process_world().bodies)
+        if (b == ground) ground_active = true;
+    c.check(ground != nullptr, "Track.map resource has a ground body (0x4bade0)");
+    c.check(ground_static && !ground_active,
+            "ground body is in world.statics, not the active root list (0x4f7830)");
+    c.check(ground && (ground->def.flags & 4u) != 0 && ground->def.inv_mass == 0.0f &&
+                ground->def.shape.type == SHAPE_NONE && ground->def.shape.friction == 1.0f,
+            "ground body is static kind 0 with ground_friction 1.0");
+    c.check(ground && ground->pos.x == 0.0f && ground->pos.y == 0.0f && ground->pos.z == 0.0f,
+            "ground body sits at the record's params xyz");
+
     // INVENTED: Gamemode.wakeUpCars (Gamemode.java:799) is not called -- its
     // Track.java:1056 call is commented out; in the exe the freeride car wakes
     // from player input (Vehicle__updateControls 0x498300 at 0x498599). Queue
@@ -744,7 +762,7 @@ void game_init_check(Boot &boot, Checker &c)
         c.check(awake,
                 "queued \"wakeup\" puts car_root back in the active body list (0x507060)");
         c.check(root->pos.y < y_before,
-                "woken car_root falls under gravity (no ground yet)");
+                "woken car_root falls under gravity (kind-0 ground makes no contacts)");
     }
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
