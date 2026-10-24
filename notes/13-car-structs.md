@@ -716,3 +716,36 @@ Also in vf14: `"remove %d %d"` -> 0x4cb510(P) (uninstall, not traced), `"repair"
 `"add_part"`/`"rem_part"` (0x4c17b0/0x4c6990), `"filter"`, `"paint"`, `"decal"`, `"bigdecal"`,
 `"colorscheme"`, `"flap_toggle"`. `install_OK` (0x4cd3a0) wraps the same `0x4c96c0` search for the
 garage UI; `Part.addPart` no longer calls it (commented out in Part.java:840).
+
+### 15.1 Failed stock installs (2026-10-24, card 155 RE)
+**Bolts are dead data.** cfg keyword table 0x5da528 (`click` .. `spring`, pairs string/handler)
+has `bolt` -> 0x4bfd00: on the last-declared type slot (`M+0x1194`) it allocates a 0x70-byte
+`slot_bolt` (vtable `slot_bolt::vftable`), links it into the slot's list `+0x98/+0xa0`, `+0x6c++`,
+and scans `"%f %f %f %f %f %f %d"` (pos, angles via 0x5666d0, optional resource id through
+0x51e860). `+0x6c` is therefore the bolt count that 0x4c1a10 returns (`tTypeSlot+0x6c +
+myTypeSlot+0x6c`). **No shipped `.cfg` has a `bolt` line** (`grep -rliw bolt --include=*.cfg
+"bin/the game"` = 0 files), so every install commits at once (0x4cb1d0 `bolts == 0` ->
+0x4c7d20). src's commit-at-once is exe-exact for the shipped game, not a shortcut.
+
+**Who fails (scratch vmboot --selfcheck with a print in part_command, src at 20b2568).** 834
+`install` commands, 779 ok, **55 failed, all failures the exe also has**; the freeride
+Duhen_SunStrip_1_8_DVC (vmboot car) has 75 ok / 0 failed, car_root 1280.294 kg = cfg bodies
+742.297 + wheels 40.040 + its installed parts' cfg masses 497.957.
+- 52 = 4 Whisper_Q1000XL cars x 13: `V12_block_racing`'s stock list repeats parts its own sub-parts
+  already added (crank adds flywheel/rods -> pistons; each cylinder head adds its camshafts, bearing
+  bridge, cover, exhaust header; then the block adds V12_flywheel, rods, pistons, L/R intake
+  camshaft, 2x each bearing bridge, L/R head cover, L/R exhaust header again). The second copy's
+  only compatible slot (e.g. crank slot 6, head slot 25/28/22/37) is occupied; 0x4c96c0's car-wide
+  fallback finds nothing free -> 0, Part.addPart destroys it. (V12 scripts ship as .class only.)
+- 3 = Axis_200XT (used car, random roll `random() <= desc.optical`, Chassis.java:938): `R wing`
+  0xE6 (slot 21 `attach` trunk 0xEA:1) comes from list F, before list Rr adds the trunk; `FL
+  window` 0xD4 (`attach` FL door 0xD2:6) and `L mirror 2` 0xF4 (0xD2:11) whose FL door 0xD2 was
+  not rolled. Host absent at install time -> exe fails too (script order is the order).
+The earlier "~55 windows/mirrors without doors on the SunStrip" reading was wrong.
+
+**vmboot count off by one.** "installed parts on the car (recursive slot walk): 76" counts the
+chassis itself: the walk starts at `car_res` but never puts it into `seen`, and every child's
+my-side slot points back at the chassis. Real count 75 = ok installs on that car. The chassis cfg
+mass is not added twice (the printed total equals car_root, so load_part_cfg finds no part cfg
+for the car resource).
+
