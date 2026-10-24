@@ -349,11 +349,13 @@ void game_init_check(Boot &boot, Checker &c)
     int failed = 0;
     for (const natives::ThreadInfo &t : threads)
         if (!t.error.empty()) failed++;
-    const size_t kShown = 40;
-    for (size_t i = 0; i < threads.size() && i < kShown; i++)
-        std::printf("  thread %s: %s\n", threads[i].name.c_str(),
-                    thread_state(threads[i]).c_str());
-    if (threads.size() > kShown) std::printf("  ... %zu more\n", threads.size() - kShown);
+    // Finished threads are only counted; live and failed ones are listed.
+    size_t done = 0;
+    for (const natives::ThreadInfo &t : threads) {
+        if (t.done && t.error.empty()) { done++; continue; }
+        std::printf("  thread %s: %s\n", t.name.c_str(), thread_state(t).c_str());
+    }
+    std::printf("  threads done: %zu\n", done);
     std::printf("  frames: %d run, threads: %zu, failed: %d\n", kFrames, threads.size(),
                 failed);
 }
