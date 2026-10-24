@@ -1390,6 +1390,9 @@ void drive_cars(float dt)
         sim.nitro = c->nitro_input;
         sim.gear = c->gear;
         sim.max_steer = c->max_steer;
+        // Aero drag (0x49c8e0 §7): e+0x91c / e+0x910.
+        sim.c_drag = c->c_drag;
+        sim.drag_center = Vec3{c->drag_center[0], c->drag_center[1], c->drag_center[2]};
         sim.final_drive = c->rearend_ratio;
         for (int i = 0; i < kMaxGears; i++) sim.ratios[i] = c->ratio[i];
         Engine &e = sim.engine;
@@ -1812,6 +1815,13 @@ int car_body_instances()
     for (const auto &kv : g_cars)
         if (kv.second->root_body) n++;
     return n;
+}
+
+std::vector<CarData *> car_payloads()
+{
+    std::vector<CarData *> out;
+    for (auto &kv : g_cars) out.push_back(kv.second.get());
+    return out;
 }
 
 void bind_wheel(Object *wrapper, WheelData *w)

@@ -293,6 +293,8 @@ void drive_cars(float dt);
 void control_cars(float dt);
 // Number of CarData payloads that own car bodies (vmboot body_count check).
 int car_body_instances();
+// Every live CarData payload (vmboot: shipped C_drag corpus, card 161).
+std::vector<CarData *> car_payloads();
 void bind_wheel(Object *wrapper, WheelData *w);
 WheelData *wheel_data(Object *wrapper);
 // SfxTable native handle payload, bound by Chassis.getSfxTable 0x4b3890 to one

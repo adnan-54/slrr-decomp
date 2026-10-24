@@ -97,6 +97,7 @@ struct Wheel {
     Vec3 normal_world{0.0f, 1.0f, 0.0f};  // S+0xc4
     Vec3 ground_velocity{0.0f, 0.0f, 0.0f}; // Wheel__contactQuery
     float ground_friction = 0.0f; // S+0xac material
+    float ground_rolling_resistance = 0.0f; // gm+0x54 of the same material
 
     float rest_ray() const { return rest_len + radius; }
     float max_ray() const { return max_len + radius; }
@@ -189,6 +190,18 @@ struct Car {
     float combustion_torque = 0.0f; // car+0x1e8c
     float last_rpm = 0.0f;          // car+0x1fb0
 
+    // Aero drag (Vehicle::update §7, 0x49fb34): e+0x91c / e+0x910, copied in
+    // by the per-tick glue. F = -C_drag*|v|^2*v_hat at drag_center.
+    float c_drag = 0.0f;
+    Vec3 drag_center{0.0f, 0.0f, 0.0f};
+    // Last update_drag record (vmboot checks 2 and 4).
+    Vec3 drag_velocity{0.0f, 0.0f, 0.0f}; // v at drag_center
+    Vec3 drag_force{0.0f, 0.0f, 0.0f};    // applied F
+    float drag_m_eff = 0.0f;
+    float drag_dt = 0.0f;
+    bool drag_clamped = false;
+    float drag_magnitude = 0.0f;    // car+0x2248
+
     float gear_ratio() const
     {
         return gear > 0 && gear < kMaxGears ? ratios[gear] : 0.0f;
@@ -209,6 +222,7 @@ private:
     void update_suspension(float dt);
     void update_engine_and_drivetrain(float dt);
     void update_tyre_forces(float dt);
+    void update_drag(float dt);
     void apply_contact_forces();
 
     struct PendingForce {

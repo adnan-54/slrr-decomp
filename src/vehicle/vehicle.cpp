@@ -122,6 +122,7 @@ void Car::update(float dt)
     update_engine_and_drivetrain(dt);
     update_tyre_forces(dt);
     apply_contact_forces();
+    update_drag(dt);
 }
 
 // §0-§5 suspension solver and the spring force it applies (notes/09).
@@ -135,6 +136,7 @@ void Car::update_suspension(float dt)
         w.normal_world = Vec3{0.0f, 1.0f, 0.0f};
         w.ground_velocity = Vec3{0.0f, 0.0f, 0.0f};
         w.ground_friction = 0.0f;
+        w.ground_rolling_resistance = 0.0f;
         w.steer_angle = steer * max_steer * w.steer_factor;
     }
     if (!ground)
@@ -194,6 +196,7 @@ void Car::update_suspension(float dt)
         w.ray_len = len;
         w.normal_world = hit.normal;
         w.ground_friction = ground->def.shape.friction;
+        w.ground_rolling_resistance = ground->def.shape.rolling_resistance;
         w.contact_local = Vec3{w.mount.x, w.mount.y - len, w.mount.z};
 
         Mat34 gr = ground->rotation();
@@ -469,7 +472,7 @@ void Car::update_tyre_forces(float dt)
 
         Vec3 n_body = mat_tvec(r, w.normal_world);
         float p2 = w.ground_friction * w.friction_eff;
-        float p13 = w.rolling_resistance; // ground material has no rollres in Shape
+        float p13 = w.ground_rolling_resistance + w.rolling_resistance;
         w.pacejka.p[2] = p2;
         w.pacejka.p[13] = p13;
 
@@ -525,4 +528,44 @@ void Car::apply_contact_forces()
     for (const PendingForce &p : pending_)
         body.apply_force_at(p.force, p.point); // 0x504e70 / 0x5051e0
     pending_.clear();
+}
+
+// Vehicle::update §7, 0x49fb34..0x49ff40. The force is the plain coefficient
+// form F = -C_drag*|v|^2*v_hat at drag_center (no frontal area, no air
+// density), capped so the drag impulse cannot reverse the point's velocity.
+// drag_magnitude (car+0x2248) is zeroed on every call, before the gates.
+void Car::update_drag(float dt)
+{
+    drag_magnitude = 0.0f;
+    drag_velocity = Vec3{0.0f, 0.0f, 0.0f};
+    drag_force = Vec3{0.0f, 0.0f, 0.0f};
+    drag_m_eff = 0.0f;
+    drag_dt = dt;
+    drag_clamped = false;
+    if (!(c_drag > 0.0f)) return;
+
+    Vec3 v = body.point_velocity(drag_center); // 0x5062e0, root branch
+    float s2 = vec_dot(v, v);
+    if (!(s2 > 1.0f)) return;
+    float s = sqrtf(s2);
+    Vec3 vh = v * (1.0f / s);
+    Vec3 f = vh * -(s2 * c_drag);
+    Vec3 d = mat_vec(body.rotation(), drag_center); // 0x5061f0
+    Vec3 w = mat_vec(body.world_inv_inertia(), vec_cross(d, vh));
+    float m_eff = 1.0f / (vec_dot(vh, vec_cross(w, d)) + body.def.inv_mass);
+    Vec3 p_imp = v * m_eff;
+    Vec3 h = p_imp * 0.5f;
+    Vec3 q = f * dt + h;
+    if (vec_dot(q, q) > vec_dot(p_imp, p_imp) * 0.25f) {
+        float ql = sqrtf(vec_dot(q, q));
+        float hl = sqrtf(vec_dot(p_imp, p_imp) * 0.25f);
+        f = (q * (hl / ql) - h) * (1.0f / dt);
+        drag_clamped = true;
+    }
+    drag_velocity = v;
+    drag_force = f;
+    drag_m_eff = m_eff;
+    drag_magnitude = vec_length(f);
+    body.apply_force_at(f, drag_center); // 0x5051e0
+    body.integrated = false;             // 0x49ff39: other state flags bit0
 }

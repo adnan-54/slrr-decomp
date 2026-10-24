@@ -1,6 +1,6 @@
 ---
 id: 161
-status: todo
+status: implemented
 branch: card/161
 depends: [160]
 ---
@@ -131,3 +131,17 @@ Aero parts list `car+0x2144` (`AeroForce__apply` 0x4e7b10), flaps 0x4a8430, the 
 (`car+0x1f64..0x1fa4`), wind `M+0x135c`, per-face ground materials (`sh+0xb0`, 0x4f3d70).
 
 ## Result
+Implemented and green (`make -C src -j4 check`: vmboot selfcheck PASSED, 118 checks, 0 failures;
+0 failed script threads over 30000 frames).
+- p13: `rolling resistance (0x49ef5a): gm+0x54 0.0100 + W+0x74 0.0036 = p13 0.0136`,
+  0 bad of 1772 loaded-wheel checks over the 900 auto-drive frames.
+- SunStrip `C_drag (e+0x91c): 0.0000`, `car+0x2248` stayed 0 on all 900 frames.
+- Shipped corpus (10 car payloads): `0.1735 0.1735 0.0000 0.0000 0.1735 0.0210 0.0000
+  0.1135 0.1785 0.1735`; X = 0.1785.
+- Forced-drag run (300 frames): C_drag 0.1785, last moving frame |v| 40.23 m/s, |F| 288.90 N,
+  0 clamps, 300/300 moving frames, 0 mismatches, final |vel| 40.24 m/s <= v_top 43.86 m/s.
+- Auto drive after the p13 change: max gear 5, final speed 33.58 m/s (was 33.29).
+- INVENTED: the check-4 harness (forcing X's C_drag/drag_center onto the player car) and the
+  pre-existing gm = ground-shape choice (per-face material table sh+0xb0 still not ported).
+  Also recorded `Car::drag_dt` (needed to re-check the clamp impulse); exe has no such field.
+- No blockers/doubts beyond the unresolved per-face ground material count (sh+0xac).

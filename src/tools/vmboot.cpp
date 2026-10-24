@@ -1612,9 +1612,30 @@ void game_init_check(Boot &boot, Checker &c)
         const Pose soup_pose = ground ? ground->pose() : Pose{};
         int soup_passed = 0;
         float min_margin = 1e30f;
+        // Card 161 check 1: pacejka slot 13 is gm+0x54 + W+0x74 (0x49ef5a).
+        float rr_ground = ground ? ground->def.shape.rolling_resistance : 0.0f;
+        unsigned rr_bad = 0, rr_checked = 0;
+        bool rr_printed = false;
+        // Card 161 check 2: a zero-C_drag car leaves car+0x2248 at 0.
+        int drag_nonzero = 0;
         key(200, true);
         for (int i = 0; i < 900; i++) {
             frames(1);
+            if (sim)
+                for (const Wheel &w : sim->wheels) {
+                    if (!(w.contact && w.load > 0.0f)) continue;
+                    float want = rr_ground + w.rolling_resistance;
+                    if (w.pacejka.p[13] != want) rr_bad++;
+                    rr_checked++;
+                    if (!rr_printed) {
+                        std::printf("  rolling resistance (0x49ef5a): gm+0x54 %.4f + "
+                                    "W+0x74 %.4f = p13 %.4f\n",
+                                    (double)rr_ground, (double)w.rolling_resistance,
+                                    (double)w.pacejka.p[13]);
+                        rr_printed = true;
+                    }
+                }
+            if (sim && sim->drag_magnitude != 0.0f) drag_nonzero++;
             if (soup) {
                 MeshRayHit rh;
                 Vec3 origin = root->pos + Vec3{0.0f, 3.0f, 0.0f};
@@ -1657,6 +1678,31 @@ void game_init_check(Boot &boot, Checker &c)
         c.check(soup && soup_passed == 0,
                 "the car never crosses the soup (" + std::to_string(soup_passed) +
                     " frame(s) with the soup above car_root over 900 auto-drive frames)");
+        // Card 161 check 1.
+        c.check(rr_checked > 0 && rr_bad == 0,
+                "pacejka p13 = ground rolling resistance + wheel rollres on every loaded "
+                "wheel over 900 frames (" + std::to_string(rr_bad) + " bad of " +
+                    std::to_string(rr_checked) + " checks)");
+        // Card 161 check 2 (the SunStrip's parts reduce C_drag to 0).
+        std::printf("  C_drag (e+0x91c): %.4f\n", (double)car_payload->c_drag);
+        if (car_payload->c_drag == 0.0f)
+            c.check(drag_nonzero == 0,
+                    "zero C_drag leaves car+0x2248 = 0 on every auto-drive frame (" +
+                        std::to_string(drag_nonzero) + " frame(s) nonzero)");
+        // Card 161 check 3: the shipped C_drag corpus comes from
+        // Chassis.updatevariables over the real installed parts; every CarData is
+        // a Vehicle's Chassis (Vehicle.java always calls forceUpdate).
+        game::CarData *x_car = nullptr;
+        std::vector<game::CarData *> payloads = game::car_payloads();
+        std::printf("  shipped C_drag:");
+        for (game::CarData *p : payloads) {
+            std::printf(" %.4f", (double)p->c_drag);
+            if (!x_car || p->c_drag > x_car->c_drag) x_car = p;
+        }
+        std::printf(" (%zu car payload(s))\n", payloads.size());
+        c.check(x_car && x_car->c_drag > 0.0f,
+                "at least one shipped car has C_drag > 0 (got " +
+                    std::to_string(x_car ? (double)x_car->c_drag : 0.0) + ")");
         int engage_i = -1;
         for (size_t i = 0; i < samples.size(); i++)
             if (samples[i].gear == 1) {
@@ -1740,6 +1786,58 @@ void game_init_check(Boot &boot, Checker &c)
                 "final speed is within the rev-limiter/top-gear bound (|vel| " +
                     std::to_string((double)final_speed) + " m/s <= v_top " +
                     std::to_string((double)v_top) + " m/s)");
+        // Card 161 check 4. INVENTED harness: force the largest shipped C_drag /
+        // drag_center onto the player car (the exe reaches it by removing the
+        // parts that reduce C_drag) and keep driving 300 frames.
+        if (x_car && x_car->c_drag > 0.0f && sim) {
+            car_payload->c_drag = x_car->c_drag;
+            for (int k = 0; k < 3; k++) car_payload->drag_center[k] = x_car->drag_center[k];
+            int moving = 0, clamps = 0, bad = 0;
+            Vec3 last_v{0.0f, 0.0f, 0.0f}, last_f{0.0f, 0.0f, 0.0f};
+            key(200, true);
+            for (int i = 0; i < 300; i++) {
+                frames(1);
+                const Vec3 v = sim->drag_velocity;
+                const Vec3 f = sim->drag_force;
+                float v2 = vec_dot(v, v);
+                if (!(v2 > 1.0f)) continue;
+                moving++;
+                last_v = v;
+                last_f = f;
+                float fl = vec_length(f);
+                if (!(sim->drag_magnitude > 0.0f)) bad++;
+                if (sim->drag_magnitude != fl) bad++;
+                if (!(vec_dot(f, v) < 0.0f)) bad++;
+                if (sim->drag_clamped) {
+                    clamps++;
+                    Vec3 h = v * (sim->drag_m_eff * 0.5f);
+                    Vec3 q = f * sim->drag_dt + h;
+                    float hl = vec_length(h);
+                    if (std::fabs(vec_length(q) - hl) > 1e-4f * hl) bad++;
+                } else {
+                    float s = sqrtf(v2);
+                    Vec3 want = v * (1.0f / s) * -(v2 * sim->c_drag);
+                    if (vec_length(f - want) > 1e-4f * fl) bad++;
+                }
+            }
+            key(200, false);
+            float final_v = vec_length(root->vel);
+            std::printf("  drag run (0x49fb34): C_drag %.4f, last moving frame |v| %.2f m/s,"
+                        " |F| %.2f N, %d clamp(s), %d moving frame(s), final |vel| %.2f"
+                        " m/s\n",
+                        (double)sim->c_drag, (double)vec_length(last_v),
+                        (double)vec_length(last_f), clamps, moving, (double)final_v);
+            c.check(moving >= 250,
+                    "the forced-drag run keeps the car moving for >= 250 of 300 frames (" +
+                        std::to_string(moving) + ")");
+            c.check(bad == 0,
+                    "drag force follows 0x49fb34 on every moving frame (" +
+                        std::to_string(bad) + " mismatch(es))");
+            c.check(final_v <= v_top,
+                    "forced-drag final |vel| stays within v_top (" +
+                        std::to_string((double)final_v) + " <= " +
+                        std::to_string((double)v_top) + " m/s)");
+        }
     }
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
