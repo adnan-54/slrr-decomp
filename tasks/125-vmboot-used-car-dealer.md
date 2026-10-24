@@ -1,7 +1,7 @@
 ---
 id: 125
-status: todo
-branch:
+status: implemented
+branch: card/125
 depends: [124]
 ---
 # vmboot: go from the Garage to the used car dealer and report

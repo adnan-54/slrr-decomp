@@ -131,16 +131,14 @@ bool menu_probe(Boot &boot, int *show, int *seek, std::string *err)
     return true;
 }
 
-// MainMenu.java:144-145: the invisible ghost button sends CMD_MENU_SELECT
-// (0xB007); Gates.osdCommand (MainMenu.java:607) runs slider.execute(CMD_MENU_SEL).
 // Spawned like the runtime's THRD-CREATE threads so a dialog that sleeps or waits
 // inside the handler continues in the frame loop instead of blocking here.
-bool menu_select(Boot &boot, Object *window, std::string *err)
+bool osd_command(Boot &boot, Object *receiver, int cmd, const char *thread_name,
+                 std::string *err)
 {
-    // INVENTED: stands in for the Osd ghost-button click (no render hit test)
-    std::vector<Value> args{Value::make_int(0xB007)};
+    std::vector<Value> args{Value::make_int(cmd)};
     ClassState *decl = nullptr;
-    const MethodInfo *m = boot.vm()->find_method(window->cls, "osdCommand", "(I)V", 1,
+    const MethodInfo *m = boot.vm()->find_method(receiver->cls, "osdCommand", "(I)V", 1,
                                                  args, &decl, err);
     if (!m) return false;
     const ClassUnit *unit = unit_of(boot, decl);
@@ -148,8 +146,16 @@ bool menu_select(Boot &boot, Object *window, std::string *err)
         *err = "osdCommand declaring unit not found";
         return false;
     }
-    return natives::spawn_untimed(*boot.vm(), boot.vm()->start(*unit, *m, window, args, err),
-                                  10, "THRD-MENU-SELECT");
+    return natives::spawn_untimed(*boot.vm(), boot.vm()->start(*unit, *m, receiver, args, err),
+                                  10, thread_name);
+}
+
+// MainMenu.java:144-145: the invisible ghost button sends CMD_MENU_SELECT
+// (0xB007); Gates.osdCommand (MainMenu.java:607) runs slider.execute(CMD_MENU_SEL).
+bool menu_select(Boot &boot, Object *window, std::string *err)
+{
+    // INVENTED: stands in for the Osd ghost-button click (no render hit test)
+    return osd_command(boot, window, 0xB007, "THRD-MENU-SELECT", err);
 }
 
 struct Checker {
@@ -284,14 +290,7 @@ void answer_dialogs(Boot &boot, std::vector<Object *> &answered, int frame)
                                                   Value::make_str("vmboot"), &err);
             }
         }
-        std::vector<Value> args{Value::make_int(0)};
-        ClassState *decl = nullptr;
-        const MethodInfo *m = boot.vm()->find_method(d->cls, "osdCommand", "(I)V", 1, args,
-                                                     &decl, &err);
-        const ClassUnit *unit = m ? unit_of(boot, decl) : nullptr;
-        bool ok = unit && natives::spawn_untimed(
-                               *boot.vm(), boot.vm()->start(*unit, *m, d, args, &err), 10,
-                               "THRD-DIALOG-OK");
+        bool ok = osd_command(boot, d, 0, "THRD-DIALOG-OK", &err);
         if (ok)
             std::printf("  dialog OK: %s (frame %d)\n", cls.c_str(), frame);
         else
@@ -350,7 +349,8 @@ void game_init_check(Boot &boot, Checker &c)
     // 1 s hold so the 50 ms Frontend HotkeyWatcher tick samples it. Scan 0x1c is
     // ControlSet's MENUSET AXIS_SELECT bind (RCDIK_ENTER); 0x544830 reads the
     // raw key byte's high bit.
-    const int kFrames = 6000, kPress = 3000, kRelease = 3060, kSelect = 3600;
+    const int kFrames = 12000, kPress = 3000, kRelease = 3060, kSelect = 3600;
+    const int kGarageCmd = 6300;
     FrameLoop loop(0);
     for (int i = 1; i < kPress; i++) loop.frame(i * 16);
     int show_before = -1, seek_before = -1;
@@ -384,11 +384,42 @@ void game_init_check(Boot &boot, Checker &c)
     // then let each handler continue.
     const int kDialog = 4200, kDialogStep = 300;
     std::vector<Object *> answered;
+    // Garage section at the time of the dealer command (dealer_from) and whether
+    // the CMD_BUYCARSUSED (122) handler was started.
+    std::string dealer_from = "(none)";
+    bool dealer_at_garage = false, dealer_started = false;
     for (int i = kSelect + 1; i <= kFrames; i++) {
         g_input->devices[0].raw.keys[0x1c] = 0;
         loop.frame(i * 16);
         if (i >= kDialog && (i - kDialog) % kDialogStep == 0)
             answer_dialogs(boot, answered, i);
+        if (i == kGarageCmd) {
+            // Garage.java:1724,1739: CMD_BUYCARSUSED opens the used car dealer
+            // between 7 and 17 h. getTime() is a plain getter for the static
+            // float `time` (GameLogic.java:178,682-685).
+            Value st;
+            std::string gerr;
+            if (actual_state(boot, &st, &gerr)) {
+                dealer_from = object_class(boot, st.obj);
+                dealer_at_garage = is_a(boot, st.obj->cls, "java.game.Garage");
+            }
+            if (dealer_at_garage) {
+                Value t;
+                if (boot.vm()->get_static_field("java.game.GameLogic", "time", &t, &gerr) &&
+                    t.kind == Value::Float)
+                    std::printf("  garage cmd 122 at game hour %g\n",
+                                (double)(t.f / 3600.0f));
+                // INVENTED: stands in for clicking the Used Car Dealer button
+                dealer_started = osd_command(boot, st.obj, 122, "THRD-GARAGE-CMD", &gerr);
+                // A handler failing inside its first slice also returns false but
+                // keeps its thread in the report; only a start failure sets err.
+                if (!dealer_started && !gerr.empty())
+                    std::printf("  garage cmd 122: not started (%s)\n", gerr.c_str());
+            } else {
+                std::printf("  garage cmd skipped: actualState is %s\n",
+                            dealer_from.c_str());
+            }
+        }
     }
 
     Value state_after;
@@ -416,15 +447,31 @@ void game_init_check(Boot &boot, Checker &c)
                 show_before, show_after, seek_before, seek_after,
                 probed_after ? "" : (" (" + perr + ")").c_str());
     if (state_changed)
-        c.check(class_after == "java.game.Garage",
+        c.check(dealer_at_garage,
                 "name dialog OK moves actualState to java.game.Garage (got " +
-                    class_after + ")");
+                    dealer_from + " at the dealer command)");
     else
         c.check(probed_after && show_after >= 2,
                 "Enter press runs AXIS_SELECT -> showPrimaryVisuals (showMenu >= 2, got " +
                     std::to_string(show_after) + (probed_after ? "" : ": " + perr) + ")");
+    if (dealer_at_garage) {
+        // Shipped: CMD_BUYCARSUSED within opening hours switches the section to
+        // the used car market (Garage.java:1724-1788); otherwise report only.
+        if (class_after != "java.game.Garage")
+            c.check(have_state_after && class_after != dealer_from,
+                    "Used Car Dealer opens: actualState " + dealer_from + " -> " +
+                        class_after);
+        else
+            std::printf("  dealer: actualState stays java.game.Garage\n");
+    }
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
+    if (dealer_at_garage) {
+        bool dealer_thread = false;
+        for (const natives::ThreadInfo &t : threads)
+            if (t.name == "THRD-GARAGE-CMD") dealer_thread = true;
+        c.check(dealer_thread, "Garage osdCommand(122) runs a THRD-GARAGE-CMD thread");
+    }
     int failed = 0;
     for (const natives::ThreadInfo &t : threads)
         if (!t.error.empty()) failed++;
