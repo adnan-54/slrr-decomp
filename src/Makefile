@@ -78,5 +78,9 @@ check: all
 clean:
 	rm -rf $(BUILD)
 
+# TEMP (card 172 diagnosis): line-buffered vmboot so a timeout keeps its tail.
+run-vmboot:
+	-cd .. && (ulimit -v 1500000; stdbuf -oL -eL timeout 290 src/$(BUILD)/vmboot --selfcheck) > vmboot.log 2>&1; echo "vmboot exit $$?" >> vmboot.log
+
 -include $(DEPS)
 .PHONY: all check clean

@@ -2286,6 +2286,11 @@ void game_init_check(Boot &boot, Checker &c)
                 "final speed is within the rev-limiter/top-gear bound (|vel| " +
                     std::to_string((double)final_speed) + " m/s <= top gear at peak "
                     "rpm " + std::to_string((double)v_peak) + " m/s)");
+        // Card 172: set by the spline block when the Gamemode's finish window
+        // exists (handleCheckpoint -> gmThread.execute(7) -> timer 11).
+        bool race_finished = false;
+        int race_lap = -1;
+        float finish_lap_time = 0.0f, finish_race_time = 0.0f;
         // Card 169 (INVENTED harness, no engine code): the exe steers only
         // through the native bot driver (0x4803a0/0x480850/0x482630/0x486020),
         // which is not ported. Follow the AI spline the script itself hands to
@@ -2459,8 +2464,12 @@ void game_init_check(Boot &boot, Checker &c)
                 Vec3 first_off_pos{0.0f, 0.0f, 0.0f};
                 float first_off_speed = 0.0f;
                 int used = 0, next_trigger = -1, nt_cp0 = -1, cp0_frame = 0;
-                // Card 171: keep running past cp0 until cp2 is accepted.
-                for (int i = 0; i < 9000; i++) {
+                int nt_cp2 = -1, cur_lap = -1;
+                bool have_fwindow = false;
+                // Card 171: keep running past cp0. Card 172: run on (INVENTED
+                // cap 20000 frames) until handleCheckpoint executed gmThread
+                // method 7 and the script's finish window (fWindow) exists.
+                for (int i = 0; i < 20000; i++) {
                     frames(1);
                     used = i + 1;
                     float off = 0.0f;
@@ -2506,7 +2515,45 @@ void game_init_check(Boot &boot, Checker &c)
                         nt_cp0 = next_trigger;
                         cp0_frame = used;
                     }
-                    if (next_trigger >= 3) break;
+                    if (next_trigger >= 3 && nt_cp2 < 0) nt_cp2 = next_trigger;
+                    Value lapv;
+                    std::string lerr;
+                    if (game_object &&
+                        boot.vm()->get_instance_field(game_object, "current_lap", &lapv,
+                                                      &lerr) &&
+                        lapv.kind == Value::Int && lapv.i != cur_lap) {
+                        cur_lap = lapv.i;
+                        race_lap = cur_lap;
+                        std::printf("  spline driver frame %d: current_lap %d, "
+                                    "nextTrigger[0] %d\n",
+                                    used, cur_lap, next_trigger);
+                    }
+                    Value fwv;
+                    if (game_object &&
+                        boot.vm()->get_instance_field(game_object, "fWindow", &fwv, &lerr) &&
+                        fwv.kind == Value::Obj && fwv.obj) {
+                        have_fwindow = true;
+                        race_finished = true;
+                        // Gamemode.time / raceTime are float[] (Gamemode.java:29-30);
+                        // stopTimer(0) froze time[0] in handleCheckpoint.
+                        Value tv, rtv;
+                        if (boot.vm()->get_instance_field(game_object, "time", &tv, &lerr) &&
+                            tv.kind == Value::Array && tv.arr && !tv.arr->elems.empty() &&
+                            tv.arr->elems[0].kind == Value::Float)
+                            finish_lap_time = tv.arr->elems[0].f;
+                        lerr.clear();
+                        if (boot.vm()->get_instance_field(game_object, "raceTime", &rtv,
+                                                          &lerr) &&
+                            rtv.kind == Value::Array && rtv.arr &&
+                            !rtv.arr->elems.empty() &&
+                            rtv.arr->elems[0].kind == Value::Float)
+                            finish_race_time = rtv.arr->elems[0].f;
+                        std::printf("  spline driver frame %d: fWindow set, lap 2 "
+                                    "time %.3f s, race time %.3f s\n",
+                                    used, (double)finish_lap_time,
+                                    (double)finish_race_time);
+                        break;
+                    }
                 }
                 key(200, false);
                 key(208, false);
@@ -2514,22 +2561,17 @@ void game_init_check(Boot &boot, Checker &c)
                 key(205, false);
                 frames(1);
                 int rp_total = read_int0("rpTotal");
-                Value lv;
-                std::string le;
-                int cur_lap = -1;
-                if (game_object &&
-                    boot.vm()->get_instance_field(game_object, "current_lap", &lv, &le) &&
-                    lv.kind == Value::Int)
-                    cur_lap = lv.i;
                 const unsigned deep = hull_deep_contacts() - deep0;
                 const unsigned overruns = (unsigned)vclip_overruns() - overrun0;
                 std::printf("  spline driver (INVENTED, %s): %d frame(s), nt0 %d, "
-                            "nextTrigger[0] %d, rpTotal[0] %d, current_lap %d, pos "
+                            "cp2 %d, nextTrigger[0] %d, fWindow %s, rpTotal[0] %d, "
+                            "current_lap %d, pos "
                             "%.2f %.2f %.2f, closest cp0 %.2f m, max spline distance "
                             "%.2f m, max |v| %.2f m/s, min y %.2f (spawn %.2f), "
                             "deep-branch contact(s) %u, vclip overruns %u, left the "
                             "spline (>10 m) at %.2f %.2f %.2f with |v| %.2f m/s\n",
-                            spline_path.c_str(), used, nt0, next_trigger, rp_total,
+                            spline_path.c_str(), used, nt0, nt_cp2, next_trigger,
+                            have_fwindow ? "set" : "missing", rp_total,
                             cur_lap, (double)root->pos.x, (double)root->pos.y,
                             (double)root->pos.z,
                             closest_cp < 1e29f ? (double)closest_cp : -1.0,
@@ -2551,10 +2593,11 @@ void game_init_check(Boot &boot, Checker &c)
                                                               : -1.0) +
                             " m, max spline distance " +
                             std::to_string((double)max_off) + " m)");
-                // Card 171 check 1: cp0, cp1 and cp2 accepted.
-                c.check(next_trigger == 3,
+                // Card 171 check 1: cp0, cp1 and cp2 accepted (recorded before
+                // the lap rollover resets nextTrigger[0]).
+                c.check(nt_cp2 == 3,
                         "the spline driver reaches checkpoint 2 (nextTrigger[0] == 3, "
-                        "got " + std::to_string(next_trigger) + " after " +
+                        "got " + std::to_string(nt_cp2) + " after " +
                             std::to_string(used) + " frame(s), current_lap " +
                             std::to_string(cur_lap) + ")");
                 // Card 171 check 2. INVENTED bounds: no launch, no fall-through.
@@ -2794,6 +2837,62 @@ void game_init_check(Boot &boot, Checker &c)
         c.check(race_overruns == 0,
                 "no V-Clip overrun in the career-race block (" +
                     std::to_string(race_overruns) + ", 0x50d230)");
+        // Card 172: the script's finish flow. The spline block above stopped
+        // when the Gamemode's fWindow appeared. finishWindowCircuitRacing binds
+        // Enter to OSD command 0x01 (CircuitRacing.java:1364) and
+        // osdCommand(0x01) calls hide() (CircuitRacing.java:1583-1586).
+        // INVENTED harness order: the key is deferred to after the drag/semi
+        // blocks above because hide() starts timer 13 and the exit unloads the
+        // map ground (Track.exit, Track.java:1132) those blocks drive on.
+        if (race_finished) {
+            Value fwv;
+            std::string ferr;
+            int wait = 0;
+            bool ready = false;
+            while (wait < 600) {
+                if (!boot.vm()->get_instance_field(game_object, "fWindow", &fwv, &ferr) ||
+                    fwv.kind != Value::Obj || !fwv.obj)
+                    break;
+                Value wsv;
+                if (boot.vm()->get_instance_field(fwv.obj, "windowStatus", &wsv, &ferr) &&
+                    wsv.kind == Value::Int && wsv.i == 3) {
+                    ready = true;  // hide() only acts at windowStatus 3
+                    break;
+                }
+                frames(1);
+                wait++;
+            }
+            bool sent = false;
+            if (ready)
+                sent = osd_command(boot, fwv.obj, 0x01, "THRD-FINISH-ENTER", &ferr);
+            else if (ferr.empty())
+                ferr = "fWindow never reached windowStatus 3";
+            std::printf("  finish window: %s after %d frame(s), osdCommand(0x01) %s\n",
+                        ready ? "windowStatus 3" : "not ready", wait,
+                        sent ? "started" : ("not started: " + ferr).c_str());
+            for (int i = 0; i < 600; i++) frames(1);
+        }
+        Value fin;
+        std::string ferr2;
+        const bool fin_ok = actual_state(boot, &fin, &ferr2);
+        const std::string fin_cls = fin_ok ? object_class(boot, fin.obj) : "(none)";
+        std::printf("  after the finish key: actualState %s, fWindow %s, lap 2 time "
+                    "%.3f s, race time %.3f s\n",
+                    fin_cls.c_str(), race_finished ? "set" : "missing",
+                    (double)finish_lap_time, (double)finish_race_time);
+        c.check(race_finished && race_lap == 2,
+                "handleCheckpoint called gmThread.execute(7): current_lap 2 and "
+                "fWindow is non-null (got lap " + std::to_string(race_lap) +
+                    ", fWindow " + (race_finished ? "set" : "missing") + ")");
+        c.check(fin_ok && is_a(boot, fin.obj->cls, "java.game.EventList"),
+                "after the finish key the active section is the EventList "
+                "(Track.getOut, got " + fin_cls + ")");
+        int fin_failed = 0;
+        for (const natives::ThreadInfo &t : natives::thread_report(*boot.vm()))
+            if (!t.error.empty()) fin_failed++;
+        c.check(fin_failed == 0,
+                "no failed thread after the finish key (got " +
+                    std::to_string(fin_failed) + ")");
     }
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
