@@ -208,7 +208,7 @@ Pacejka slot map `W+0x1e8 + 4·i`: `p0 C` (`setSliction`), `p1 μ/load`, `p2 μ`
 | `+0x1ebc` | engine heat capacity (`engine_mass·8000`); `+0x1ec0` engine temp °C (`getEngineTemp`); `+0x1ec4` ambient; `+0x1ec8` cooling coefficient |
 | `+0x1f5c` | nitro left (`getNitro`); `+0x1f64/68/6c/70/74` push/lift/roll-rate/torque helper inputs; `+0x1f78[i]` per-wheel friction override, `+0x1f88` torque override, `+0x1f8c/+0x1f90` front/rear drive override (`Vehicle__applyTuningOverrides 0x498020`); `+0x1fa4` roll-rate controller enable |
 | `+0x1fb0` | last rpm (limiter); `+0x1fc0..d8` telemetry |
-| `+0x2050` engine block, `+0x2054` disabled; `+0x2144` aero parts; `+0x2190` slot objects; `+0x2248` drag magnitude; `+0x2250` mileage |
+| `+0x2050` engine block, `+0x2054` traffic controller (GII_CAR_TRAFFICPTR 0x38; update skipped while set); `+0x2144` aero parts; `+0x2190` slot objects; `+0x2248` drag magnitude; `+0x2250` mileage |
 
 ## Engine block `e` (0xc34 bytes; template cloned by `EngineBlock__clone 0x4b0910` from the manager's default `M+0x2ebc`)
 | offset | meaning |
@@ -334,7 +334,52 @@ The same parser also handles an integer key at `0x59b738` → `car+0x1f40` and `
 ## Open questions
 - Source of the car-type per-wheel template `M+0x2070 + i·0xc8` (`Vehicle__createCar` copies fields from it, including `W+0xc4` drive ratio/sign). Which package/script fills it before `type_car__vf1` scales the brake/handbrake bases is not traced.
 - Anti-roll record initialization/source: no writer found; count 0 in the shipped template makes the feature unreachable. Also unverified whether the allocator zeroes `e+0x4c..0xcb`.
-- Writer of the suspension raycast results (`S+0xb4`, `S+0xd0..cc`) — outside the solver, in the physics trigger/ray pass.
+- ~~Writer of the suspension raycast results~~ resolved: `c_triggerspring__onSensorContact` 0x4f3d70 via trigger event 0x20 (see "Drive path" below).
 - Writer/intent of the `S+0x84..0x8c` extra force vector (the solver orthogonalizes it against the normal).
 - The bit0 (asleep) clear site; `FUN_00497520` (per-part wear tick); `AeroForce__apply` kinds; consumers of the ABS/ASR/ESP/steerhelp/cruise flags (`0x80/0x100/0x4000000/0x200/0x1000`) — none are in `Vehicle::update`.
 - `S+0xf8` sign is inferred from the damper/bump-stop branches (`v < 0` = compression); worth confirming at runtime.
+
+## Drive path: how `Vehicle::update` is reached per physics sub-step (2026-10-24, cards 145/146 RE)
+
+`0x498b40` is not a function: it lies inside `Vehicle__updateControls` 0x498300 (`_type_car` vf11, gear-shift block). The per-sub-step entry is `_type_car` **vf12 = `Vehicle__update` 0x49c8e0**, reached only through the game's mode-9 ("drive") callback list.
+
+**Registration (once, at native create).** `GameObject__createNative` 0x5240e0: after `typed+0x4c = M->vf3(ctx, params)` (= `Vehicle__createCar` 0x4992e0) it calls `Game__registerByInfo` 0x47d560(&ctx) (ECX = game):
+```
+if (GameObject__getInfo(ctx, 8,    0)) tail-append node(ctx) to game+0x28 list, game+0x214++   // control
+if (GameObject__getInfo(ctx, 9,    0)) tail-append node(ctx) to game+0x74 list, game+0x218++   // drive (GII_DRIVE)
+if (GameObject__getInfo(ctx, 0x1c, 0)) tail-append node(ctx) to game+0xc0 list, game+0x21c++   // animate
+```
+`GameObject__getInfo` 0x47c640: typed object type 1 → script `getInfo` (0x47e450); type 8 (native) → `T+0xc` manager `vf15` (`+0x3c`). `_type_car` vf15 0x4a15c0 returns **1 for codes 8, 9 and 0x1c** (cases 11/12/39 return 1 too), so every car is in all three lists. `Game__registerCallback` 0x47d670(obj, mode 8/9/0x1c) is the same append done explicitly; its callers are `type_car__vf15` case 0x38, `type_ground__vf3` 0x4bade0, `type_part` create 0x4bd040 (mode 0x1c only), and `GameType.registerCallback` 0x4dc740.
+- vf15 case **0x38 = `GII_CAR_TRAFFICPTR`** (GameType.java:59) sets `car+0x2054` (the traffic controller; `Vehicle__update`/`updateControls` return early while it is set): clearing it re-registers modes 8 and 9 and posts `"obs_add %d"`; setting it from null sleeps the root, zeroes its velocities and unregisters 8/9 (0x47e390). So `car+0x2054` is the traffic pointer, not a "disabled" flag (correct the table above).
+
+**Consumers.** `PhysicsWorld__step` 0x502060 order per sub-step: `PhysBody__applyForces` 0x4f8460 for every awake root → `runControllers` 0x4ffca0 (every `c_triggerspring` vf3 0x4f2d70 = spring forces) → **`Game__runDriveCallbacks` 0x47be30(dt)** → integrate 0x5001c0 every root → contacts/solve loop. 0x47be30 walks `game+0x54` (list head of the `+0x74` sentinel), deletes dead nodes (`node+0x2c == 0`, `game+0x218--`), else `Game__driveCallback` 0x47be90(dt, node+0x24):
+```
+typed = obj.typed(0xa0000000)
+if (typed+0x4c == 0) { if (typed+0x50) call script method "drive"(dt) }      // scripted objects
+else T = typed+0x44 .typed(0x80000000); if (T+0xc) T+0xc->vf[0x30/4 = 12](typed+0x4c /*car*/, dt)
+```
+= `Vehicle__update(car, dt)`. Mode 8 is the same shape: `Game__runControlCallbacks` 0x47bc20(ctrlAcc) once per `Game__physicsTick` 0x47e050 before the sub-steps → `Game__controlCallback` 0x47bc80 → native `vf[0x2c/4 = 11]` = `Vehicle__updateControls` 0x498300 (player axes via `0x47c640(ctrl, 0x43/0x19, axis)`), or script `"control"`.
+
+**Wheel/suspension objects (createCar 0x4992e0 wheel loop, `i < M+0x1fb4`, template `M+0x2070 + i·0xc8`).**
+- Spring weight `M+0x1f34`: if ≤ 0, `= 1 / invMass(car+0x13ec)` (the part_comp compound after `Part__initInstance` ran `PhysBody__updateCompoundMass` on its bones), set once per car type, before the loop.
+- Per wheel: `W+0x38 = base`, `W+0x3c = travel`, `W+0x40 = damping ratio` (cfg `spring base travel ratio`, e.g. Axis `0.290 0.100 0.050`), `W+0x50 = base + travel`, `W+0x54 = base + 0.1`, `W+0x58 = −1`, `W+0x60 = r`, `W+0x5c = base + travel + r`, `W+0x74 = 0.015`, hub `W+0x78 = (shape COM − child offset) + template pos`, `y += W+0x5c − W+0x60`.
+- `S = new c_triggerspring(0x104)` ctor 0x4915d0 → `c_triggerspring__init` 0x4f3f10(car, car_root, &mount, (0,−1,0), L = W+0x5c, W+0x64): **sensor capsule child body** `createBox(0.01, 3, L/2, 0.05)` at `mount − (0, L/2, 0)`, flag `|= 0x40`, `addChildBody` 0x4f78d0 under car_root, `S+0x94` = that sensor, `addController` 0x4f7960 (world controller list), `S+0xf0 = S+0x50`, `S+0xb4 = S+0x50² + 0.1`.
+- Spring constants: **`W+0x44 = |g| · M+0x1f34 / M+0x1fb4 / W+0x3c`** (static sag = travel), `W+0x48 = W+0x44 · W+0x40`, `W+0x4c = 0.7 · W+0x48`, then `Suspension__configure` 0x4f4280(k, bump, W+0x5c, r + W+0x54, r + W+0x58, rebound, r) and `S+0xf0 = template + W+0x38`.
+- Optional `"wheelbone"` child (template wheel shape ≠ 0, flags `|= 0x8020`) and `"a_arm"` children, then after the loop `PhysBody__updateCompoundMass` 0x5032d0(car+0x13ec), which recurses into the parent (car_root).
+
+**Who writes the ray hit (`S+0xb4/+0xb8/+0xc4/+0xd0/+0xa8/+0xac`)** — resolves the open question above. The sensor capsule (flag 0x40) meets the ground in contact generation (`Collide__bodyVsStatic` 0x4fd910 → `PhysicsWorld__addTriggerContact` 0x502d60, notes/11 §4), which queues event **0x20** with a temporary `c_collision` payload to the car's native handler `type_car__vf14` 0x4a2e60: `for i < M+0x1fb4: if (c_triggerspring__onSensorContact 0x4f3d70(ECX = W_i+0x30, c)) { car+0x70 |= 0x100000; break; }`. 0x4f3d70:
+```
+if (!S+0x94) return 0
+side = (c+0x48 == sensor) ? 0 : (c+0x50 == sensor) ? 1 : return 0;  o = 1 - side
+if (root(c+0x48+o*8) == root(sensor)) return 1                       // own car parts
+p = c+0x74 + o*0xc  (contact point on the other body);  d2 = |S+0x6c..74 (mount) − p|²
+if (S+0xf0 − sqrt(d2) > S+0x68 /*radius*/) return 1
+if (d2 < S+0xb4) { S+0xb4 = d2; S+0xd0 = ref(other body); S+0xb8 = p; S+0xc4 = c+0x8c (normal);
+                   S+0xa8 = face material index (c+0x60 → *idx), S+0xac = ref(other.def+0x90 → +0xb0 + idx*0xc4) or S+0xa8 = 0 }
+return 1
+```
+The next `runControllers` turns `S+0xb4` into the length/load (notes "Suspension object" above) and resets it to `max² + 0.1`. src's `vehicle::Car::update_suspension` replaces this sensor/trigger round trip with a direct `raycast_body` against `Car::ground` (INVENTED equivalent; same nearest-hit-along-the-spring semantics, no one-step event delay).
+
+**`PhysBody__updateCompoundMass` 0x5032d0(body)** (skip if `def+0xb4 & 0x100`; `body+0x58 & 0x8000` → only the shape inertia via 0x5008c0): over children (`+0x24`/`+0x28`) with `invMass ≠ 0`: running mass-weighted COM of the child offsets (`child+0x1c` record `+4..+0xc`) and parallel-axis inertia (point-mass terms + each child's inertia rotated by its offset matrix `+0x20`, 0x566330); the body's **own shape mass is not counted**. No massive child → `invMass = 0`, `def+0xb4 |= 4` (static). Else `def+0x2c = 1/M`, `def+0x60..0x8c` = inertia, inverse 0x566830, `def+0x98 = −0.005·M`, `def+0x9c = −0.01·M`; if the COM offset² > 1e-5: subtract it from every child offset, move the body's active pose by `R·com` (copied into the other state) and the body's own offset record; `body+0x18 = 0.1 / invMass` (1000 if static); recurse `0x5032d0(body+0x20)` when the body is itself a child. For the Axis (`_main_200S.cfg`) the 17 `body` lines sum to 1180 kg; wheel `type` lines are `10.000 sphere 0.315`.
+
+**src today.** `vehicle::Car` (src/vehicle/vehicle.*) implements `Vehicle::update` §1-§6 (+ the trigger-spring solve) but nothing instantiates it; `game::CarData` holds the `part_comp`/`car_root` bodies (mass 1 each, no compound mass, no wheels/sensors) and `WheelData` records from the cfg (`fill_car`: spring line 3rd value and `W+0x44/48/4c` not derived); `natives::advance_sim` calls `World::step` per sub-step with no drive hook. Cards: 145 (compound mass + spring constants), 146 (drive hook: woken car rests on its wheels).

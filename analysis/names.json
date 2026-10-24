@@ -1,4 +1,13 @@
 {
+  "0x47d670": "Game__registerCallback",
+  "0x47d560": "Game__registerByInfo",
+  "0x47be30": "Game__runDriveCallbacks",
+  "0x47be90": "Game__driveCallback",
+  "0x47bc20": "Game__runControlCallbacks",
+  "0x47bc80": "Game__controlCallback",
+  "0x4f3d70": "c_triggerspring__onSensorContact",
+  "0x4f3f10": "c_triggerspring__init",
+  "0x5032d0": "PhysBody__updateCompoundMass",
   "0x402bb0": "CTextureRenderer__vf1_402bb0",
   "0x402bd0": "CTextureRenderer__vf2_402bd0",
   "0x402df0": "CTextureRenderer__vf3_402df0",
