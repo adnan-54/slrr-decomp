@@ -349,8 +349,8 @@ void game_init_check(Boot &boot, Checker &c)
     // 1 s hold so the 50 ms Frontend HotkeyWatcher tick samples it. Scan 0x1c is
     // ControlSet's MENUSET AXIS_SELECT bind (RCDIK_ENTER); 0x544830 reads the
     // raw key byte's high bit.
-    const int kFrames = 12000, kPress = 3000, kRelease = 3060, kSelect = 3600;
-    const int kGarageCmd = 6300;
+    const int kFrames = 18000, kPress = 3000, kRelease = 3060, kSelect = 3600;
+    const int kGarageCmd = 6300, kBuyCmd = 12300, kBackCmd = 14000;
     FrameLoop loop(0);
     for (int i = 1; i < kPress; i++) loop.frame(i * 16);
     int show_before = -1, seek_before = -1;
@@ -387,7 +387,8 @@ void game_init_check(Boot &boot, Checker &c)
     // Garage section at the time of the dealer command (dealer_from) and whether
     // the CMD_BUYCARSUSED (122) handler was started.
     std::string dealer_from = "(none)";
-    bool dealer_at_garage = false, dealer_started = false;
+    std::string buy_from = "(none)";
+    bool dealer_at_garage = false, dealer_started = false, buy_at_market = false;
     for (int i = kSelect + 1; i <= kFrames; i++) {
         g_input->devices[0].raw.keys[0x1c] = 0;
         loop.frame(i * 16);
@@ -420,6 +421,35 @@ void game_init_check(Boot &boot, Checker &c)
                             dealer_from.c_str());
             }
         }
+        if (i == kBuyCmd || i == kBackCmd) {
+            // CarMarket.java:817-867,1013-1153: AXIS_SELECT buys the shown car
+            // (AXIS_CANCEL in browse mode returns to the Garage).
+            Value st;
+            std::string merr;
+            if (actual_state(boot, &st, &merr)) {
+                const std::string cls = object_class(boot, st.obj);
+                const int cmd = i == kBuyCmd ? 34 : 35;  // Input.AXIS_SELECT / AXIS_CANCEL
+                if (i == kBuyCmd) {
+                    buy_from = cls;
+                    buy_at_market = cls == "java.game.CarMarket";
+                }
+                if (cls == "java.game.CarMarket") {
+                    // INVENTED: stands in for the dealer's Osd menu button.
+                    // NoYesDialog's display() returns osdCommand's argument
+                    // (Dialog.java:204-220) and its YES button is index 0
+                    // (buttonTexts "YES;NO", Dialog.java:138-153).
+                    bool ok = osd_command(boot, st.obj, cmd,
+                                          i == kBuyCmd ? "THRD-MARKET-BUY"
+                                                       : "THRD-MARKET-BACK", &merr);
+                    std::printf("  cmd %d -> %s (frame %d)\n", cmd, cls.c_str(), i);
+                    if (!ok && !merr.empty())
+                        std::printf("  cmd %d: not started (%s)\n", cmd, merr.c_str());
+                } else {
+                    std::printf("  cmd %d skipped: actualState is %s (frame %d)\n",
+                                cmd, cls.c_str(), i);
+                }
+            }
+        }
     }
 
     Value state_after;
@@ -431,6 +461,20 @@ void game_init_check(Boot &boot, Checker &c)
                 class_after.c_str(),
                 selected ? "" : (" (invoke failed: " + serr + ")").c_str());
     std::printf("  final actualState: %s\n", class_after.c_str());
+
+    // GameLogic.player (GameLogic.java:173); the owned vehicle is Racer.car
+    // (Racer.java:31), assigned by buyCar before returning to the Garage
+    // (CarMarket.java:1124).
+    Object *player_car = nullptr;
+    Value pv;
+    if (boot.vm()->get_static_field("java.game.GameLogic", "player", &pv, &perr) &&
+        pv.kind == Value::Obj && pv.obj) {
+        Value cv;
+        if (boot.vm()->get_instance_field(pv.obj, "car", &cv, &perr) && cv.kind == Value::Obj)
+            player_car = cv.obj;
+    }
+    std::printf("  player car: %s\n",
+                player_car ? object_class(boot, player_car).c_str() : "null");
 
     // MainMenu.java:436: display() == 0 sends the NEW CAREER handler on to
     // GameLogic.changeActiveSection(GameLogic.garage); the MainMenu fields are
@@ -456,14 +500,16 @@ void game_init_check(Boot &boot, Checker &c)
                     std::to_string(show_after) + (probed_after ? "" : ": " + perr) + ")");
     if (dealer_at_garage) {
         // Shipped: CMD_BUYCARSUSED within opening hours switches the section to
-        // the used car market (Garage.java:1724-1788); otherwise report only.
-        if (class_after != "java.game.Garage")
-            c.check(have_state_after && class_after != dealer_from,
-                    "Used Car Dealer opens: actualState " + dealer_from + " -> " +
-                        class_after);
-        else
-            std::printf("  dealer: actualState stays java.game.Garage\n");
+        // the used car market (Garage.java:1724-1788); read at the buy step.
+        c.check(buy_at_market, "Used Car Dealer opens: actualState " + dealer_from +
+                                   " -> " + buy_from);
     }
+    // Shipped: the purchase's own AXIS_CANCEL (CarMarket.java:1139) or the
+    // frame-14000 AXIS_CANCEL returns to the Garage with player.car set.
+    c.check(class_after == "java.game.Garage",
+            "back from the used dealer: actualState is java.game.Garage (got " +
+                class_after + ")");
+    c.check(player_car != nullptr, "buying the shown used car sets GameLogic.player.car");
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
     if (dealer_at_garage) {
