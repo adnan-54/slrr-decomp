@@ -40,6 +40,11 @@ struct CollisionMesh {
 // Returns null when no usable triangle survives.
 std::shared_ptr<const CollisionMesh> build_collision_mesh(const mesh::Mesh &m);
 
+// Same tree for an already world-frame soup (metres, no scale), e.g. a map's
+// PHYS triangles (notes/19 §7). Returns null when no usable triangle survives.
+std::shared_ptr<const CollisionMesh> build_collision_mesh(
+    const std::vector<Vec3> &verts, const std::vector<CollisionMesh::Triangle> &tris);
+
 struct MeshRayHit {
     Vec3 point{0.0f, 0.0f, 0.0f};  // world
     Vec3 normal{0.0f, 1.0f, 0.0f}; // world, unit, faces the ray

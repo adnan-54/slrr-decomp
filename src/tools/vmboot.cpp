@@ -20,6 +20,7 @@
 #include "input/backend.h"
 #include "input/device.h"
 #include "platform/fs.h"
+#include "physics/mesh.h"
 #include "physics/physics.h"
 #include "resource/manager.h"
 #include "resource/rpk.h"
@@ -738,8 +739,9 @@ void game_init_check(Boot &boot, Checker &c)
     c.check(ground_static && !ground_active,
             "ground body is in world.statics, not the active root list (0x4f7830)");
     c.check(ground && (ground->def.flags & 4u) != 0 && ground->def.inv_mass == 0.0f &&
-                ground->def.shape.type == SHAPE_NONE && ground->def.shape.friction == 1.0f,
-            "ground body is static kind 0 with ground_friction 1.0");
+                ground->def.shape.type == SHAPE_MESH && ground->def.shape.mesh &&
+                ground->def.shape.friction == 1.0f,
+            "ground body is a static mesh collider with ground_friction 1.0");
     c.check(ground && ground->pos.x == 0.0f && ground->pos.y == 0.0f && ground->pos.z == 0.0f,
             "ground body sits at the record's params xyz");
 
@@ -750,19 +752,36 @@ void game_init_check(Boot &boot, Checker &c)
     if (car_res && car_payload && car_payload->root_body) {
         RigidBody *root = car_payload->root_body;
         const float y_before = root->pos.y;
+        // Floor = highest soup surface under the car's start (x,z): a downward
+        // ray against the merged map collider (card 144).
+        float floor_y = 0.0f;
+        bool floor_found = false;
+        if (ground && ground->def.shape.mesh) {
+            const CollisionMesh &cm = *ground->def.shape.mesh;
+            const float top = cm.bounds_max.y + 1.0f;
+            MeshRayHit hit;
+            floor_found = mesh_raycast(cm, ground->pose(),
+                                       Vec3{root->pos.x, top, root->pos.z},
+                                       Vec3{0.0f, -1.0f, 0.0f},
+                                       top - cm.bounds_min.y + 1.0f, &hit);
+            if (floor_found) floor_y = hit.point.y;
+        }
         boot.runtime()->queue_event(car_res, nullptr, 0x10,
                                     Value::make_str("wakeup"));
         for (int i = kFrames + 1; i <= kFrames + 300; i++) loop.frame(i * 16);
         bool awake = false;
         for (RigidBody *b : process_world().bodies)
             if (b == root) awake = true;
-        std::printf("  car wakeup (0x4a4023): car_root pos.y %.3f -> %.3f "
-                    "after 300 frames\n",
-                    (double)y_before, (double)root->pos.y);
+        std::printf("  car wakeup (0x4a4023): floor %.3f, car_root pos.y %.3f -> %.3f "
+                    "after 300 frames, vel.y %.3f, %zu contact(s)\n",
+                    (double)floor_y, (double)y_before, (double)root->pos.y,
+                    (double)root->vel.y, process_world().contacts.size());
         c.check(awake,
                 "queued \"wakeup\" puts car_root back in the active body list (0x507060)");
-        c.check(root->pos.y < y_before,
-                "woken car_root falls under gravity (kind-0 ground makes no contacts)");
+        c.check(floor_found && root->pos.y > floor_y - 1.5f,
+                "woken car_root rests on the map soup instead of falling through");
+        c.check(fabsf(root->vel.y) < 1.0f,
+                "woken car_root settles on the map soup (|vel.y| < 1.0)");
     }
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());

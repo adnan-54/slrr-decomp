@@ -498,13 +498,13 @@ void gather_box(const CollisionMesh &m, Vec3 pos, const Mat34 &rot, Vec3 he, flo
 
 std::shared_ptr<const CollisionMesh> build_collision_mesh(const mesh::Mesh &src)
 {
-    std::shared_ptr<CollisionMesh> out = std::make_shared<CollisionMesh>();
+    std::vector<Vec3> verts;
+    std::vector<CollisionMesh::Triangle> tris;
     for (const mesh::Section &s : src.sections) {
-        uint32_t base = static_cast<uint32_t>(out->vertices.size());
+        uint32_t base = static_cast<uint32_t>(verts.size());
         for (const mesh::Vec3 &p : s.positions)
-            out->vertices.push_back(
-                Vec3{p.x * mesh::kCollisionScale, p.y * mesh::kCollisionScale,
-                     p.z * mesh::kCollisionScale});
+            verts.push_back(Vec3{p.x * mesh::kCollisionScale, p.y * mesh::kCollisionScale,
+                                 p.z * mesh::kCollisionScale});
         size_t ntri = s.indices.empty() ? s.indices16.size() / 3 : s.indices.size() / 3;
         for (size_t i = 0; i < ntri; i++) {
             uint32_t i0 = s.indices.empty() ? s.indices16[i * 3 + 0] : s.indices[i * 3 + 0];
@@ -513,13 +513,26 @@ std::shared_ptr<const CollisionMesh> build_collision_mesh(const mesh::Mesh &src)
             if (i0 >= s.positions.size() || i1 >= s.positions.size() ||
                 i2 >= s.positions.size())
                 continue;
-            Vec3 a = out->vertices[base + i0], b = out->vertices[base + i1],
-                 c = out->vertices[base + i2];
-            Vec3 cr = vec_cross(b - a, c - a);
-            if (vec_dot(cr, cr) <= 1e-16f)
-                continue; // degenerate face
-            out->triangles.push_back(CollisionMesh::Triangle{{base + i0, base + i1, base + i2}});
+            tris.push_back(CollisionMesh::Triangle{{base + i0, base + i1, base + i2}});
         }
+    }
+    return build_collision_mesh(verts, tris);
+}
+
+std::shared_ptr<const CollisionMesh> build_collision_mesh(
+    const std::vector<Vec3> &verts, const std::vector<CollisionMesh::Triangle> &tris)
+{
+    std::shared_ptr<CollisionMesh> out = std::make_shared<CollisionMesh>();
+    out->vertices = verts;
+    out->triangles.reserve(tris.size());
+    for (const CollisionMesh::Triangle &t : tris) {
+        if (t.v[0] >= verts.size() || t.v[1] >= verts.size() || t.v[2] >= verts.size())
+            continue;
+        Vec3 a = verts[t.v[0]], b = verts[t.v[1]], c = verts[t.v[2]];
+        Vec3 cr = vec_cross(b - a, c - a);
+        if (vec_dot(cr, cr) <= 1e-16f)
+            continue; // degenerate face
+        out->triangles.push_back(t);
     }
     if (out->triangles.empty())
         return std::shared_ptr<const CollisionMesh>();

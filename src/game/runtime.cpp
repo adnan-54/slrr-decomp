@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "game/car.h"
+#include "physics/mesh.h"
 #include "physics/physics.h"
 #include "platform/fs.h"
 #include "script/natives.h"
@@ -187,6 +188,26 @@ static bool native_ground_type(Runtime &rt, uint32_t gametype, const Package *ba
     return false;
 }
 
+// 0x519940 / 0x4ff6b0: the map record and every embedded type-1 child carry a
+// PHYS triangle soup in world-frame metres (notes/19 §7). The exe walks the
+// resident nodes per body (Collide__groundTree 0x4fe6f0); src merges them.
+static void gather_ground_soup(const RpkArchive &rpk, const RpkRecord &rec,
+                               std::vector<Vec3> *verts,
+                               std::vector<CollisionMesh::Triangle> *tris)
+{
+    RpkInstanceData inst;
+    std::string err;
+    if (!rpk.parse_instance(rec, &inst, &err)) return;
+    uint32_t base = static_cast<uint32_t>(verts->size());
+    for (size_t i = 0; i + 2 < inst.verts.size(); i += 3)
+        verts->push_back(vec3(inst.verts[i], inst.verts[i + 1], inst.verts[i + 2]));
+    for (const RpkPhysFace &f : inst.faces)
+        tris->push_back(
+            CollisionMesh::Triangle{{base + f.v[0], base + f.v[1], base + f.v[2]}});
+    for (const RpkRecord &child : inst.children)
+        if (child.type == 1) gather_ground_soup(rpk, child, verts, tris);
+}
+
 // 0x4bade0 type_ground vf3, body part: mass-0 kind-0 box with flag 4 (static,
 // no integration) added to the process world and kept on the resource.
 // INVENTED timing: the exe builds it when the map node becomes resident
@@ -231,11 +252,22 @@ static void create_ground_body(Runtime &rt, Runtime::Resource *r)
 
     auto b = std::make_unique<RigidBody>();
     b->def.flags |= 4u;                      // static, no integration
-    b->def.shape.type = SHAPE_NONE;          // createBox(0, 0, ...)
+    b->def.shape.type = SHAPE_NONE;          // Physics__createBox(0, 0, ...) base
     b->def.shape.friction = friction;        // shape +0x50
     b->def.shape.rolling_resistance = 0.01f; // shape +0x54
     b->def.shape.restitution = 0.2f;         // shape +0x58
     b->pos = vec3(x, y, z);
+    // INVENTED: one merged collider built at create instead of the exe's
+    // per-node streaming walk (Collide__groundTree 0x4fe6f0) and its kind-0
+    // groundbody + 0x4feb20/0x4fc7e0 TOI narrow phase.
+    // shortcut: no streaming/unload of map nodes, upgrade when 0x4feb20 /
+    // 0x4fd110 / 0x4fc7e0 are traced.
+    std::vector<Vec3> verts;
+    std::vector<CollisionMesh::Triangle> tris;
+    if (r->package && r->record)
+        gather_ground_soup(r->package->rpk, *r->record, &verts, &tris);
+    b->def.shape.mesh = build_collision_mesh(verts, tris);
+    if (b->def.shape.mesh) b->def.shape.type = SHAPE_MESH;
     w.add_body(b.get());
     r->ground_body = std::move(b);
 }

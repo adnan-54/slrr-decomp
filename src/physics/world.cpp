@@ -643,7 +643,11 @@ int World::step(float dt)
 
     // Force model (FUN_004f8460): gravity + linear drag, once per step, per root.
     // shortcut: child bodies are carried but not integrated as a compound (0x4f7990/0x5032d0), upgrade with the compound card.
-    std::vector<StepState> states(bodies.size());
+    // Contact resolution looks a body's step state up by identity, so the
+    // statics paired by update_contacts need an entry too: they are side B of
+    // a root-vs-ground contact (PhysicsWorld__addContact 0x502830) and
+    // integrate_body leaves them untouched.
+    std::vector<StepState> states(bodies.size() + statics.size());
     for (size_t i = 0; i < bodies.size(); i++) {
         RigidBody &b = *bodies[i];
         b.force = Vec3{0.0f, 0.0f, 0.0f};
@@ -662,6 +666,12 @@ int World::step(float dt)
         }
         states[i].body = &b;
         states[i].start = BodyState{b.pos, b.vel, b.angular_momentum, b.rot};
+    }
+    for (size_t i = 0; i < statics.size(); i++) {
+        RigidBody &b = *statics[i];
+        StepState &s = states[bodies.size() + i];
+        s.body = &b;
+        s.start = BodyState{b.pos, b.vel, b.angular_momentum, b.rot};
     }
 
     update_contacts(*this, true);
