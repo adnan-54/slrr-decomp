@@ -7497,6 +7497,7 @@ std::vector<ThreadInfo> thread_report(Vm &vm)
         info.sleeping = t->sleeping;
         info.waiting = t->waiting;
         info.suspended = t->suspended;
+        if (t->waiting) info.wait_on = t->wait_on;  // +0x34, Object.wait
         if (t->runner && t->runner->status() == Thread::Failed)
             info.error = t->runner->error();
         else if (t->runner && !t->done)

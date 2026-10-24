@@ -39,6 +39,7 @@ struct ThreadInfo {
          suspended = false;
     std::string error;  // runner->error() when the thread Failed
     std::string where;  // innermost frame of a live thread
+    Object *wait_on = nullptr;  // Object.wait monitor while waiting (thread+0x34)
 };
 std::vector<ThreadInfo> thread_report(Vm &vm);
 

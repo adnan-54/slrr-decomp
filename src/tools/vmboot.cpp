@@ -87,6 +87,20 @@ std::string object_class(Boot &boot, Object *o)
     return u ? u->class_name(u->self_class) : "(unknown)";
 }
 
+// ClassState is opaque outside the VM, so the super chain is walked through the
+// units: each unit names its own class and its super.
+bool is_a(Boot &boot, ClassState *cls, const std::string &name)
+{
+    for (ClassState *s = cls; s;) {
+        const ClassUnit *u = unit_of(boot, s);
+        if (!u) return false;
+        if (u->class_name(u->self_class) == name) return true;
+        std::string super = u->class_name(u->super_class);
+        s = super.empty() ? nullptr : boot.vm()->find_class(super);
+    }
+    return false;
+}
+
 // INVENTED instrumentation: reads the shipped script state.
 // GameLogic.actualState is the active MainMenu (GameLogic.java:164,896);
 // MainMenu.window is the shown Gates (MainMenu.java:14-20); showMenu is 0 while
@@ -242,6 +256,60 @@ std::string thread_state(const natives::ThreadInfo &t)
     return "running (yielded)" + at;
 }
 
+// MainMenu.java:417-419 (CMD_NEW_CAREER): StringRequesterDialog.display() waits
+// on the dialog object (Dialog.java:213-220); StringRequesterDialog.osdCommand
+// copies osd.stringValue into `input` and forwards OK (0) while SIF_NOEMPTY.
+// INVENTED: stands in for typing into the Osd string gadget + OK.
+bool answer_name_dialog(Boot &boot, std::string *msg)
+{
+    natives::ThreadInfo select;
+    bool found = false;
+    for (const natives::ThreadInfo &t : natives::thread_report(*boot.vm()))
+        if (t.name == "THRD-MENU-SELECT") { select = t; found = true; }
+    if (!found) { *msg = "no THRD-MENU-SELECT thread"; return false; }
+    if (!select.waiting || !select.wait_on) {
+        *msg = "THRD-MENU-SELECT not waiting (" + thread_state(select) + ")";
+        return false;
+    }
+    Object *d = select.wait_on;
+    const std::string cls = object_class(boot, d);
+    if (!is_a(boot, d->cls, "java.render.osd.dialog.StringRequesterDialog")) {
+        *msg = cls + " -> not a StringRequesterDialog, skipped";
+        return false;
+    }
+    std::string err;
+    // The OK path reads `input`; the shipped 2.3.1 class checks the gadget's
+    // osd.stringValue for SIF_NOEMPTY (2.2.1 source: input), so both get the name.
+    if (!boot.vm()->set_instance_field(d, "input", Value::make_str("vmboot"), &err)) {
+        *msg = cls + " -> input not set: " + err;
+        return false;
+    }
+    Value osd;
+    if (!boot.vm()->get_instance_field(d, "osd", &osd, &err) || osd.kind != Value::Obj ||
+        !osd.obj) {
+        *msg = cls + " -> osd not an object" + (err.empty() ? "" : ": " + err);
+        return false;
+    }
+    if (!boot.vm()->set_instance_field(osd.obj, "stringValue", Value::make_str("vmboot"),
+                                       &err)) {
+        *msg = cls + " -> osd.stringValue not set: " + err;
+        return false;
+    }
+    std::vector<Value> args{Value::make_int(0)};
+    ClassState *decl = nullptr;
+    const MethodInfo *m = boot.vm()->find_method(d->cls, "osdCommand", "(I)V", 1, args,
+                                                 &decl, &err);
+    const ClassUnit *unit = m ? unit_of(boot, decl) : nullptr;
+    if (!unit) {
+        *msg = cls + " -> osdCommand(I)V not found" + (err.empty() ? "" : ": " + err);
+        return false;
+    }
+    bool ok = natives::spawn_untimed(*boot.vm(), boot.vm()->start(*unit, *m, d, args, &err),
+                                     10, "THRD-DIALOG-OK");
+    *msg = cls + (ok ? " -> sent OK" : " -> OK thread failed: " + err);
+    return ok;
+}
+
 // 0x47d760 init step: Config.init -> type record "Init" (sl.rpk, type 8) ->
 // scripted GameInit instance; its Init(int) constructor runs in THRD-CREATE.
 // A failing constructor is an expected finding here (missing engine services):
@@ -321,10 +389,16 @@ void game_init_check(Boot &boot, Checker &c)
         else if (serr.empty())
             serr = "MainMenu.window is not an object";
     }
+    // The NEW CAREER dialog is up once the select handler has run; answer it
+    // once, then let the handler continue (loading screen, name, garage).
+    const int kDialog = 4200;
+    std::string dialog_msg;
     for (int i = kSelect + 1; i <= kFrames; i++) {
         g_input->devices[0].raw.keys[0x1c] = 0;
         loop.frame(i * 16);
+        if (i == kDialog) answer_name_dialog(boot, &dialog_msg);
     }
+    std::printf("  name dialog: %s\n", dialog_msg.c_str());
 
     Value state_after;
     serr.clear();
@@ -335,15 +409,28 @@ void game_init_check(Boot &boot, Checker &c)
                 class_after.c_str(),
                 selected ? "" : (" (invoke failed: " + serr + ")").c_str());
 
+    // MainMenu.java:436: display() == 0 sends the NEW CAREER handler on to
+    // GameLogic.changeActiveSection(GameLogic.garage); the MainMenu fields are
+    // gone once the section changed, so the menu probe no longer applies.
+    const bool state_changed = have_state_after && class_after != class_before;
     int show_after = -1, seek_after = -1;
     perr.clear();
-    bool probed_after = menu_probe(boot, &show_after, &seek_after, &perr);
+    bool probed_after = false;
+    if (state_changed)
+        perr = "actualState is no longer MainMenu";
+    else
+        probed_after = menu_probe(boot, &show_after, &seek_after, &perr);
     std::printf("  menu probe: showMenu %d -> %d, messageSeek %d -> %d%s\n",
                 show_before, show_after, seek_before, seek_after,
                 probed_after ? "" : (" (" + perr + ")").c_str());
-    c.check(probed_after && show_after >= 2,
-            "Enter press runs AXIS_SELECT -> showPrimaryVisuals (showMenu >= 2, got " +
-                std::to_string(show_after) + (probed_after ? "" : ": " + perr) + ")");
+    if (state_changed)
+        c.check(class_after == "java.game.Garage",
+                "name dialog OK moves actualState to java.game.Garage (got " +
+                    class_after + ")");
+    else
+        c.check(probed_after && show_after >= 2,
+                "Enter press runs AXIS_SELECT -> showPrimaryVisuals (showMenu >= 2, got " +
+                    std::to_string(show_after) + (probed_after ? "" : ": " + perr) + ")");
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
     int failed = 0;
