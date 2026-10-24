@@ -164,3 +164,41 @@ Remaining body differences (275), none a codegen rule:
   httpRequestAsync missing from the shipped NetworkEngine.class; ROCTrack/City
   show(RaceDialog) binding show(LoadingDialog) although RaceDialog is not a LoadingDialog
   in the shipped classes (CONS only).
+
+## Resource literal casing (traced 2026-10-24)
+
+The stored package name of a resource constant is not derived from the source text: the
+compiler resolves the literal to a global id through the resource name registry and writes
+back the registry slot's name. Chain (JVM::compileHook 0x5557c0 calls 0x54b310 for every
+method/field-init tree after codegen, with the parse-time pool as `old`):
+- 0x54b310 (constant-pool rebuild walk): per 0x100e node, old CONS entry type 3
+  {+8 local, +0xc name string idx} -> `gid = 0x55cad0(name, local)` (= 0x5189e0), then
+  `0x54b170(gid)`. Every other constant is re-added the same way, so the source spelling
+  (`cars\racers\baiern.rpk`) never reaches the written class.
+- 0x5189e0(name, local): `idx = 0x518940(name)`; slot idx must load (0x51e310, else return 0);
+  return `P.0x51e860(local)` = `idx << 16 | local` (local 0 or out of range -> 0).
+- 0x518940(name): linear scan of the registry, match = `_stricmp(slot+0xc, name) == 0`
+  (0x51e2f0 -> CRT 0x57c11e); no match -> append (0x51e2a0 copies `name` as given, 0x40
+  chars). So a slot keeps the spelling of whoever registered the package first.
+- 0x54b170(gid): `pkg = 0x517b80(gid)` (slot gid>>16), adds the string `pkg+0xc` (registry
+  spelling) via 0x54b260, then a type-3 entry {local = gid & 0xffff, name = that string}
+  (deduplicated by 0x54b560).
+- Missing package: the slot is appended but does not load -> gid 0 -> slot 0 = `system.rpk`,
+  local 0. TimeAttackTest `sl.Scripts.game.CareerEvents.old_stdpack_231:0x0009r/0x0005r`
+  (no such file) are both shipped as `system.rpk#0`.
+
+Who registered first when the shipped classes were compiled: GameLogic (GameLogic.java
+345-360) calls `System.rpkScan(dir)` for `parts\engines\`, `parts\`, `cars\racers\`,
+`cars\fake_racers\`, `maps\`, `sl\Scripts\game\CareerEvents\` and every `multibot\maps\<dir>\`.
+rpkScan (script, System.class body 38) = `FindFile.first(dir + "*.rpk")` loop with
+`openLib(dir + name)`; openLib 0x4e0470 registers that string with 0x518940 unchanged. FindFile
+returns the on-disk file name, the dir is the script's spelling: hence "dirs as written, file
+name re-cased". Corpus check (all 136 literal packages vs disk, case-insensitive):
+- differing only in casing and under a scanned dir -> shipped uses disk spelling: cars\racers
+  baiern/duhen/einvagen/enula/focer/mc/nonus/prime/superduty (the 68 bodies; `mc` -> `MC`,
+  so not a first-letter rule);
+- differing but not scanned -> shipped keeps the written spelling: `maps.ROC_Track.smallmap`
+  (disk `ROC_track`), `cars.traffic.CivilVan_2/_3` (disk `Civilvan_2/_3`) — rules out a
+  plain filesystem lookup;
+- no literal id has hi bits set or local 0 (sub-package remap of 0x51e860 unused).
+Card 134 ports this.
