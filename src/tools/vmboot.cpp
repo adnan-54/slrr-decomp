@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <set>
 #include <string>
 #include <vector>
@@ -19,6 +20,7 @@
 #include "game/car.h"
 #include "input/backend.h"
 #include "input/device.h"
+#include "parts/cfg.h"
 #include "platform/fs.h"
 #include "physics/mesh.h"
 #include "physics/physics.h"
@@ -639,6 +641,55 @@ void game_init_check(Boot &boot, Checker &c)
                 car_payload->chassis_body->parent == car_payload->root_body,
             "player car chassis body hangs under its car_root body (0x4992e0)");
     c.check(root_sleeping, "car_root body is in the world's sleeping list (0x506d90)");
+
+    // 0x4992e0 wheel loop + 0x5032d0 compound mass. Re-read the shipped cfg so
+    // the mass comes from the file, not from the payload under test.
+    CfgFile car_cfg;
+    bool have_car_cfg = car_res && game::load_car_cfg(*boot.runtime(), car_res, &car_cfg);
+    float cfg_body_mass = 0.0f, cfg_wheel_mass = 0.0f;
+    int cfg_wheels = 0;
+    for (const CfgBody &b : car_cfg.bodies)
+        if (b.mass > 0.0f) cfg_body_mass += b.mass;
+    for (const CfgLine &ln : car_cfg.lines) {
+        if (ln.key != "type") continue;
+        cfg_wheels++;
+        cfg_wheel_mass += 0.01f;  // trigger-sensor capsule (0x4f3f10)
+        if (!ln.values.empty()) {
+            float m = (float)std::strtod(ln.values[0].c_str(), nullptr);
+            if (m > 0.0f) cfg_wheel_mass += m;  // wheelbone child
+        }
+    }
+    float part_mass = 0.0f, root_mass = 0.0f;
+    if (car_payload) {
+        if (car_payload->chassis_body && car_payload->chassis_body->def.inv_mass > 0.0f)
+            part_mass = 1.0f / car_payload->chassis_body->def.inv_mass;
+        if (car_payload->root_body && car_payload->root_body->def.inv_mass > 0.0f)
+            root_mass = 1.0f / car_payload->root_body->def.inv_mass;
+    }
+    int wheel_count = car_payload ? (int)car_payload->wheels.size() : 0;
+    if (wheel_count > 0) {
+        const game::WheelData &w0 = car_payload->wheels[0];
+        std::printf("  car mass (0x5032d0): part_comp %.3f kg, car_root %.3f kg; "
+                    "wheel 0 k %.2f bump %.2f rebound %.2f (cfg body %.3f kg, "
+                    "%d wheel(s))\n",
+                    (double)part_mass, (double)root_mass, (double)w0.spring_k,
+                    (double)w0.bump, (double)w0.rebound, (double)cfg_body_mass,
+                    cfg_wheels);
+    }
+    c.check(have_car_cfg && std::fabs(part_mass - cfg_body_mass) < 1e-3f,
+            "part_comp mass is the cfg body-line mass sum (0x5032d0)");
+    c.check(have_car_cfg &&
+                std::fabs(root_mass - (cfg_body_mass + cfg_wheel_mass)) < 1e-2f,
+            "car_root mass adds the wheelbone and sensor children (0x5032d0)");
+    c.check(have_car_cfg && wheel_count == cfg_wheels && cfg_wheels >= 4,
+            "car wheel count equals the cfg type-line count (0x4992e0)");
+    bool springs_ok = wheel_count > 0;
+    for (int i = 0; i < wheel_count; i++) {
+        const game::WheelData &w = car_payload->wheels[(size_t)i];
+        if (!(w.spring_k > 0.0f && w.bump > 0.0f && w.rebound > 0.0f))
+            springs_ok = false;
+    }
+    c.check(springs_ok, "every wheel has spring_k/bump/rebound > 0 (0x4992e0)");
     int cars_with_bodies = game::car_body_instances();
     std::printf("  car bodies: %d car instance(s) with bodies, world body_count %d\n",
                 cars_with_bodies, process_world().body_count);

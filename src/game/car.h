@@ -21,6 +21,7 @@
 class Vm;
 struct Object;
 struct EngineModel;
+struct CfgFile;
 
 namespace game {
 
@@ -42,9 +43,11 @@ struct WheelData {
     float template_damage = 0.0f;
     float template_len = 0.1f;
     float template_travel = 0.0f;
+    float bone_mass = 0.0f;     // cfg `type` 1st value = wheelbone child mass
 
     float base_len = 0.1f;      // +0x38
     float travel = 0.0f;        // +0x3c
+    float damp_ratio = 0.0f;    // +0x40 cfg `spring` 3rd value
     float spring_k = 0.0f;      // +0x44
     float bump = 0.0f;          // +0x48
     float rebound = 0.0f;       // +0x4c
@@ -209,6 +212,11 @@ struct CarData {
     std::unique_ptr<RigidBody> root_body_storage;
     RigidBody *chassis_body = nullptr;
     RigidBody *root_body = nullptr;
+    // Compound COM offset (0x5032d0), car_root local (card 146).
+    float com[3] = {};
+    // INVENTED: the exe instance's typed data points at its type record; src has
+    // no such link on a created instance, so keep the type the cfg came from.
+    Runtime::Resource *cfg_resource = nullptr;
 
     // Engine torque curves: (rpm, torque) pairs, e+0/e+4 and e+8/e+0xc.
     std::vector<float> torque_rpm, torque_nm;
@@ -223,6 +231,8 @@ struct CarData {
 // Lazy per-resource payloads, created on first native access.
 PartData *part_data(Runtime &rt, Runtime::Resource *r);
 CarData *car_data(Runtime &rt, Runtime::Resource *r);
+// The `car` cfg on the record/super-record chain (same walk as car_data).
+bool load_car_cfg(Runtime &rt, Runtime::Resource *r, CfgFile *cfg);
 // 0x4c1f90 (Part__initInstance) + 0x4992e0 (Vehicle__createCar) body parts:
 // create the car's "part_comp" and "car_root" bodies in the process world,
 // asleep. No-op unless the type chain's car cfg has a `body` line

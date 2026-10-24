@@ -39,6 +39,21 @@ float num(const std::string &s)
     return (float)strtod(s.c_str(), nullptr);
 }
 
+// Point-mass parallel-axis term of 0x5032d0: m * (|r|^2 E - r r^T).
+void add_point_inertia(Mat34 *inertia, float m, Vec3 r)
+{
+    float r2 = vec_dot(r, r);
+    inertia->m[0] += m * (r2 - r.x * r.x);
+    inertia->m[1] -= m * r.x * r.y;
+    inertia->m[2] -= m * r.x * r.z;
+    inertia->m[4] -= m * r.y * r.x;
+    inertia->m[5] += m * (r2 - r.y * r.y);
+    inertia->m[6] -= m * r.y * r.z;
+    inertia->m[8] -= m * r.z * r.x;
+    inertia->m[9] -= m * r.z * r.y;
+    inertia->m[10] += m * (r2 - r.z * r.z);
+}
+
 Runtime *g_rt = nullptr;
 std::map<Runtime::Resource *, std::unique_ptr<PartData>> g_parts;
 std::map<Runtime::Resource *, std::unique_ptr<CarData>> g_cars;
@@ -97,6 +112,7 @@ void fill_car(CarData &c, const CfgFile &cfg)
             WheelData w;
             w.index = (int32_t)c.wheels.size();
             w.car = &c;
+            if (ln.values.size() >= 1) w.bone_mass = num(ln.values[0]);
             if (ln.values.size() >= 3) w.radius = num(ln.values[2]);
             c.wheels.push_back(w);
             continue;
@@ -109,6 +125,7 @@ void fill_car(CarData &c, const CfgFile &cfg)
             if (travel <= 0.0f) travel = 0.2f;
             w.template_len = base;
             w.template_travel = travel;
+            w.damp_ratio = num(ln.values[2]);  // +0x40
         } else if (ln.key == "wheel" && ln.values.size() >= 10) {
             for (int i = 0; i < 3; i++) w.template_pos[i] = num(ln.values[i]);
             for (int i = 0; i < 3; i++) w.template_ypr[i] = num(ln.values[3 + i]);
@@ -389,6 +406,15 @@ CarData *car_data(Runtime &rt, Runtime::Resource *r)
     return p;
 }
 
+bool load_car_cfg(Runtime &rt, Runtime::Resource *r, CfgFile *cfg)
+{
+    if (!r) return false;
+    if (load_native_cfg(rt, r, "car", cfg)) return true;
+    auto it = g_cars.find(r);
+    if (it == g_cars.end() || !it->second->cfg_resource) return false;
+    return load_native_cfg(rt, it->second->cfg_resource, "car", cfg);
+}
+
 // 0x4c1f90 Part__initInstance (body part) + 0x4992e0 Vehicle__createCar
 // (body part). The cfg `body` line handler 0x4bf4e0 sets M+0xff0; no body line
 // (-1) means neither body exists.
@@ -399,6 +425,10 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
     if (!type || !load_native_cfg(rt, type, "car", &cfg) || cfg.bodies.empty()) return;
     CarData *car = car_data(rt, inst);
     if (!car) return;
+    // INVENTED: the instance's super chain does not reach the type record, so
+    // car_data cannot load the cfg; the exe's type manager vf3 gets it directly.
+    if (car->wheels.empty()) fill_car(*car, cfg);
+    car->cfg_resource = type;
     // INVENTED: the typed-object event mask default is not traced (card 040);
     // the car's native vf14 must be reachable from Vehicle.wakeUp/command, which
     // no script enables with setEventMask. EVENT_COMMAND = 0x10 (GameRef.class).
@@ -447,7 +477,70 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
         world.attach_child(root, cr.get()); // 0x4f7b20
         car->root_body_storage = std::move(cr);
     }
-    // 0x5032d0 compound mass refresh: NOT this card.
+    // 0x5032d0 PhysBody__updateCompoundMass on part_comp, then through the
+    // parent link on car_root. The body's own shape mass is not counted: only
+    // the cfg `body` children, the per-wheel wheelbone child and the 0.01 kg
+    // trigger-sensor capsule (0x4f3f10).
+    // shortcut: no child bodies exist yet, so the children's own shape inertia
+    // and the COM re-centring of child offsets/pose are not ported; the mass
+    // and the point-mass parallel-axis terms are summed from the cfg records.
+    float part_mass = 0.0f;
+    for (const CfgBody &b : cfg.bodies)
+        if (b.mass > 0.0f) part_mass += b.mass;
+    if (part_mass > 0.0f) {
+        car->chassis_body->def.inv_mass = 1.0f / part_mass;
+        car->chassis_body->def.linear_drag = -0.005f * part_mass;
+        car->chassis_body->def.angular_drag = -0.01f * part_mass;
+    } else {
+        car->chassis_body->def.inv_mass = 0.0f;
+        car->chassis_body->def.flags |= 4u;  // static
+    }
+    float mass = part_mass;
+    Vec3 com{0.0f, 0.0f, 0.0f};
+    for (const CfgBody &b : cfg.bodies) {
+        if (b.mass <= 0.0f) continue;
+        com += Vec3{b.xform.px, b.xform.py, b.xform.pz} * b.mass;
+    }
+    for (const WheelData &w : car->wheels) {
+        float m = (w.bone_mass > 0.0f ? w.bone_mass : 0.0f) + 0.01f;
+        mass += m;
+        com += Vec3{w.hub[0], w.hub[1], w.hub[2]} * m;
+    }
+    if (mass > 0.0f) com = com * (1.0f / mass);
+    Mat34 inertia{};
+    for (const CfgBody &b : cfg.bodies)
+        if (b.mass > 0.0f)
+            add_point_inertia(&inertia, b.mass,
+                              Vec3{b.xform.px, b.xform.py, b.xform.pz} - com);
+    for (const WheelData &w : car->wheels) {
+        float m = (w.bone_mass > 0.0f ? w.bone_mass : 0.0f) + 0.01f;
+        add_point_inertia(&inertia, m, Vec3{w.hub[0], w.hub[1], w.hub[2]} - com);
+    }
+    if (car->root_body) {
+        if (mass > 0.0f) {
+            car->root_body->def.inv_mass = 1.0f / mass;
+            car->root_body->def.linear_drag = -0.005f * mass;
+            car->root_body->def.angular_drag = -0.01f * mass;
+            mat_inverse(&car->root_body->def.inv_inertia, &inertia);
+        } else {
+            car->root_body->def.inv_mass = 0.0f;
+            car->root_body->def.flags |= 4u;  // static
+        }
+    }
+    car->com[0] = com.x;
+    car->com[1] = com.y;
+    car->com[2] = com.z;
+
+    // 0x4992e0 wheel loop: static sag = travel, so the wheel carries |g| *
+    // M+0x1f34 / n over the travel; bump/rebound from the cfg ratio.
+    float gravity = vec_length(process_world().gravity);  // |world+0x1c4| = 9.81
+    float wheel_count = (float)car->wheels.size();
+    for (WheelData &w : car->wheels) {
+        if (wheel_count > 0.0f && w.travel > 0.0f)
+            w.spring_k = gravity * part_mass / wheel_count / w.travel;
+        w.bump = w.spring_k * w.damp_ratio;
+        w.rebound = 0.7f * w.bump;
+    }
     root = car->root_body ? car->root_body : car->chassis_body; // PhysBody__root
     if (root && !root->asleep) world.sleep(root);               // 0x506d90
 }
