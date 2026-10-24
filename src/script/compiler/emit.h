@@ -21,6 +21,7 @@ struct MethodSym {
 };
 struct ClassSym {
     std::string name, super;
+    std::vector<std::string> ifaces;
     std::vector<FieldSym> fields;
     std::vector<MethodSym> methods;
 };

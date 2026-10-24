@@ -120,6 +120,7 @@ std::string sig_return(const std::string &sig)
     return i == std::string::npos ? std::string() : sig.substr(i + 1);
 }
 
+
 int count_sig_params(const std::string &sig) { return (int)sig_params(sig).size(); }
 
 std::string unquote(const std::string &raw)
@@ -379,6 +380,44 @@ private:
     }
     const FieldSym *find_field(const std::string &cls, const std::string &name,
                                std::string *owner) const;
+    // Argument type `a` ("N" = null literal) passed to parameter `p`: -1 =
+    // does not fit (the call goes by name), else a cost ranking overloads.
+    // Fits: equal types (0); int to float (Baiern_FL_butterfly_door
+    // tHUF2USD(242), AmateurDriftCup checkMass(int field)) and float to int
+    // (Vehicle chassis.addStockParts(float, ..) -> (IFF)V); null to any
+    // reference (i6_type_multi_fuel_rail addItem(.., null)); a subclass or
+    // implementor (1); any reference or array to Object (2; Axis_VT
+    // addElement(VehicleModel), Chassis partLists.addElement(int[] field));
+    // int to String (3; GameLogic dayTxt.changeText(day)). An Object local
+    // does not fit a GameRef parameter (Garage line 1151 setTargetPart(part)
+    // goes by name).
+    // INVENTED: a class whose superclass chain is not in the index fits any
+    // object parameter (cost 3).
+    int arg_cost(const std::string &a, const std::string &p) const
+    {
+        if (a == p) return 0;
+        bool p_ref = object_desc(p) || (!p.empty() && p[0] == '[');
+        if (a == "N") return p_ref ? 1 : -1;
+        if ((a == "I" && p == "F") || (a == "F" && p == "I")) return 1;
+        if (a == "I" && p == "Ljava.lang.String;") return 3;
+        if (!object_desc(p)) return -1;
+        if (!a.empty() && a[0] == '[') return desc_class(p) == "java.lang.Object" ? 2 : -1;
+        if (!object_desc(a)) return -1;
+        if (desc_class(p) == "java.lang.Object") return 2;
+        std::vector<std::string> todo{desc_class(a)};
+        bool broken = false;
+        for (size_t k = 0; k < todo.size() && k < 256; k++) {
+            if (todo[k] == desc_class(p)) return 1;
+            const ClassSym *s = chain_class(todo[k]);
+            if (!s) {
+                broken = true;
+                continue;
+            }
+            if (!s->super.empty()) todo.push_back(s->super);
+            for (const std::string &i : s->ifaces) todo.push_back(i);
+        }
+        return broken ? 3 : -1;
+    }
     const MethodSym *find_method(const std::string &cls, const std::string &name,
                                  const std::vector<std::string> &args,
                                  std::string *owner, bool *exact = nullptr) const;
@@ -442,6 +481,19 @@ private:
     void gen_member_path(const Expr &e, Body *b);
     void gen_call(const Expr &e, Body *b, bool value);
     void gen_stmt(const Stmt &s, Body *b);
+    void gen_expr_stmt(const Expr &e, int line, Body *b);
+    void gen_scope_run(Body *b, size_t depth, int line);
+    void gen_loop(const Stmt &s, Body *b);
+    void gen_switch(const Stmt &s, Body *b);
+    void gen_jump(const Stmt &s, Body *b);
+    // open loops/switches: pending break/continue jumps, scope depth of the body
+    struct Jumps {
+        std::vector<size_t> breaks, conts;
+        size_t depth = 0;
+        bool is_switch = false;
+    };
+    std::vector<Jumps> jumps_;
+    int jump_line_ = 0; // reduce line of the enclosing block item (gen_stmts)
     void gen_stmts(const std::vector<std::unique_ptr<Stmt>> &stmts, Body *b);
     void gen_field_init(const BodyAst &ast, int line, Body *b);
     void setup_method_scopes(const MethodDecl &m);
@@ -460,6 +512,7 @@ void Emitter::build_self_sym()
 {
     self_.name = fqn_;
     self_.super = super_;
+    self_.ifaces = ifaces_;
     for (const FieldDecl &f : cls_.fields) {
         bool st = has_mod(f.modifiers, "static");
         for (const Declarator &d : f.decls) {
@@ -504,8 +557,9 @@ const MethodSym *Emitter::find_method(const std::string &cls, const std::string 
                                       std::string *owner, bool *exact_out) const
 {
     if (exact_out) *exact_out = false;
-    const MethodSym *fallback = nullptr;
-    std::string fallback_owner;
+    const MethodSym *fallback = nullptr, *fit = nullptr;
+    std::string fallback_owner, fit_owner;
+    int fit_cost = 0;
     std::string cur = cls;
     for (int guard = 0; !cur.empty() && guard < 64; guard++) {
         const ClassSym *s = chain_class(cur);
@@ -523,12 +577,31 @@ const MethodSym *Emitter::find_method(const std::string &cls, const std::string 
                 if (exact_out) *exact_out = true;
                 return &*it;
             }
+            // INVENTED: overload fallback picks the cheapest signature the
+            // argument types fit (arg_cost; unknown types fit anything),
+            // first in scan order on ties, over the first same-arity one
+            // (City raceBot.createCar(map, 1): GroundRef map picks (GameRef;I)).
+            int cost = 0;
+            for (size_t i = 0; i < ps.size() && cost >= 0; i++) {
+                if (args[i].empty()) continue;
+                int c = arg_cost(args[i], ps[i]);
+                cost = c < 0 ? -1 : cost + c;
+            }
+            if (cost >= 0 && (!fit || cost < fit_cost)) {
+                fit = &*it;
+                fit_owner = cur;
+                fit_cost = cost;
+            }
             if (!fallback) {
                 fallback = &*it;
                 fallback_owner = cur;
             }
         }
         cur = s->super;
+    }
+    if (fit) {
+        fallback = fit;
+        fallback_owner = fit_owner;
     }
     if (fallback && owner) *owner = fallback_owner;
     return fallback;
@@ -697,9 +770,10 @@ int Emitter::node_kind(const Expr &e) const
 
 bool Emitter::typed_arg(const Expr &e) const
 {
+    // Array elements are not typed either (tyre_*_LOD_CATALOG_GARAGE
+    // setRenderType(render_types[i]), City alignToRoad(alignedPos[0]) go by name).
     switch (e.kind) {
     case ExprKind::Name:
-    case ExprKind::Index:
     case ExprKind::This:
     case ExprKind::Null:
     case ExprKind::IntLit:
@@ -728,7 +802,10 @@ const MethodSym *Emitter::resolve_call(const Expr &e, std::string *cls, bool *ex
         else c = desc_class(infer(recv));
     }
     std::vector<std::string> args;
-    for (size_t i = first_arg; i < e.kids.size(); i++) args.push_back(infer(*e.kids[i]));
+    // "N" marks a null literal: it fits reference parameters only
+    // (DebugMenu osd.createButton(sty, .., null, null)).
+    for (size_t i = first_arg; i < e.kids.size(); i++)
+        args.push_back(e.kids[i]->kind == ExprKind::Null ? "N" : infer(*e.kids[i]));
     if (!c.empty()) {
         std::string owner;
         if (const MethodSym *m = find_method(c, e.text, args, &owner)) {
@@ -737,24 +814,12 @@ const MethodSym *Emitter::resolve_call(const Expr &e, std::string *cls, bool *ex
             // the call is compiled: operator, call and `new` results are not
             // (canister_1 tHUF2USD(66+2), setMaxWear(kmToMaxWear(..)),
             // Axis_200S addElement(new Integer(39)) go by name).
-            // Types must match the signature, except that an int literal
-            // fits a float parameter (Baiern_FL_butterfly_door tHUF2USD(242)
-            // binds), null fits any reference (i6_type_multi_fuel_rail
-            // addItem(.., null)) and object types are not compared (Axis_VT
-            // addElement(vmd) with a VehicleModel local binds).
-            // INVENTED: object assignability is not checked at all.
+            // Types must fit the signature (arg_cost).
             std::vector<std::string> ps = sig_params(m->sig);
             *exact = ps.size() == args.size();
-            for (size_t i = first_arg; i < e.kids.size() && *exact; i++) {
-                const Expr &a = *e.kids[i];
-                const std::string &want = ps[i - first_arg];
-                if (!typed_arg(a)) *exact = false;
-                else if (args[i - first_arg] != want &&
-                         !(a.kind == ExprKind::IntLit && want == "F") &&
-                         !(a.kind == ExprKind::Null && (object_desc(want) || want[0] == '[')) &&
-                         !(object_desc(args[i - first_arg]) && object_desc(want)))
+            for (size_t i = first_arg; i < e.kids.size() && *exact; i++)
+                if (!typed_arg(*e.kids[i]) || arg_cost(args[i - first_arg], ps[i - first_arg]) < 0)
                     *exact = false;
-            }
             return m;
         }
     }
@@ -999,7 +1064,10 @@ void Emitter::gen_call(const Expr &e, Body *b, bool value)
             // Computed receiver: no 0x24 marker (shock_absorber_Baiern_GT_front
             // ((Slider)e.gadget).changeVLabelText(..)).
             gen_expr(recv, b);
-            ins(b, 0x25, e.line, (uint32_t)lit_str(e.text));
+            // tagged at the `(` (Track line 2242: `..elementAt(i).setMatrix`
+            // with the `(` on 2243; a simple receiver keeps the name's line,
+            // CarMarket line 746 car.chassis.setState)
+            ins(b, 0x25, e.open_line ? e.open_line : e.line, (uint32_t)lit_str(e.text));
         }
     }
     if (value) ins(b, 0x07, e.line, 27);
@@ -1009,6 +1077,11 @@ void Emitter::gen_expr(const Expr &e, Body *b)
 {
     switch (e.kind) {
     case ExprKind::This:
+        // `this` as a value names the self type string in CONS, in the ref
+        // walk (CareerGoalsDialog `osd.globalHandler = this;`)
+        add_str("L" + fqn_ + ";");
+        ins(b, 0x01, e.line, 0);
+        return;
     case ExprKind::Super:
         ins(b, 0x01, e.line, 0);
         return;
@@ -1047,13 +1120,15 @@ void Emitter::gen_expr(const Expr &e, Body *b)
     case ExprKind::Call:
         gen_call(e, b, true);
         return;
-    case ExprKind::New:
-        ins(b, 0x07, e.line, 30);
+    case ExprKind::New: {
+        int close = e.end_line ? e.end_line : e.line;
+        ins(b, 0x07, close, 30);
         ins(b, 0x06, e.line, (uint32_t)add_str(type_desc(e.text)));
         for (const auto &k : e.kids) gen_expr(*k, b);
-        ins(b, 0x27, e.line, (uint32_t)e.kids.size());
-        ins(b, 0x21, e.line);
+        ins(b, 0x27, close, (uint32_t)e.kids.size());
+        ins(b, 0x21, close);
         return;
+    }
     case ExprKind::NewArray: {
         size_t dims = e.kids.size();
         if (e.flag && dims > 0) dims--;
@@ -1065,7 +1140,11 @@ void Emitter::gen_expr(const Expr &e, Body *b)
     case ExprKind::Cast:
         for (const auto &k : e.kids) gen_expr(*k, b);
         ins(b, 0x07, e.line, 33);
-        ins(b, 0x19, e.line, (uint32_t)add_class(type_ref_name(e.text)));
+        // primitive target: type string, not a class ref (Catalog line 2486 `(int)`)
+        if (primitive_desc(e.text))
+            ins(b, 0x06, e.line, (uint32_t)add_str(type_desc(e.text)));
+        else
+            ins(b, 0x19, e.line, (uint32_t)add_class(type_ref_name(e.text)));
         return;
     case ExprKind::InstanceOf:
         for (const auto &k : e.kids) gen_expr(*k, b);
@@ -1141,6 +1220,10 @@ void Emitter::gen_expr(const Expr &e, Body *b)
         for (const auto &k : e.kids) gen_expr(*k, b);
         return;
     case ExprKind::Ternary:
+        // no jumps: cond, then, else, 07(0) (EventList line 238)
+        for (const auto &k : e.kids) gen_expr(*k, b);
+        ins(b, 0x07, e.line, 0);
+        return;
     case ExprKind::ArrayInit:
     case ExprKind::CtorChain:
         return;
@@ -1194,7 +1277,7 @@ void Emitter::gen_expr(const Expr &e, Body *b)
 // the lookahead token (to rule out `else`), everything else reduces on its
 // last token; nesting passes the lookahead on (Baiern_88er_crankshaft:
 // `else if (..) {..}` closes on the next line's `}`).
-// INVENTED: loops/switch are assumed to reduce like their last statement.
+// while/for reduce like their body (Set.getMass: the body block's `}`).
 int Emitter::reduce_line(const Stmt &s) const
 {
     switch (s.kind) {
@@ -1212,20 +1295,17 @@ void Emitter::gen_stmt(const Stmt &s, Body *b)
 {
     switch (s.kind) {
     case StmtKind::Empty:
+        return;
     case StmtKind::Break:
     case StmtKind::Continue:
+        gen_jump(s, b);
         return;
-    case StmtKind::Block: {
+    case StmtKind::Block:
         push_scope();
-        for (const auto &child : s.stmts) gen_stmt(*child, b);
-        std::vector<int> slots;
-        for (const LocalSym &sym : scopes_.back()) slots.push_back(sym.slot);
-        std::sort(slots.begin(), slots.end());
-        for (auto it = slots.rbegin(); it != slots.rend(); ++it)
-            ins(b, 0x03, s.end_line, (uint32_t)*it);
+        gen_stmts(s.stmts, b);
+        gen_scope_run(b, scopes_.size() - 1, s.end_line);
         pop_scope();
         return;
-    }
     case StmtKind::LocalDecl:
         for (const DeclAst &d : s.decls) {
             std::string desc = type_desc(s.type + std::string((size_t)d.dims * 2, '['));
@@ -1239,45 +1319,9 @@ void Emitter::gen_stmt(const Stmt &s, Body *b)
             }
         }
         return;
-    case StmtKind::Expr: {
-        if (!s.expr) return;
-        switch (s.expr->kind) {
-        case ExprKind::Assign:
-        case ExprKind::MulAssign:
-        case ExprKind::DivAssign:
-        case ExprKind::ModAssign:
-        case ExprKind::AddAssign:
-        case ExprKind::SubAssign:
-        case ExprKind::ShlAssign:
-        case ExprKind::ShrAssign:
-        case ExprKind::UshrAssign:
-        case ExprKind::BitAndAssign:
-        case ExprKind::BitXorAssign:
-        case ExprKind::BitOrAssign:
-            if (s.expr->kids.size() >= 2) {
-                gen_expr(*s.expr->kids[1], b);
-                gen_expr(*s.expr->kids[0], b);
-                ins(b, 0x08, s.last_line, (uint32_t)node_kind(*s.expr));
-            }
-            return;
-        case ExprKind::Call:
-            gen_call(*s.expr, b, false);
-            ins(b, 0x08, s.last_line, 27);
-            return;
-        case ExprKind::PostInc:
-        case ExprKind::PostDec:
-        case ExprKind::PreInc:
-        case ExprKind::PreDec:
-            // the statement end replaces the root node (Drifting: `x++;`)
-            for (const auto &k : s.expr->kids) gen_expr(*k, b);
-            ins(b, 0x08, s.last_line, (uint32_t)node_kind(*s.expr));
-            return;
-        default:
-            gen_expr(*s.expr, b);
-            ins(b, 0x08, s.last_line, (uint32_t)node_kind(*s.expr));
-            return;
-        }
-    }
+    case StmtKind::Expr:
+        if (s.expr) gen_expr_stmt(*s.expr, s.last_line, b);
+        return;
     case StmtKind::CtorCall:
         for (const auto &e : s.args) gen_expr(*e, b);
         ins(b, 0x27, s.line, (uint32_t)s.args.size());
@@ -1287,10 +1331,11 @@ void Emitter::gen_stmt(const Stmt &s, Body *b)
     case StmtKind::Return: {
         bool value = s.expr != nullptr;
         if (s.expr) gen_expr(*s.expr, b);
+        // tagged at the closing `;` (Bot.getName: a return spanning 556..560)
         uint8_t op = value ? 0x28 : (cur_ctor_ ? 0x2a : 0x29);
-        ins(b, op, s.line);
-        gen_live_run(b, s.line);
-        if (op != 0x2a) ins(b, 0x2b, s.line);
+        ins(b, op, s.last_line);
+        gen_live_run(b, s.last_line);
+        if (op != 0x2a) ins(b, 0x2b, s.last_line);
         return;
     }
     case StmtKind::If:
@@ -1303,11 +1348,11 @@ void Emitter::gen_stmt(const Stmt &s, Body *b)
         gen_expr(*s.expr, b);
         {
             size_t br = b->instrs.size();
-            ins(b, 0x15, reduce_line(s), 0);
+            ins(b, 0x15, jump_line_, 0);
             gen_stmt(*s.then_stmt, b);
             if (s.else_stmt) {
                 size_t skip = b->instrs.size();
-                ins(b, 0x14, reduce_line(s), 0);
+                ins(b, 0x14, jump_line_, 0);
                 size_t else_at = b->instrs.size();
                 gen_stmt(*s.else_stmt, b);
                 patch_jump(b, br, else_at);
@@ -1320,14 +1365,191 @@ void Emitter::gen_stmt(const Stmt &s, Body *b)
     case StmtKind::While:
     case StmtKind::DoWhile:
     case StmtKind::For:
+        gen_loop(s, b);
+        return;
     case StmtKind::Switch:
-        return; // stage 4a: loops/switch are later cards
+        gen_switch(s, b);
+        return;
     }
 }
 
+void Emitter::gen_expr_stmt(const Expr &e, int line, Body *b)
+{
+    switch (e.kind) {
+    case ExprKind::Assign:
+    case ExprKind::MulAssign:
+    case ExprKind::DivAssign:
+    case ExprKind::ModAssign:
+    case ExprKind::AddAssign:
+    case ExprKind::SubAssign:
+    case ExprKind::ShlAssign:
+    case ExprKind::ShrAssign:
+    case ExprKind::UshrAssign:
+    case ExprKind::BitAndAssign:
+    case ExprKind::BitXorAssign:
+    case ExprKind::BitOrAssign:
+        if (e.kids.size() >= 2) {
+            gen_expr(*e.kids[1], b);
+            gen_expr(*e.kids[0], b);
+            ins(b, 0x08, line, (uint32_t)node_kind(e));
+        }
+        return;
+    case ExprKind::Call:
+        gen_call(e, b, false);
+        ins(b, 0x08, line, 27);
+        return;
+    case ExprKind::PostInc:
+    case ExprKind::PostDec:
+    case ExprKind::PreInc:
+    case ExprKind::PreDec:
+        // the statement end replaces the root node (Drifting: `x++;`)
+        for (const auto &k : e.kids) gen_expr(*k, b);
+        ins(b, 0x08, line, (uint32_t)node_kind(e));
+        return;
+    default:
+        gen_expr(e, b);
+        ins(b, 0x08, line, (uint32_t)node_kind(e));
+        return;
+    }
+}
+
+// 0x03 run for the locals of the scopes from `depth` inward, descending
+// slots (a block's own epilogue, and break/continue leaving nested blocks).
+void Emitter::gen_scope_run(Body *b, size_t depth, int line)
+{
+    std::vector<int> slots;
+    for (size_t i = depth; i < scopes_.size(); i++)
+        for (const LocalSym &sym : scopes_[i]) slots.push_back(sym.slot);
+    std::sort(slots.begin(), slots.end());
+    for (auto it = slots.rbegin(); it != slots.rend(); ++it) ins(b, 0x03, line, (uint32_t)*it);
+}
+
+// Loops (InventoryItem_Folder.installToCar, Set.getMass, RaceSetup line 184):
+//   while: top: [cond] 15(end) body 14(top)
+//   for:   [init] top: [cond] 15(end) body upd: [update 08] 14(top) end: 03(for locals)
+//   do:    top: body [cond] 16(top)
+// 0x15/0x14 carry the loop's reduce line, 0x16 the line of the closing `;`.
+void Emitter::gen_loop(const Stmt &s, Body *b)
+{
+    int line = jump_line_;
+    if (s.kind == StmtKind::For) {
+        push_scope();
+        if (s.init_stmt) gen_stmt(*s.init_stmt, b);
+        for (const auto &e : s.init_exprs) gen_expr_stmt(*e, e->line, b);
+    }
+    size_t top = b->instrs.size();
+    size_t br = (size_t)-1;
+    if (s.kind != StmtKind::DoWhile && s.expr) {
+        gen_expr(*s.expr, b);
+        br = b->instrs.size();
+        ins(b, 0x15, line, 0);
+    }
+    jumps_.push_back({});
+    jumps_.back().depth = scopes_.size();
+    if (s.body) gen_stmt(*s.body, b);
+    Jumps j = std::move(jumps_.back());
+    jumps_.pop_back();
+    size_t cont = b->instrs.size();
+    if (s.kind == StmtKind::DoWhile) {
+        if (s.expr) gen_expr(*s.expr, b);
+        ins(b, 0x16, s.last_line, 0);
+        patch_jump(b, b->instrs.size() - 1, top);
+    } else {
+        for (const auto &e : s.update_exprs) gen_expr_stmt(*e, e->line, b);
+        ins(b, 0x14, line, 0);
+        patch_jump(b, b->instrs.size() - 1, top);
+        if (s.kind == StmtKind::While) cont = top;
+    }
+    size_t end = b->instrs.size();
+    if (br != (size_t)-1) patch_jump(b, br, end);
+    for (size_t at : j.breaks) patch_jump(b, at, end);
+    for (size_t at : j.conts) patch_jump(b, at, cont);
+    if (s.kind == StmtKind::For) {
+        gen_scope_run(b, scopes_.size() - 1, line);
+        pop_scope();
+    }
+}
+
+// switch (PowerInTheDark.osdCommand): [selector] per labelled case
+// [label] 17(case body), then 18 14(default body or end), then the case
+// bodies in source order, each its own local scope. 17/18/14 carry the
+// closing brace line.
+void Emitter::gen_switch(const Stmt &s, Body *b)
+{
+    if (s.expr) gen_expr(*s.expr, b);
+    std::vector<size_t> case_jump(s.cases.size(), (size_t)-1);
+    for (size_t i = 0; i < s.cases.size(); i++) {
+        if (s.cases[i].is_default || !s.cases[i].label) continue;
+        gen_expr(*s.cases[i].label, b);
+        case_jump[i] = b->instrs.size();
+        ins(b, 0x17, s.end_line, 0);
+    }
+    ins(b, 0x18, s.end_line);
+    size_t dflt = b->instrs.size();
+    ins(b, 0x14, s.end_line, 0);
+    bool has_default = false;
+    jumps_.push_back({});
+    jumps_.back().is_switch = true;
+    for (size_t i = 0; i < s.cases.size(); i++) {
+        const SwitchCase &c = s.cases[i];
+        size_t at = b->instrs.size();
+        if (case_jump[i] != (size_t)-1) patch_jump(b, case_jump[i], at);
+        if (c.is_default) {
+            patch_jump(b, dflt, at);
+            has_default = true;
+        }
+        push_scope();
+        jumps_.back().depth = scopes_.size() - 1;
+        gen_stmts(c.stmts, b);
+        // case locals are freed at the lookahead that ends the case: the
+        // next label, or the closing brace for the last case (PoliceDialog
+        // City line 3645; City.handleMessage CMD_DEBUG line 3342)
+        gen_scope_run(b, scopes_.size() - 1,
+                      i + 1 < s.cases.size() ? s.cases[i + 1].line : s.end_line);
+        pop_scope();
+    }
+    Jumps j = std::move(jumps_.back());
+    jumps_.pop_back();
+    size_t end = b->instrs.size();
+    if (!has_default) patch_jump(b, dflt, end);
+    for (size_t at : j.breaks) patch_jump(b, at, end);
+    // continue inside a switch belongs to the enclosing loop
+    if (!jumps_.empty())
+        for (size_t at : j.conts) jumps_.back().conts.push_back(at);
+}
+
+// break/continue: 0x03 run for the locals declared inside the target
+// construct, then a 0x14 patched by the loop/switch (Catalog line 2569:
+// `continue` frees `whl` and jumps to the for update).
+void Emitter::gen_jump(const Stmt &s, Body *b)
+{
+    bool brk = s.kind == StmtKind::Break;
+    size_t k = jumps_.size();
+    // a continue skips enclosing switches
+    while (k > 0 && !brk && jumps_[k - 1].is_switch) k--;
+    if (k == 0) return; // INVENTED: stray break/continue emits nothing
+    gen_scope_run(b, jumps_[k - 1].depth, s.line);
+    size_t at = b->instrs.size();
+    ins(b, 0x14, s.line, 0);
+    if (brk) jumps_[k - 1].breaks.push_back(at);
+    else jumps_.back().conts.push_back(at);
+}
+
+// Block items (method body, block, case list). The if/loop jumps (0x15 and
+// the 0x14 else-skip/back edge) of an item and of every statement nested in
+// it without an intervening block carry the line where the parser reduces
+// the item: the code is generated then. Racer.calcPrestige line 307
+// `if (a) if (b) {..} else {..}` and Chassis.updatevariables line 355
+// `if (x) for (..) {..}`: the inner if/for jumps get the outer if's
+// lookahead line, not their own closing brace.
 void Emitter::gen_stmts(const std::vector<std::unique_ptr<Stmt>> &stmts, Body *b)
 {
-    for (const auto &s : stmts) gen_stmt(*s, b);
+    int saved = jump_line_;
+    for (const auto &s : stmts) {
+        jump_line_ = reduce_line(*s);
+        gen_stmt(*s, b);
+    }
+    jump_line_ = saved;
 }
 
 void Emitter::gen_field_init(const BodyAst &ast, int line, Body *b)
@@ -1468,6 +1690,12 @@ bool Emitter::run(ClassUnit *out, std::string *err)
         if (method_has_body_[(size_t)d.mi])
             for (const auto &st : method_ast_[(size_t)d.mi].stmts) collect_types_stmt(*st);
     }
+    // A class that is not the first one of its source file also gets its own
+    // type string after the declaration types (Transit.java Portal, Bot.java
+    // botCard/database, Mechanic.java ScrapDialog: every such unit in the pairs).
+    // INVENTED: why (the compile step adding it) was not traced in the exe.
+    if (!unit_.classes.empty() && &unit_.classes[0] != &cls_) add_str("L" + fqn_ + ";");
+    for (const std::string &n : ifaces_) add_str("L" + n + ";");
     for (const DeclSite &d : decls) {
         if (d.fi >= 0) {
             for (const Declarator &dc : cls_.fields[(size_t)d.fi].decls) add_str(dc.name);
@@ -1694,6 +1922,7 @@ void ClassIndex::add(const ClassUnit &u)
     s.name = u.class_name(u.self_class);
     if (s.name.empty()) return;
     s.super = u.super_class >= 0 ? u.class_name(u.super_class) : std::string();
+    for (int32_t i : u.interfaces) s.ifaces.push_back(u.class_name(i));
     for (const FieldInfo &f : u.fields) {
         FieldSym fs;
         fs.name = u.str(f.name) ? u.str(f.name) : "";
