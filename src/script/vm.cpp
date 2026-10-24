@@ -1420,11 +1420,11 @@ Vm::Vm()
 }
 Vm::~Vm() = default;
 
-void Vm::add_class(const ClassUnit *unit)
+ClassState *Vm::add_class(const ClassUnit *unit)
 {
-    if (!unit) return;
+    if (!unit) return nullptr;
     std::string name = unit->class_name(unit->self_class);
-    if (name.empty() || by_name_.count(name)) return;
+    if (name.empty()) return nullptr;
     auto cs = std::make_unique<ClassState>();
     cs->unit = unit;
     cs->name = name;
@@ -1443,9 +1443,18 @@ void Vm::add_class(const ClassUnit *unit)
             cs->own_inst.push_back(fr);
         }
     }
-    by_name_[name] = cs.get();
+    ClassState *out = cs.get();
+    // 0x55af50 returns the first class loaded under a name; the later ones stay
+    // in states_ for their own units (record-path loads).
+    if (!by_name_.count(name)) by_name_[name] = out;
     states_.push_back(std::move(cs));
     linked_ = false;
+    return out;
+}
+
+void Vm::keep_file(std::unique_ptr<ClassFile> file)
+{
+    if (file) files_.push_back(std::move(file));
 }
 
 ClassState *Vm::find_class(const std::string &name) const

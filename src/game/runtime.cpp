@@ -258,26 +258,32 @@ void Runtime::deactivate()
     active_ = nullptr;
 }
 
-std::string Runtime::script_class_of(const Package &pkg, const RpkRecord &rec) const
+// 0x51fcc0: a file ref (<dir>\Name.class) goes through 0x55aca0 -> 0x55bec0
+// every time (the 0x55aca0 key is the directory path, which never matches a
+// shipped class name), so the returned ClassState is the record's own.
+// A ref that names the class directly stays a name lookup (name_out).
+ClassState *Runtime::script_class_of(const Package &pkg, const RpkRecord &rec,
+                                    std::string *name) const
 {
     for (const DataRef &ref : resources_->refs(pkg, rec)) {
         if (ref.kind != DataRef::Script) continue;
-        if (classes_) {
-            for (const auto &kv : classes_->entries())
-                if (!ref.path.empty() && kv.second.path == ref.path) return kv.first;
+        if (!ref.file) {
+            *name = ref.text;  // class named directly by the record
+            return nullptr;
         }
-        if (!ref.file) return ref.text;  // class named directly by the record
-        // 0x51fcc0 -> 0x55aca0(dir, Name): the record text is <dir>\Name.class;
-        // 0x55aca0 loads it when no loaded class has that path.
+        // 0x51fcc0 -> 0x55aca0(dir, Name): the record text is <dir>\Name.class.
         size_t sep = ref.text.find_last_of("\\/");
         if (!path_class_loader || sep == std::string::npos) continue;
         std::string base = ref.text.substr(sep + 1);
         if (base.size() > 6 && base.compare(base.size() - 6, 6, ".class") == 0)
             base.resize(base.size() - 6);
-        std::string fqn = path_class_loader(ref.text.substr(0, sep), base);
-        if (!fqn.empty()) return fqn;
+        ClassState *cs = path_class_loader(ref.text.substr(0, sep), base);
+        if (!cs) continue;
+        const ClassUnit *unit = class_state_unit(cs);
+        *name = unit ? unit->class_name(unit->self_class) : std::string();
+        return cs;
     }
-    return std::string();
+    return nullptr;
 }
 
 // 0x51fc50 (vf10 +0x28) / 0x51fcc0: the record's `script ...` ref is resolved
@@ -289,7 +295,7 @@ void Runtime::ensure_script_class(Resource *r)
     if (!r || r->script_class_checked) return;
     r->script_class_checked = true;   // mark first: script_class_of may load classes
     if (r->package && r->record)
-        r->script_class = script_class_of(*r->package, *r->record);
+        r->script_cls = script_class_of(*r->package, *r->record, &r->script_class);
 }
 
 // 0x51e310 Package::load / 0x518410 Resource__createInstance at mount: the
@@ -504,6 +510,7 @@ Runtime::Resource *Runtime::instantiate(Resource *type, Resource *parent,
     if (type) {
         ensure_script_class(type);
         r->script_class = type->script_class;
+        r->script_cls = type->script_cls;
     }
     r->parent = parent;
     r->parent_id = parent ? parent->id : 0;
@@ -580,8 +587,9 @@ Object *Runtime::script_instance(Resource *r)
     if (r->script) return r->script;
     // 0x4daf90 getScriptInstance hits the same typed-data path before the class.
     ensure_script_class(r);
-    if (!vm_ || r->script_class.empty()) return nullptr;
-    ClassState *cs = vm_->find_class(r->script_class);
+    if (!vm_) return nullptr;
+    ClassState *cs = r->script_cls;
+    if (!cs && !r->script_class.empty()) cs = vm_->find_class(r->script_class);
     if (!cs) return nullptr;
     std::string err;
     Object *o = vm_->new_object(cs, &err);

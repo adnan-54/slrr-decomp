@@ -23,6 +23,7 @@
 #include "resource/manager.h"
 
 class Vm;
+struct ClassState;
 struct Object;
 struct Value;
 
@@ -38,6 +39,7 @@ class Runtime {
         uint32_t type = 0;                 // resource type code (8 type, 1 instance)
         std::string name;                  // record name, or instance alias
         std::string script_class;          // `script` ref of the backing record
+        ClassState *script_cls = nullptr;  // 0x55aca0's Class for a file ref
         bool script_class_checked = false; // node+0x94 bit0: typed data parsed (0x51f790)
         const Package *package = nullptr;
         const RpkRecord *record = nullptr; // null for created instances
@@ -245,15 +247,17 @@ class Runtime {
     // 0x47c640 Game__getInfo(h, 0x39) -> 0x4bb570: the ground's traffic graph or null.
     traffic::Graph *ground_traffic(Handle *h);
     // 0x55aca0 -> 0x55bec0: load "<dir>\<base>.class" on demand for a record's
-    // `script <dir>\<Name>.class` ref; returns the FQN, "" on failure.
-    std::function<std::string(const std::string &dir, const std::string &base)>
+    // `script <dir>\<Name>.class` ref; returns the fresh ClassState, null on
+    // failure.
+    std::function<ClassState *(const std::string &dir, const std::string &base)>
         path_class_loader;
     // 0x51fc50 (vf10 +0x28) / 0x51fcc0: resolve the record's `script` ref once,
     // on the first typed-data need; never at package mount.
     void ensure_script_class(Resource *r);
 
   private:
-    std::string script_class_of(const Package &pkg, const RpkRecord &rec) const;
+    ClassState *script_class_of(const Package &pkg, const RpkRecord &rec,
+                                std::string *name) const;
     void unlink(Handle *h);
     void destroy(Resource *r);   // vf0(1) common part, D1..D5
 

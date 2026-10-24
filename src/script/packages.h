@@ -12,6 +12,7 @@
 
 class ClassPath;
 class Vm;
+struct ClassState;
 
 namespace jvm {
 
@@ -54,5 +55,10 @@ bool load_class(PackageTree &tree, ClassPath &classes, Vm &vm, const std::string
 // first new unit's class name ("" when every unit was already loaded).
 bool load_class_at(PackageTree &tree, ClassPath &classes, Vm &vm, const std::string &dir,
                    const std::string &base, std::string *fqn_out);
+// 0x55aca0 -> 0x55bec0 for a record's `script <dir>\<Name>.class` ref: never
+// dedupes by path, so every call parses the file and adds a fresh ClassState
+// per unit. The first load of a path is also registered in the ClassPath.
+ClassState *load_class_by_path(PackageTree &tree, ClassPath &classes, Vm &vm,
+                               const std::string &dir, const std::string &base);
 
 } // namespace jvm

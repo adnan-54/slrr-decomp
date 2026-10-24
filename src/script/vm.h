@@ -172,7 +172,11 @@ class Vm {
     // into its global id (0x5189e0 / 0x55cad0).
     using ResourceResolver = std::function<int32_t(const std::string &pkg, int32_t local)>;
 
-    void add_class(const ClassUnit *unit);
+    // 0x554ee0: always creates a ClassState; a name already in by_name_ keeps
+    // the first entry (0x55af50) but the new unit still gets its own state.
+    ClassState *add_class(const ClassUnit *unit);
+    // Keeps a ClassFile parsed outside the ClassPath alive for its units.
+    void keep_file(std::unique_ptr<ClassFile> file);
     ClassState *find_class(const std::string &name) const;
     void set_class_loader(ClassLoader f) { loader_ = std::move(f); }
     void set_resource_resolver(ResourceResolver f) { resource_resolver_ = std::move(f); }
@@ -233,6 +237,7 @@ class Vm {
     bool init_object_fields(Object *obj, std::string *err);
 
     std::vector<std::unique_ptr<ClassState>> states_;
+    std::vector<std::unique_ptr<ClassFile>> files_;   // Vm::keep_file
     std::map<std::string, ClassState *> by_name_;
     std::vector<std::unique_ptr<Object>> objects_;
     std::vector<std::unique_ptr<Array>> arrays_;

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -590,6 +591,8 @@ void game_init_check(Boot &boot, Checker &c)
     std::printf("  threads done: %zu\n", done);
     std::printf("  frames: %d run, threads: %zu, failed: %d\n", kFrames, threads.size(),
                 failed);
+    c.check(failed == 0,
+            "no failed thread (got " + std::to_string(failed) + ")");
 }
 
 // 0x55ccc0 roots: dir on the install -> package root. The package tree maps a
@@ -882,6 +885,97 @@ void compile_on_load_sweep(Boot &boot)
 }
 
 
+// 0x51fcc0 -> 0x55aca0 -> 0x55bec0: every freeride map's record 0x102 points
+// at <map>\data\track_data.class under the same FQN java.game.track_data, but a
+// record-path load creates a fresh Class per record. Its init() must therefore
+// set that map's own e_name.
+void track_data_check(Boot &boot, Checker &c)
+{
+    std::vector<fs::FindEntry> dirs;
+    fs::find("multibot/maps/*", &dirs);
+    std::vector<std::string> maps;
+    std::vector<size_t> pkg_index;
+    for (const fs::FindEntry &e : dirs) {
+        if (!e.is_dir || e.name == "." || e.name == "..") continue;
+        std::string path = "multibot/maps/" + e.name + "/t_data.rpk";
+        if (!fs::exists(path)) continue;
+        std::string err;
+        if (!boot.resources()->open(path.c_str(), nullptr, &err)) {
+            std::printf("    %s: %s\n", e.name.c_str(), err.c_str());
+            continue;
+        }
+        maps.push_back(e.name);
+        pkg_index.push_back(boot.resources()->package_count() - 1);
+    }
+    c.check(maps.size() == 21,
+            "all 21 freeride t_data packages open (" + std::to_string(maps.size()) + ")");
+
+    std::set<ClassState *> states;
+    int named = 0;
+    std::vector<std::string> bad;
+    for (size_t i = 0; i < maps.size(); i++) {
+        const std::string &map = maps[i];
+        // Re-fetch by index: resolving may lazily open more packages.
+        const Package &pkg = boot.resources()->package(pkg_index[i]);
+        if (!pkg.rpk.find(0x102)) {
+            bad.push_back(map + ": no record 0x102");
+            continue;
+        }
+        Runtime *rt = boot.runtime();
+        Runtime::Resource *type = rt->resolve(0x102, &pkg);
+        if (!type) {
+            bad.push_back(map + ": record 0x102 does not resolve");
+            continue;
+        }
+        // CareerEvent.init (CareerEvent.java:124-128): GameRef.create(null, type,
+        // null, "track data") then track.init() and track.e_name.
+        Runtime::Resource *inst =
+            rt->instantiate(type, rt->game_root(), "track data", "", true, nullptr);
+        Object *script = inst ? inst->script : nullptr;
+        if (!script) {
+            bad.push_back(map + ": no script instance");
+            continue;
+        }
+        states.insert(script->cls);
+        std::string err;
+        if (!rt->call_method(script, "init", {}, nullptr, &err)) {
+            bad.push_back(map + ": init(): " + err);
+            continue;
+        }
+        Value v;
+        if (!boot.vm()->get_instance_field(script, "e_name", &v, &err) ||
+            v.kind != Value::Str) {
+            bad.push_back(map + ": e_name: " + err);
+            continue;
+        }
+        std::string java_path = "multibot/maps/" + map + "/data/track_data.java";
+        std::vector<uint8_t> src_bytes;
+        if (!fs::read_file(java_path, &src_bytes, &err)) {
+            bad.push_back(map + ": " + err);
+            continue;
+        }
+        std::string src(src_bytes.begin(), src_bytes.end());
+        size_t p = src.find("e_name");
+        size_t q = p == std::string::npos ? p : src.find('"', p);
+        size_t r = q == std::string::npos ? q : src.find('"', q + 1);
+        std::string want =
+            r == std::string::npos ? std::string() : src.substr(q + 1, r - q - 1);
+        if (want.empty() || v.s != want) {
+            bad.push_back(map + ": e_name \"" + v.s + "\" != \"" + want + "\"");
+            continue;
+        }
+        named++;
+    }
+    for (size_t i = 0; i < bad.size() && i < 10; i++)
+        std::printf("    %s\n", bad[i].c_str());
+    c.check(named == 21 && bad.empty(),
+            "each map's track_data.init() sets its own e_name (" +
+                std::to_string(named) + "/21)");
+    c.check(states.size() == 21,
+            "record-path loads bind one ClassState per map (" +
+                std::to_string(states.size()) + ")");
+}
+
 int selfcheck()
 {
     Checker c;
@@ -986,6 +1080,7 @@ int selfcheck()
     package_tree_check(c);
     vector3_check(boot, c);
     game_init_check(boot, c);
+    track_data_check(boot, c);
     package_root_compile_check(boot, c);
     axis_record_compile_check(boot, c);
     compile_on_load_sweep(boot);   // report only
