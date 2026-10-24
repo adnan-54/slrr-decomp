@@ -51,6 +51,30 @@ Address range of the VM code: roughly **0x548c40–0x565000** (~360 functions). 
 - Other compiler entry: System.compileAll 0x555510 (GameLogic, DEBUG_MODE only).
 - src: no compiler (SERVICE MISSING). Shipped data: 4 Axis part scripts exist only as scripts/src/*.java.
 
+## Record-path class load binds a fresh Class per record (verified 2026-10-24)
+- 0x51fcc0 `script <dir>\Name.class`: dir = text before the last `\`, Name = text between it and the
+  last `.`; `node+0x10 = 0x55aca0(dir, Name)` = a Class POINTER, not a name.
+- 0x55aca0: key = dir + "." (DAT_005b4710 = 2e 00) + Name, every `\` -> `.` (e.g.
+  `multibot.maps.TestTrack.data.track_data`); scans all 0x200 buckets (0xc each) of the loaded-class
+  hash at JVM+8 for a class whose own name (unit+0x3c via 0x54b660/0x54b970) equals that key; hit ->
+  returns it (EAX = DAT_007a250c), miss -> tail `JavaMachine::loadClass` 0x55bec0(dir, Name).
+  Asm 0x55adad..0x55adca confirms the class is the return value.
+- Consequence: the key is a directory path, a class name is `java.<pkg>.Name`, so for shipped data the
+  scan never hits: EVERY record-path load re-reads the file (0x55bec0 -> addClass 0x554ee0 ->
+  `new Class` 0x548ea0) and the record gets its own Class object (own statics), even when a class
+  of that name (or that same file) is already loaded.
+- 0x548ea0 always inserts into the hash (key = sum(chars)*0x25 + len*7, 0x5492f0): an empty bucket
+  takes the entry in its head slot; later entries are linked right after the head. Lookup by name
+  0x55af50 walks from the head, so `JVM::getClass(name)` returns the FIRST class loaded under that
+  name (= src `Vm::by_name_` keeping the first).
+- Shipped case that needs it: all 21 `multibot\maps\<map>\t_data.rpk` records 0x102 `track_data`
+  (super system:0x3000 MAP_ROOT) point at `<map>\data\track_data.class`, each declaring
+  `package java.game; class track_data extends TrackData`. src (ClassPath/Vm keyed by FQN, unique)
+  loads only the first (Norisring in mount order); the 20 others get no script class,
+  `GameRef.create(.., "track data")` returns null, CareerEvent.track stays null and
+  THRD-GARAGE-TESTDRIVE fails at `CareerEvent.countRequirements` line 200 (`track.location`), so the
+  Garage -> EventList(freeride) -> Track flow stops there (vmboot 30000 frames, 2026-10-24). Card 136.
+
 ## Class lookup by name: the package tree (verified 2026-10-23, card 104)
 - JVM init 0x55ccc0: root node "java"; registers `system\scripts\{lang,net,io,util,render,sound}` ->
   `java.<same>`, `sl\scripts\game` -> `java.game`, `parts\scripts` -> `java.game.parts`,
