@@ -560,3 +560,30 @@ Career-map drive failures after the placement port (card 164 finish, 2026-10-24)
 - Open: the used car is picked by a time-seeded rand (Math.randomize 0x4dee90); other picks (Axis 200S,
   Einvagen 110 GTK) fail vmboot checks that assume the SunStrip (D18V slot 401, getWheelID) and the
   Axis 200S hull 15 sits ~8 cm below its tyre plane at rest.
+
+## Wheel steer frame: 0x4aa830 -> sensor body matrix -> tyre/spring pass (2026-10-24, card 170 RE)
+`0x4aa830(car)` (ECX = manager, called from updateControls 0x498300 when `|steer − steer_copy| > 0.001`, and from
+0x4a99b0 placement), per wheel W (`car+0x1414 + i·0x2e4`) with `S = W+0x30 ≠ 0`:
+```
+d0 = e+0xa20 (max steer) · car+0x1ddc (steer)              // no speed sensitivity here
+if |d0| <= 0.001            W+0xe4 = 0
+else if e+0xa30 (L) == 0    W+0xe4 = W+0xc8 · d0
+else { R = L / (sin d0 / cos d0)                           // 0x570fcb = sin, 0x570e7e = cos (from 0x5666d0)
+       R > 0 : W+0xe4 =  atan2(L,  W+0x78 + R) · W+0xc8   // FPATAN(ST1 = L, ST0 = x), W+0x78 = hub x
+       else  : W+0xe4 = −atan2(L, −R − W+0x78) · W+0xc8 }
+Ry = Euler(W+0xe4, 0, 0) (0x5666d0 into W+0x110)  -> rows (c,0,s),(0,1,0),(−s,0,c)
+W+0x110 = W+0x90 (setYpr base) · Ry               (0x566a70: this = param · this)
+0x4f4380(S, pos 0, W+0x110): copies W+0x110 into the sensor body's local offset matrix (S+0x94 → +0x1c, +0x20..0x4c)
+0x4a7fe0(car) render wheel pose (cosmetic); car+0x124 steering-wheel bone yaw += e+0xa24·steer; flags |= 0x100000
+```
+Matrix convention (from the W+0x140 transform in 0x49c8e0): world→local is `local_j = Σ_r M[r][j]·v_r`, so the
+**columns** are the local axes; `Ry` column 2 = `(sin δ, 0, cos δ)` = wheel forward in the base frame, i.e. `δ > 0`
+turns the wheel's +z toward +x (yaw ω_y > 0 for a car rolling along +z).
+**Consumers.** Every "R" in Vehicle::update §2/§6 and in the spring solver is the matrix of the body `S+0x94`
+(`+0xa4 + 0xd4·state(+0x20c)`), i.e. the sensor body whose local offset is `W+0x110`, so `R = R_car · W+0x90 · Ry(W+0xe4)`:
+§2 slip velocity `W+0x140 = Rᵀ·(groundVel − pointVel)` (0x49d5xx loop at pseudo line 648), §6 `v`, the normal
+`n_body = Rᵀ·S+0xc4` and the force basis back to world (0x49ef9e..), and the spring Gram-Schmidt forward `R·(0,0,1)`
+(§ Suspension step 10; up `R·(0,1,0)` is unchanged by a yaw). src `vehicle::Car` computes `steer_angle` without
+Ackermann and uses the chassis `r` everywhere, so steering never reaches the tyres (card 169 measured 0.001 rad/s
+yaw at full lock, 8.5 m/s). Steer help (0x498300, on unless cfg `steerhelp ≤ 0` sets flag 0x200, needs
+`M+0x1330 > 0`) and flag 0x2000 change `steer` before 0x4aa830 and stay out of scope (card 170).
