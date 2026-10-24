@@ -642,6 +642,68 @@ void game_init_check(Boot &boot, Checker &c)
             "player car chassis body hangs under its car_root body (0x4992e0)");
     c.check(root_sleeping, "car_root body is in the world's sleeping list (0x506d90)");
 
+    // Card 150: Vehicle's ctor ran Chassis.addStockParts -> Part.addPart, whose
+    // "install 0 <car> 0 <this> 0" command attaches the part (0x4c4400 ->
+    // 0x4c96c0 -> 0x4cb1d0). _main_200S.cfg:387: chassis slot 401 attaches part
+    // 0x000A009B at its slot 99 (Duhen_D18V_block).
+    Runtime *rt = boot.runtime();
+    game::PartData *chassis_parts = car_res ? game::part_data(*rt, car_res) : nullptr;
+    game::Slot *engine_slot = nullptr;
+    if (chassis_parts)
+        for (game::Slot &s : chassis_parts->slots)
+            if (s.id == 401) engine_slot = &s;
+    Object *engine_obj = engine_slot ? engine_slot->attached : nullptr;
+    Runtime::Handle *eh = engine_obj ? rt->handle(engine_obj) : nullptr;
+    Runtime::Resource *engine_res = eh ? eh->target : nullptr;
+    game::PartData *engine_parts = engine_res ? game::part_data(*rt, engine_res) : nullptr;
+    game::Slot *engine_own = nullptr;
+    if (engine_parts)
+        for (game::Slot &s : engine_parts->slots)
+            if (s.id == 99) engine_own = &s;
+    c.check(engine_obj && engine_slot->mate_id == 99,
+            "chassis slot 401 attaches a part at its slot 99 (0x4cb1d0)");
+    c.check(engine_obj && object_class(boot, engine_obj).find("Duhen_D18V_block") !=
+                              std::string::npos,
+            "chassis slot 401's part is a Duhen_D18V_block (got " +
+                (engine_obj ? object_class(boot, engine_obj) : std::string("(none)")) + ")");
+    c.check(engine_own && engine_own->attached == car_res->script &&
+                engine_own->mate_id == 401,
+            "the block's slot 99 points back at the chassis slot 401 (0x4cb1d0)");
+    c.check(engine_res && car_res && engine_res->parent == car_res,
+            "install reparents the part under the car (0x4ec210, Part.addPart's test)");
+    c.check(engine_parts && car_res && engine_parts->car_ref == car_res &&
+                engine_parts->car_id == (int32_t)car_res->id,
+            "the installed part's Part.getCar() is the car (0x4c7d20 getInfo 0x2b)");
+    game::Slot *crank_slot = nullptr;
+    if (engine_parts)
+        for (game::Slot &s : engine_parts->slots)
+            if (s.id == 40) crank_slot = &s;
+    c.check(crank_slot && crank_slot->attached,
+            "the block's slot 40 holds the crankshaft (Duhen_D18V_block.java:99)");
+    int installed_parts = 0;
+    {
+        std::vector<Runtime::Resource *> stack;
+        std::set<Runtime::Resource *> seen;
+        if (car_res) stack.push_back(car_res);
+        while (!stack.empty()) {
+            Runtime::Resource *r = stack.back();
+            stack.pop_back();
+            game::PartData *p = game::part_data(*rt, r);
+            if (!p) continue;
+            for (game::Slot &s : p->slots) {
+                if (!s.attached) continue;
+                Runtime::Handle *sh = rt->handle(s.attached);
+                Runtime::Resource *t = sh ? sh->target : nullptr;
+                if (t && seen.insert(t).second) {
+                    installed_parts++;
+                    stack.push_back(t);
+                }
+            }
+        }
+    }
+    std::printf("  installed parts on the car (recursive slot walk): %d\n",
+                installed_parts);
+
     // 0x4992e0 wheel loop + 0x5032d0 compound mass. Re-read the shipped cfg so
     // the mass comes from the file, not from the payload under test.
     CfgFile car_cfg;
@@ -950,10 +1012,13 @@ void game_init_check(Boot &boot, Checker &c)
                  p.rpm != car_payload->torque_rpm[i]))
                 curve_ok = false;
         }
-    // No engine part is installed yet (card 150), so no max > 0 requirement.
-    c.check(curve_ok, "drive bridge copies the engine torque curve (" +
-                          std::to_string(sim ? sim->engine.torque_curve.size() : 0) +
-                          " points, max " + std::to_string((double)curve_max) + " Nm)");
+    // Card 150: with the engine installed, Chassis.updatevariables reaches the
+    // block's DynoData (Duhen_D18V_block, 0x4aebf0) and the curve is real.
+    c.check(curve_ok && car_payload && car_payload->torque_nm.size() > 1 &&
+                curve_max > 0.0f,
+            "drive bridge copies the installed engine's torque curve (" +
+                std::to_string(sim ? sim->engine.torque_curve.size() : 0) +
+                " points, max " + std::to_string((double)curve_max) + " Nm)");
     bool ratios_ok = sim && car_payload->ratio[7] < 0.0f;
     for (int i = 0; ratios_ok && i < kMaxGears; i++)
         if (sim->ratios[i] != car_payload->ratio[i]) ratios_ok = false;
@@ -994,9 +1059,9 @@ void game_init_check(Boot &boot, Checker &c)
         key(0x1e, false);
         frames(10);
         report("A released");
-        // 0x498300's shift block is guarded by `if (gears)`; the purchased car
-        // has no transmission part yet (shipped Chassis.java:717 leaves gears 0
-        // without an engine, card 150), so neutral stays until then.
+        // 0x498300's shift block is guarded by `if (gears)`; gears come from the
+        // installed transmission's cfg/script (0x4aebf0), so neutral stays when
+        // the car has none.
         int want_gear = car_payload->gears > 0 ? 1 : 0;
         c.check(car_payload->gear == want_gear,
                 "A (axis 50) shifts neutral -> 1st when the car has gears (got gear " +

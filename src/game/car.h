@@ -16,6 +16,7 @@
 #include "audio/sfx.h"
 #include "engine/math.h"
 #include "game/runtime.h"
+#include "parts/cfg.h"
 #include "physics/physics.h"
 #include "vehicle/vehicle.h"
 
@@ -123,7 +124,9 @@ struct Slot {
     Mat34 rot = {};
     int32_t mate_id = 0;
     Object *attached = nullptr;  // installed part script instance
-    std::vector<uint32_t> attaches;  // cfg attach part ids
+    // Type-slot graph (0x4c9d90): cfg attach/compatible (part id, slot id).
+    std::vector<CfgAttach> attaches;
+    std::vector<CfgAttach> compatibles;
 };
 
 struct PartData {
@@ -139,6 +142,11 @@ struct PartData {
     int32_t wheel_id = 0;        // +0xd0
     float sfx_loop[2] = {1.0f, 1.0f};  // +0x144/+0x148
     Runtime::Resource *car_ref = nullptr;  // +0xcc, typed car Part object
+    int32_t installed = 0;               // +0x74, Part__commitInstall 0x4c7d20
+    // INVENTED: the exe instance's typed data points at its type record; src has
+    // no such link on a created instance, so keep the type the cfg came from
+    // (same mapping as CarData::cfg_resource, card 150).
+    Runtime::Resource *type = nullptr;
 };
 
 struct CarData {
@@ -258,6 +266,12 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
 // script handleEvent is then suppressed), 0 for anything else.
 int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
                 const Value &param);
+// 0x4c4400 type_part__vf14 EVENT_COMMAND (0x10) branch: "install ..."
+// (Part__installSearch 0x4c96c0 + Part__attach 0x4cb1d0 subset, card 150).
+// Returns 1 when the command was consumed (the script handleEvent is then
+// suppressed), 0 for anything else.
+int part_command(Runtime &rt, Runtime::Resource *part, uint32_t code,
+                 const Value &param);
 // 0x4d2d20 type_player__vf14 EVENT_COMMAND: "controllable <car id>" queues the
 // "activate ..." bind to the car. Returns 1 for every code on a native player
 // (the Controller script never gets commands), 0 otherwise.

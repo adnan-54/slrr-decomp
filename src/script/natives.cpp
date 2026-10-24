@@ -3536,6 +3536,17 @@ bool ch_get_material_index(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4b2b90 Chassis.getMass: 1 / (def+0x2c) of the part_comp body, 0 without one.
+// Scripts hit it from Chassis.calcTimeET once a block is installed (card 150).
+bool ch_get_mass(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Chassis.getMass", a, 1, err)) return false;
+    game::CarData *c = car_of(a);
+    float inv = c && c->chassis_body ? c->chassis_body->def.inv_mass : 0.0f;
+    *out = Value::make_float(inv > 0.0f ? 1.0f / inv : 0.0f);
+    return true;
+}
+
 bool ch_get_max_steer(Vm &, const Args &a, Value *out, std::string *err)
 {
     return car_float_get("Chassis.getMaxSteer", a, &game::CarData::max_steer, out, err);
@@ -7661,7 +7672,7 @@ const std::vector<Entry> &table()
     {"java.game.parts.bodypart.Chassis", "setRPM", "(F)V", ch_set_rpm, false},
     {"java.game.parts.bodypart.Chassis", "getTorque", "(FF)F", ch_get_torque, false},
     {"java.game.parts.bodypart.Chassis", "setTorque", "(F)V", ch_set_torque, false},
-    {"java.game.parts.bodypart.Chassis", "getMass", "()F", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "getMass", "()F", ch_get_mass, false},
     {"java.game.parts.bodypart.Chassis", "getCM", "()Ljava.lang.Vector3;", nullptr, true},
     {"java.game.parts.bodypart.Chassis", "getMin", "()Ljava.lang.Vector3;", nullptr, true},
     {"java.game.parts.bodypart.Chassis", "getMax", "()Ljava.lang.Vector3;", nullptr, true},

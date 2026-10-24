@@ -101,15 +101,10 @@ bool has_native_ref(Runtime &rt, Runtime::Resource *r, const char *native)
     return false;
 }
 
-void fill_part(PartData &p, const CfgFile &cfg)
+// Type slots: the part manager's list (0x4c6f90 nodes). The car manager embeds
+// the same list, so the car cfg goes through here too (card 150).
+void fill_slots(PartData &p, const CfgFile &cfg)
 {
-    if (!cfg.textures.empty()) p.texture = (int32_t)cfg.textures[0].id;
-    if (!cfg.meshes.empty()) p.mesh = (int32_t)cfg.meshes[0].id;
-    if (!cfg.renders.empty()) p.render_type = (int32_t)cfg.renders[0].id;
-    // INVENTED: which cfg body line P+0x1c binds to is UNRESOLVED; use the first.
-    // 0x4bf4d0 passes this mass to Physics__createBody, whose inverse mass is 1/m.
-    if (!cfg.bodies.empty() && cfg.bodies[0].mass > 0.0f)
-        p.inv_mass = 1.0f / cfg.bodies[0].mass;
     for (const CfgSlot &cs : cfg.slots) {
         Slot s;
         s.id = cs.id;
@@ -120,10 +115,22 @@ void fill_part(PartData &p, const CfgFile &cfg)
         euler_to_mat(&s.type_rot, ang);
         for (int i = 0; i < 3; i++) s.pos[i] = s.type_pos[i];
         s.rot = s.type_rot;
-        for (const CfgAttach &at : cs.attaches)
-            s.attaches.push_back(at.part);
+        s.attaches = cs.attaches;
+        s.compatibles = cs.compatibles;
         p.slots.push_back(std::move(s));
     }
+}
+
+void fill_part(PartData &p, const CfgFile &cfg)
+{
+    if (!cfg.textures.empty()) p.texture = (int32_t)cfg.textures[0].id;
+    if (!cfg.meshes.empty()) p.mesh = (int32_t)cfg.meshes[0].id;
+    if (!cfg.renders.empty()) p.render_type = (int32_t)cfg.renders[0].id;
+    // INVENTED: which cfg body line P+0x1c binds to is UNRESOLVED; use the first.
+    // 0x4bf4d0 passes this mass to Physics__createBody, whose inverse mass is 1/m.
+    if (!cfg.bodies.empty() && cfg.bodies[0].mass > 0.0f)
+        p.inv_mass = 1.0f / cfg.bodies[0].mass;
+    fill_slots(p, cfg);
 }
 
 // createCar wheel template: one record per `type` line, later lines refine the
@@ -233,6 +240,239 @@ bool scan_id(const std::string &cmd, const char *word, uint32_t *id)
     if (end == p) return false;
     *id = (uint32_t)v;
     return true;
+}
+
+// ---- part install (notes/13 §15) ------------------------------------------
+
+Slot *slot_by_part(PartData *p, int32_t id)
+{
+    if (!p) return nullptr;
+    for (Slot &s : p->slots)
+        if (s.id == id) return &s;
+    return nullptr;
+}
+
+// Type record behind an instance. 0x4c9d90 compares the refs' type ids
+// (`pkg<<16|local`), not the instance ids.
+Runtime::Resource *part_type_of(Runtime &rt, Runtime::Resource *r)
+{
+    if (!r) return nullptr;
+    auto pit = g_parts.find(r);
+    if (pit != g_parts.end() && pit->second->type) return pit->second->type;
+    auto cit = g_cars.find(r);
+    if (cit != g_cars.end() && cit->second->cfg_resource)
+        return cit->second->cfg_resource;
+    return r->record ? r : nullptr;  // the type record itself
+}
+
+uint32_t part_type_id(Runtime &rt, Runtime::Resource *r)
+{
+    Runtime::Resource *t = part_type_of(rt, r);
+    if (!t) return 0;
+    if (t->record && t->package) return rt.resources().global_id(*t->package, t->id);
+    return t->id;
+}
+
+Runtime::Resource *slot_part(Runtime &rt, Object *o)
+{
+    Runtime::Handle *h = rt.handle(o);
+    return h ? h->target : nullptr;
+}
+
+bool attach_has(const std::vector<CfgAttach> &list, uint32_t part, int32_t slot)
+{
+    for (const CfgAttach &a : list)
+        if (a.part == part && a.slot == slot) return true;
+    return false;
+}
+
+// 0x4c9d90: the two slots' cfg attach/compatible lists meet.
+bool part_compatible(Runtime &rt, Runtime::Resource *A, int32_t slotA,
+                     Runtime::Resource *B, int32_t slotB)
+{
+    uint32_t aid = part_type_id(rt, A), bid = part_type_id(rt, B);
+    if (aid && aid == bid && slotA == slotB) return false;
+    Slot *sa = slot_by_part(part_data(rt, A), slotA);
+    Slot *sb = slot_by_part(part_data(rt, B), slotB);
+    if (!sa || !sb) return false;
+    if (attach_has(sa->attaches, bid, slotB)) return true;
+    if (attach_has(sb->attaches, aid, slotA)) return true;
+    for (const CfgAttach &a : sa->attaches)
+        if (attach_has(sb->compatibles, a.part, a.slot)) return true;
+    for (const CfgAttach &b : sb->attaches)
+        if (attach_has(sa->compatibles, b.part, b.slot)) return true;
+    return false;
+}
+
+// 0x4cb0b0: target locked when an occupied slot is hard+disabled (0x50), or an
+// attached part's subtree is.
+bool part_locked(Runtime &rt, Runtime::Resource *r, int depth)
+{
+    if (!r || depth > 16) return false;
+    PartData *p = part_data(rt, r);
+    if (!p) return false;
+    for (const Slot &s : p->slots) {
+        if (!s.attached) continue;
+        if ((s.flags & 0x50u) == 0x50u) return true;
+        Runtime::Resource *t = slot_part(rt, s.attached);
+        if (t && t != r && part_locked(rt, t, depth + 1)) return true;
+    }
+    return false;
+}
+
+// shortcut: 0x4c6e50 maps the slot through the body pose; src has no part body
+// transform, so the runtime slot pose is compared (only the explicit-position
+// "install x y z" form uses it, shipped scripts pass 5 ints).
+float slot_dist2(const Slot &s, const float pos[3])
+{
+    float dx = s.pos[0] - pos[0], dy = s.pos[1] - pos[1], dz = s.pos[2] - pos[2];
+    return dx * dx + dy * dy + dz * dz;
+}
+
+// 0x4c89f0: first (or nearest) free target slot compatible with my slot.
+int32_t target_slot_for(Runtime &rt, Runtime::Resource *T,
+                        Runtime::Resource *my, int32_t my_slot, const float *pos)
+{
+    if (part_locked(rt, T, 0)) return 0;
+    PartData *tp = part_data(rt, T);
+    if (!tp) return 0;
+    int32_t best = 0;
+    float bestd = 0.0f;
+    for (Slot &t : tp->slots) {
+        if (t.attached || (t.flags & 0x10u)) continue;
+        if (!part_compatible(rt, T, t.id, my, my_slot)) continue;
+        if (!pos) return t.id;
+        float d = slot_dist2(t, pos);
+        if (d < 1e8f && (!best || d < bestd)) {
+            best = t.id;
+            bestd = d;
+        }
+    }
+    return best;
+}
+
+// 0x4c9af0: pick my slot (and the target slot, when auto) that mates with tref.
+int32_t find_mate_slot(Runtime &rt, Runtime::Resource *P,
+                       Runtime::Resource *tref, int32_t *t_slot,
+                       const float *pos)
+{
+    PartData *tp = part_data(rt, tref);
+    if (!tp || tp->slots.empty() || tref->id == P->id) return 0;
+    PartData *mp = part_data(rt, P);
+    if (!mp) return 0;
+    if (*t_slot == 0) {  // auto: walk my slots in cfg order
+        int32_t best = 0, best_t = 0;
+        float bestd = 0.0f;
+        for (Slot &s : mp->slots) {
+            // exe test: (+8 == 0 || flags & 1) && !(flags & 0x10)
+            if (!((!s.attached) || (s.flags & 1u)) || (s.flags & 0x10u)) continue;
+            int32_t c = target_slot_for(rt, tref, P, s.id, pos);
+            if (!c) continue;
+            if (!pos) {
+                *t_slot = c;
+                return s.id;
+            }
+            Slot *ts = slot_by_part(tp, c);
+            float d = ts ? slot_dist2(*ts, pos) : 0.0f;
+            if (!best || d < bestd) {
+                best = s.id;
+                best_t = c;
+                bestd = d;
+            }
+        }
+        if (best) *t_slot = best_t;
+        return best;
+    }
+    Slot *ts = slot_by_part(tp, *t_slot);
+    if (!ts || ts->attached || (ts->flags & 0x10u) || part_locked(rt, tref, 0))
+        return 0;
+    for (Slot &s : mp->slots) {
+        if (s.attached || (s.flags & 0x10u)) continue;
+        if (part_compatible(rt, tref, *t_slot, P, s.id)) return s.id;
+    }
+    return 0;
+}
+
+// 0x4c96c0: target part first, else the dest object (0x4c96c0's fallback).
+// Writes the target actually used into *tref_out.
+int32_t install_search(Runtime &rt, Runtime::Resource *P,
+                       Runtime::Resource *tref, Runtime::Resource *dest,
+                       Runtime::Resource **tref_out, int32_t *t_slot,
+                       const float *pos)
+{
+    if (tref) {
+        int32_t r = find_mate_slot(rt, P, tref, t_slot, nullptr);
+        if (r) {
+            *tref_out = tref;
+            return r;
+        }
+    }
+    if (!dest) return 0;
+    // shortcut: getInfo(dest, 7) kinds other than 5 (vehicle) and 9 (part) are
+    // not modelled; both shipped script calls pass the car.
+    int kind = g_cars.count(dest) ? 5 : g_parts.count(dest) ? 9 : 0;
+    if (kind != 5 && kind != 9) return 0;
+    int32_t r = find_mate_slot(rt, P, dest, t_slot, pos);
+    if (r) {
+        *tref_out = dest;
+        return r;
+    }
+    // shortcut: 0x4c96c0's getInfo(dest, 0x31) iterator is the car's installed
+    // parts; src uses the resources reparented under the car (attach step 1).
+    if (kind == 5)
+        for (Runtime::Resource *child : dest->children) {
+            if (child == P || !g_parts.count(child)) continue;
+            r = find_mate_slot(rt, P, child, t_slot, pos);
+            if (r) {
+                *tref_out = child;
+                return r;
+            }
+        }
+    return 0;
+}
+
+// 0x4cb1d0 + 0x4c7d20 (bolts = 0, so the install commits at once).
+int part_attach(Runtime &rt, Runtime::Resource *P, int32_t my_slot,
+                Runtime::Resource *tref, int32_t t_slot, Runtime::Resource *dest)
+{
+    if (!tref) return 0;
+    // 0x4ec210: reparent under dest; Part.addPart tests getParentID() != root.
+    if (dest) rt.reparent(P, dest);
+    PartData *pp = part_data(rt, P);
+    PartData *tp = part_data(rt, tref);
+    Slot *ms = slot_by_part(pp, my_slot);
+    Slot *ts = slot_by_part(tp, t_slot);
+    if (!ms || !ts) return 0;
+    Object *pobj = rt.script_instance(P);
+    Object *tobj = rt.script_instance(tref);
+    // 0x4cb1d0 step 3: both runtime slots point at the other part's object.
+    ms->attached = tobj;
+    ms->mate_id = t_slot;
+    ts->attached = pobj;
+    ts->mate_id = my_slot;
+    // 0x4c7d20 with bolts == 0: my slot present (1), target slot occupied (2).
+    // shortcut: type slot +0x6c bolt count is not parsed, so the flag-4 pending
+    // path never runs (notes/13 §15).
+    ms->flags = (ms->flags & ~4u) | 1u;
+    ts->flags = (ts->flags & ~4u) | 2u;
+    pp->installed++;
+    tp->installed++;
+    // 0x4c7d20: P's car ref := getInfo(target, 0x2b): the chassis target is the
+    // car itself, a sub-part yields its own car_id.
+    if (g_cars.count(tref)) {
+        pp->car_ref = tref;
+        pp->car_id = (int32_t)tref->id;
+    } else {
+        pp->car_ref = tp->car_ref;
+        pp->car_id = tp->car_id;
+    }
+    // 0x47dd50: script callback Part.install() (Part.java:707).
+    if (pobj) {
+        std::string err;
+        Value rv;
+        rt.call_method(pobj, "install", {}, &rv, &err);
+    }
+    return 1;
 }
 
 }  // namespace
@@ -438,7 +678,12 @@ PartData *part_data(Runtime &rt, Runtime::Resource *r)
     if (it != g_parts.end()) return it->second.get();
     auto up = std::make_unique<PartData>();
     CfgFile cfg;
-    if (load_native_cfg(rt, r, "part", &cfg)) fill_part(*up, cfg);
+    // The car manager embeds the part manager: the chassis' slot list comes from
+    // its `car` cfg (0x4c9af0 reads it like a part's).
+    if (load_native_cfg(rt, r, "part", &cfg))
+        fill_part(*up, cfg);
+    else if (load_car_cfg(rt, r, &cfg))
+        fill_slots(*up, cfg);
     PartData *p = up.get();
     g_parts[r] = std::move(up);
     return p;
@@ -473,6 +718,25 @@ bool load_car_cfg(Runtime &rt, Runtime::Resource *r, CfgFile *cfg)
 void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
                        Runtime::Resource *type, const std::string &params)
 {
+    // 0x4c1f90 Part__initInstance: the part manager builds the runtime slot
+    // array from the type cfg. The created instance's chain does not reach the
+    // type record, so the type link is kept on the payload (create_car_bodies
+    // is called with it, 0x523c80).
+    if (type && has_native_ref(rt, type, "part")) {
+        if (g_rt != &rt) reset(&rt);
+        // INVENTED: the typed-object event mask default is not traced; the same
+        // assumption as the car below, needed for GameRef.command to reach vf14.
+        inst->event_mask |= 0x10u;
+        PartData *pd = part_data(rt, inst);
+        if (pd) {
+            pd->type = type;
+            if (pd->slots.empty()) {
+                CfgFile part_cfg;
+                if (load_native_cfg(rt, type, "part", &part_cfg))
+                    fill_part(*pd, part_cfg);
+            }
+        }
+    }
     // 0x523c80 also runs the type record's native manager for `native player`
     // (0x5240e0); src needs its command handler (card 147).
     if (type && has_native_ref(rt, type, "player")) {
@@ -744,6 +1008,45 @@ int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
     // INVENTED: the rest of the 0x4a2e60 chain (cfg keys such as abs, filter,
     // render, reload) is not ported; returning 0 lets the script see it.
     return 0;
+}
+
+// 0x4c4400 type_part__vf14 EVENT_COMMAND (0x10): "install" only.
+int part_command(Runtime &rt, Runtime::Resource *part, uint32_t code,
+                 const Value &param)
+{
+    if (code != 0x10 || param.kind != Value::Str) return 0; // EVENT_COMMAND
+    if (g_rt != &rt || !part || !g_parts.count(part)) return 0;
+    const std::string &cmd = param.s;
+    // shortcut: the rest of the 0x4c4400 word table (remove, repair, texture,
+    // add_part/rem_part, filter, paint, decal, bigdecal, colorscheme, flap_toggle)
+    // is not ported; returning 0 leaves those to the script handler.
+    if (cmd.compare(0, 7, "install") != 0) return 0;
+    if (cmd.size() > 7 && cmd[7] != ' ' && cmd[7] != '\t') return 0;
+    // Str__scan "%*s %d %d %d %d %d %f %f %f": cursor, dest, my slot (ignored),
+    // target, target slot, optional position.
+    int cursor = 0, dest = 0, my_slot = 0, target = 0, t_slot = 0;
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+    int n = sscanf(cmd.c_str() + 7, "%d %d %d %d %d %f %f %f", &cursor, &dest,
+                   &my_slot, &target, &t_slot, &x, &y, &z);
+    (void)cursor;
+    (void)my_slot;
+    Runtime::Resource *tref = rt.resolve((uint32_t)target);
+    Runtime::Resource *dst = rt.resolve((uint32_t)dest);
+    float pos[3] = {x, y, z};
+    Runtime::Resource *used = nullptr;
+    int32_t found = install_search(rt, part, tref, dst, &used, &t_slot,
+                                   n >= 8 ? pos : nullptr);
+    {
+        PartData *dp = g_parts.count(part) ? g_parts[part].get() : nullptr;
+        uint32_t tid = dp && dp->type ? dp->type->id : 0;
+        if (dp && dp->type && dp->type->record && dp->type->package)
+            tid = rt.resources().global_id(*dp->type->package, dp->type->id);
+        std::fprintf(stderr, "DBG install part 0x%x type 0x%x slots %zu dest 0x%x target 0x%x n=%d -> slot %d/%d\n",
+                     part->id, tid, dp ? dp->slots.size() : 0, dest, target, n, found, t_slot);
+    }
+    if (!found || !used) return 0; // nothing changes, the script destroys the part
+    part_attach(rt, part, found, used, t_slot, dst);
+    return 1;
 }
 
 // 0x4d2d20 type_player__vf14 EVENT_COMMAND (0x10) -> 0x4d2ab0. The native

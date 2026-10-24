@@ -743,6 +743,7 @@ void Runtime::queue_event(Resource *target, Resource *sender, uint32_t code,
     if (target->event_mask & code) {
         uint32_t ev = code & 0x0fffffffu;  // vf14 gets the masked code
         if (!game::car_command(*this, target, ev, param) &&
+            !game::part_command(*this, target, ev, param) &&
             !game::player_command(*this, target, ev, param) && target->script)
             dispatch_script(*this, target, sender, code, param, method);
     }
