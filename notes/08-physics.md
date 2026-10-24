@@ -116,3 +116,46 @@ if (done > 0) world->w[8] += (perfMs(0)/done - w[8]) * 0.1   // 0x56a260, double
 camera follow snapshots: for i = DAT_005f1e44-1 .. 0 (entries 0x58 @0x5fe120): dead handle -> drop entry; else body = GameRef__getPhysBody 0x4eabc0, copy active-state pos (+0x64), vel (+0x70), rotation rows (+0xa4/+0xb4/+0xc4)
 ```
 Consequences for src: with a 0.1 s cap and 0.02 nominal step 0.1 splits as 0.02, 0.02, 0.02 (remaining-nominal > nominal), then 0.04 → halved 0.02, then 0.02 → halved 0.01, then 0.01 (< nominal) = 6 sub-steps (float rounding can shift the boundary cases). Timers and deferred flush run after **each** sub-step and see the world time `w[0]` that sub-step produced. `System.simTime` = `w[0]` (float), not a separate clock. src today: `natives::advance_sim` adds the whole capped step to a double `sim_seconds`, `FrameLoop::frame` calls flush, advance, run_timers once (boot.cpp:194-198). Not reached by vmboot so far and not ported by 138/139: the mode-8/9 callback consumers (0x47bc20/0x47bc80, 0x47be30/0x47be90; shipped sl scripts never call `registerCallback`, natives register the car), perf timers, camera snapshots, car body creation (`Vehicle__createCar` via vtable), native ground (`type_ground__vf3` 0x4bade0).
+
+## Car body creation, sleep/wake (2026-10-24, cards 140/141)
+
+**Vtable slot.** `_type_car` vtable 0x59dcd8 (18 slots): vf0 0x493da0, vf1 0x49ab20, vf2 0x49c6b0, **vf3 0x4992e0 `Vehicle__createCar`**, vf4 0x49beb0, …, vf11 0x498300 (`Vehicle__updateControls`), vf12 0x49c8e0 (`Vehicle__update`), vf13 0x494910, vf14 0x4a2e60 (command/message handler). vf3 = "create native object", same slot as `type_ground__vf3` 0x4bade0.
+
+**Call path.** Script `Vehicle(GameRef parent, int id, …)` (Vehicle.java:111, also CarMarket.java:491/792, Garage.java:1964, EventList.java:507) → `create(parent, new GameRef(id), "0,0,0,0,0,0", "Vehicle")` → `GameRef.create` 0x4da620 → `GameObject__createScripted` 0x523c80 (`create_native` 0x4da7e0 → `GameObject__createNative` 0x5240e0, same native part): instantiate the game instance under parent, `typed = inst->vf3(1.0)`, `T = 0x468b00(0x80000000)` = the type record's typed data; **`if (T+0xc) typed+0x4c = (T+0xc)->vf[0xc/4=3](&ctx16, params)`** (native create, before the script `<init>(I)` THRD-CREATE thread), then `0x47d560(&ctx)`, `(T+0xc)->vf[0x40/4=16](typed+0x4c)`. `T+0xc` is the native type manager of the record's `native <kind> <cfg>` line: the Chassis record (parts.rdb 0x640 rsd: `script java.game.parts.bodypart.Chassis` / `native car parts\scripts\Chassis.cfg`) → `_type_car` manager `M` → createCar. Other `native part` records → `type_part` manager (vf3 not traced here).
+
+**`Vehicle__createCar` 0x4992e0 (ECX = M, (ctx, params))**, body-relevant part only:
+```
+car = Part__initInstance 0x4c1f90(ctx, params, new Vehicle(0x2284) /*ctor 0x490100*/)
+b = GameRef__getPhysBody 0x4eabc0(car+0x28)          // typed(0xa0000000)+0xb4 of the part instance
+if (b) car+0x13ec = ref(b->+0xb4)                    // chassis body (refcounted link at +0x13ec/+0x13f0)
+... thermal/engine/wheel-array init (notes/09, notes/13) ...
+b = getPhysBody(...); if (b) {
+  root = b->+0xb4; while (root+0x58 & 4) root = root+0x20       // PhysBody__root 0x480700
+  if (root+0x58 & 0x80) PhysBody__wake 0x507060(root)
+  def  = Physics__createBox 0x4f7d60(1.0f, 5 /*box*/, 1.0f, 1.0f, 1.0f, 0)
+  cr   = PhysicsWorld__addBody 0x4f7830(def, root+0x64+i*0xd4 /*pos*/, root+0xa4+i*0xd4 /*rot*/)  // i = root+0x20c active state
+  GameObject__createPhysInstance 0x524620(car, 0, cr, "car_root")
+  PhysBody__unlink 0x501d00(root); PhysBody__attachChild 0x4f7b20(root, cr)   // chassis body becomes child of car_root
+  if (M+0x1f34 <= 0) M+0x1f34 = 1/(*(car+0x13ec)->+0x5c->+0x2c)              // spring weight from inverse mass
+  per wheel: addChildBody 0x4f78d0(cr, …) "wheelbone" / "a_arm" / … + suspension object (notes/11)
+  0x4ebd90(car, 0x20, 0)
+}
+if (car+0x13ec) 0x5032d0(car+0x13ec)                 // compound mass/COM refresh (not traced)
+r = root of car+0x13ec; if (!(r+0x58 & 0x80)) PhysBody__sleep 0x506d90(r)   // car_root goes to sleep
+... slot/part list, "car_add %d %d" event, typed+0xc |= 0x4000 ...
+```
+**`Part__initInstance` 0x4c1f90 (ECX = M, (ctx, params, P))**: `Str__scan(params, "%f,%f,%f,%f,%f,%f,%d", &x,&y,&z, &ya,&p,&r, P+0x58)`; ypr → matrix 0x5666d0; `P+0x12c = pos`. If `M+0xff0 >= 0` (first body index: type init 0x4c3940 sets -1, the cfg `body` line handler 0x4bf4e0 sets it to the record count at the first body line; Chassis.cfg has none, but every shipped car type record (`native car cars\racers\Axis_Data\scripts\_main_200S.cfg`, Axis.rdb) has `body` lines, so real cars take this path): `def = Physics__createBox(1.0f, 6, 0,0,0, 0)` (type 6 without mesh = Poly box template), `Physics__attachToResource 0x4e8a50(P, def, &pos, &mat, "part_comp")` = `addBody(def, pos, mat)` + `createPhysInstance(P, 0, body, "part_comp")` (+ 0x518e90 when the resource flag 0x100); `body = getPhysBody(P)->+0xb4`; `PhysBody__sleep(root(body))`; `body+0x58 |= 8`; for each M bone record `i < M+0xfa8` with kind 1/2: `addChildBody 0x4f78d0(body, rec shape, world pos, mat)` ("bbone"/"steer" names, flags 0x4000/0x20/0x11040); `0x5032d0(body)`. Else (`M+0xff0 < 0`, `M+0x1040` click shape) attaches a "click" body instead.
+
+**`GameObject__createPhysInstance` 0x524620(parentHandle, 0, body, name)**: creates a type-2 resource instance (`_physinst` default name) under the part's resource, `typed+0xb4 = ref(body)`, copies the body's active pos to the instance. This is how `GameRef__getPhysBody` later finds the body.
+
+**Sleep/wake (world roots `w+0x84` active, `w+0x88` sleeping).**
+- `PhysBody__sleep` 0x506d90 (ECX body): if `!(+0x58 & 0x80)`: if parent == `w+0x84`: `unlink`, `attachChild(body, w+0x88)`; `+0x58 |= 0x80`; active state (`+0x64 + i*0xd4`, 0x35 dwords): zero `[3..5]` vel, `[0x1c..0x21]`, `[0xa..0xc]`, `[0x22..0x24]`, `[0xf] &= ~2`; copy active → other state; recurse into children (`+0x24` first, `+0x28` next).
+- `PhysBody__wake` 0x507060: if `+0x58 & 0x80`: clear it; if `!(flags & 4)`: `+0xc = 0, +0x10 = 100000.0f (0x47c35000), +0x14 = 0`; if parent == `w+0x88`: `unlink`, `attachChild(body, w+0x84)`; recurse children; then re-queue every contact/listener in `w+0x134` whose `vf[5](body)` hits (moves them to list `w+0xbc`) — listener part not needed for stepping.
+- `PhysBody__unlink` 0x501d00: remove from parent's child list (`+0x24`/`+0x28`), compound cleanup if `+0x1c` (child-shape record), `+0x20 = 0`. `PhysBody__attachChild` 0x4f7b20(b, p): head insert `b+0x28 = p+0x24; p+0x24 = b; b+0x20 = p`; if `!(p->def+0xb4 & 0x100)` → 0x4f7990(b) (compound attach, not traced).
+- `PhysBody__root` 0x480700: walk `+0x20` while `+0x58 & 4`. `PhysBody__wakeRoot` 0x48ca50: if asleep, wake root. `PhysBody__sleepRoot` 0x4ae5a0: if awake, sleep root.
+
+**Who wakes the car.** `type_car__vf14` 0x4a2e60 `(car, sender, code, msg)`, code 0x10 (EVENT_COMMAND), first word of msg: `"brake"` (0x4a3f6d) `car+0x70 |= 0x40000`; `"start"` (0x4a3fa6) `car+0x70 &= 0xfffbfffb`; `"suspend"` (0x4a3fdf) `PhysBody__sleepRoot(root(car+0x13ec))`; `"wakeup"` (0x4a4023) `PhysBody__wakeRoot(root(car+0x13ec))`; `"reset"` (0x4a4067) zeroes the root's active vel/angular state and the car inputs (`+0x1ddc..+0x1df4`, gear `+0x1e5c = 0`, `+0x1e7c/+0x1e78`), it does **not** wake. Reached from `Game__dispatchEvent` 0x47c760 step 2 (native handler `vtbl+0x38(typed+0x4c, sender, code, param)` before the script). Script senders: `Vehicle.wakeUp()` = `queueEvent(null, EVENT_COMMAND, "wakeup")` (Vehicle.java:185): Garage.java:289/473 (then `"suspend"`), CarMarket.java:758/885, Track.applyStartGrid only `if(!game)` (Track.java:2909; freeride has `game` set), `Gamemode.wakeUpCars` (call commented out in Track.java:1056). Engine wakers: `Vehicle__updateControls` 0x498300 at 0x498599 (a control axis value changed vs. its stored `+0x2c` and `car+0x70 & 1`), `Vehicle__update` 0x49c8e0, contact resolve 0x4f0dd0, 0x4f2d70, `type_camera__vf12` 0x48a430, 0x4be600. So in freeride the player's car is woken by player input (updateControls) or a collision, not by a script call. UNRESOLVED: whether `GameRef.setMatrix` 0x4db950 (formats `"ffffff"` and calls 0x4eb3f0) wakes or sleeps bodies (Vehicle.java:128 comment says `setMatrix(null,null)` stops the physics).
+
+**Ground.** Not needed for the car to be stepped: `PhysicsWorld__step` integrates every awake root under `w+0x84`. Without the native ground (`type_ground__vf3` 0x4bade0, notes/19) the car just falls (gravity -9.81); the ground is needed for contacts only (later card).
+
+**src today.** `Runtime::instantiate` (src/game/runtime.cpp) ignores the type's native line (no vf3 dispatch); `Runtime::queue_event` has no native handler (shortcut comment). `game::CarData` (src/game/car.*) is a lazy per-resource payload with no body; `vehicle::Car` (src/vehicle/vehicle.*) owns a `RigidBody body` but nothing instantiates it in the game layer. `physics::World` has only the active root list (`bodies`, head insert), no sleeping root, no body counter (`w+0x54`), no parent/child links (single non-compound bodies).

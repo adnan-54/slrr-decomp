@@ -1967,5 +1967,11 @@
   "0x55cf20": "JavaMachine__tick",
   "0x55fc10": "Package__findDir",
   "0x55f780": "Package__register",
-  "0x55ccc0": "JVM__init"
+  "0x55ccc0": "JVM__init",
+  "0x524620": "GameObject__createPhysInstance",
+  "0x506d90": "PhysBody__sleep",
+  "0x4ae5a0": "PhysBody__sleepRoot",
+  "0x480700": "PhysBody__root",
+  "0x501d00": "PhysBody__unlink",
+  "0x4f7b20": "PhysBody__attachChild"
 }
