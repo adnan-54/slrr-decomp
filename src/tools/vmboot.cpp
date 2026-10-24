@@ -1952,11 +1952,59 @@ void game_init_check(Boot &boot, Checker &c)
                     std::to_string((double)car_payload->throttle) + ")");
         c.check(awake, "throttle input wakes the sleeping car_root (0x498599)");
         key(203, true);
-        frames(60);
+        frames(30);
+        // Card 170: over the last 30 frames of the turn, compare the measured
+        // yaw rate with the kinematic bicycle model of the car's own data.
+        float front_z = 0.0f, rear_z = 0.0f, steer_sum = 0.0f;
+        int front_n = 0, rear_n = 0;
+        if (sim)
+            for (const Wheel &w : sim->wheels) {
+                if (w.steer_factor != 0.0f) {
+                    front_z += w.mount.z;
+                    steer_sum += w.steer_angle;
+                    front_n++;
+                } else {
+                    rear_z += w.mount.z;
+                    rear_n++;
+                }
+            }
+        float lwb = front_n && rear_n
+                        ? std::fabs(front_z / front_n - rear_z / rear_n)
+                        : 0.0f;
+        float d_f = front_n ? steer_sum / front_n : 0.0f;
+        // INVENTED harness: the shipped car cfgs put the front hubs at -z, so
+        // drive along the car's own front-to-rear order, not +z.
+        float fwd_sign =
+            front_n && rear_n && front_z / front_n < rear_z / rear_n ? -1.0f : 1.0f;
+        const int turn_frames = 30;
+        double omega_sum = 0.0, vf_sum = 0.0;
+        for (int i = 0; i < turn_frames; i++) {
+            frames(1);
+            Vec3 fwd = mat_vec(root->rotation(), Vec3{0.0f, 0.0f, fwd_sign});
+            omega_sum += root->angular_velocity().y;
+            vf_sum += vec_dot(root->vel, fwd);
+        }
         report("Up + Left");
         c.check(car_payload->steer_input > 0.9f,
                 "Left (axis 1) gives steer > 0.9 (got " +
                     std::to_string((double)car_payload->steer_input) + ")");
+        float omega_y = (float)(omega_sum / turn_frames);
+        float vf = (float)(vf_sum / turn_frames);
+        float r_kin = lwb > 1e-6f ? vf * std::tan(d_f) / lwb : 0.0f;
+        float ratio = r_kin != 0.0f ? omega_y / r_kin : 0.0f;
+        std::printf("  steer frame (0x4aa830): Lwb %.3f m, d_f %.4f rad, "
+                    "vf %.2f m/s, omega_y %.4f rad/s, r_kin %.4f rad/s, "
+                    "ratio %.3f\n",
+                    (double)lwb, (double)d_f, (double)vf, (double)omega_y,
+                    (double)r_kin, (double)ratio);
+        // INVENTED bounds: tyre slip is understeer only, never faster than the
+        // kinematic model.
+        c.check(omega_y * r_kin > 0.0f && ratio >= 0.3f && ratio <= 1.1f,
+                "steered wheels turn the car: sign(omega_y)==sign(r_kin) and "
+                "0.3 <= omega_y/r_kin <= 1.1 (got omega_y " +
+                    std::to_string((double)omega_y) + ", r_kin " +
+                    std::to_string((double)r_kin) + ", ratio " +
+                    std::to_string((double)ratio) + ")");
         key(203, false);
         key(205, true);
         frames(60);

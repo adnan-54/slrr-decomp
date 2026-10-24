@@ -1209,6 +1209,7 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
         s.ray_len = s.max_ray(); // S+0xf0 starts at the tick's miss value
         s.drive_ratio = w.drive_ratio;
         s.steer_factor = w.steer;
+        s.base_rot = w.rot;
         s.set_drive(w.drive_eff);
         s.set_brake(w.brake_eff);
         s.set_handbrake(w.hbrake_eff);
@@ -1548,6 +1549,7 @@ void drive_cars(float dt)
         sim.nitro = c->nitro_input;
         sim.gear = c->gear;
         sim.max_steer = c->max_steer;
+        sim.ackermann = c->ackermann;
         // Aero drag (0x49c8e0 §7): e+0x91c / e+0x910.
         sim.c_drag = c->c_drag;
         sim.drag_center = Vec3{c->drag_center[0], c->drag_center[1], c->drag_center[2]};
@@ -1591,6 +1593,7 @@ void drive_cars(float dt)
                 sw.set_brake(w.brake_eff);
                 sw.set_handbrake(w.hbrake_eff);
                 sw.steer_factor = w.steer;
+                sw.base_rot = w.rot;
             }
         sim.ground = ground;
         sim.update(dt);

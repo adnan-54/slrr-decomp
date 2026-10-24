@@ -71,9 +71,11 @@ struct Wheel {
     float extra_brake = 0.0f;
     float bearing = 0.0f;
 
-    // steering (W+0xc8). notes/09 §6 has no steer term in the tyre pass, so
-    // the angle is state for the wheel pose only.
+    // steering (W+0xc8) and wheel frame (W+0x90): the sensor-body local matrix
+    // is base_rot * Ry(steer_angle), written by 0x4aa830/0x566a70.
     float steer_factor = 0.0f;
+    Mat34 base_rot{{1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                    0.0f, 0.0f, 1.0f, 0.0f}};
 
     // per-tick state
     float spin = 0.0f;            // W+0xc0 rad/s, +forward
@@ -83,8 +85,8 @@ struct Wheel {
     float alpha_prev = 0.0f;      // W+0x150
     float sigma = 0.0f;           // W+0x154
     float mz = 0.0f;              // W+0x158
-    Vec3 slip_velocity{0.0f, 0.0f, 0.0f}; // W+0x140 (chassis frame)
-    float steer_angle = 0.0f;     // steer * max_steer * steer_factor
+    Vec3 slip_velocity{0.0f, 0.0f, 0.0f}; // W+0x140 (wheel frame)
+    float steer_angle = 0.0f;     // W+0xe4 (0x4aa830, Ackermann)
 
     // suspension object (S) results for this tick
     bool contact = false;
@@ -161,6 +163,7 @@ struct Car {
     float clutch = 0.0f;       // input, 1 = open; k = 1 - clutch
     float diff_lock = 0.1f;    // e+0xa38
     float max_steer = 0.7f;    // e+0xa20
+    float ackermann = 0.0f;    // e+0xa30
 
     // config factors (Config__loadGameplaySettings defaults)
     float engine_inertia_factor = 4.0f;

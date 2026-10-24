@@ -12,6 +12,19 @@ static float clampf(float v, float lo, float hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+// 0x4aa830/0x566a70: the wheel's sensor-body frame, R_car * W+0x90 * Ry(W+0xe4).
+// The exe composes the same matrices with 0x566a70; 0x49c8e0 then reads rows
+// (local_j = sum_r M[r][j] v_r), which is mat_tvec below.
+static Mat34 wheel_frame(const Mat34 &r, const Wheel &w)
+{
+    float ang[3] = {w.steer_angle, 0.0f, 0.0f};
+    Mat34 ry, rb, out;
+    euler_to_mat(&ry, ang);
+    mat_mul(&rb, &r, &w.base_rot);
+    mat_mul(&out, &rb, &ry);
+    return out;
+}
+
 // Engine__torqueCurve 0x4a2dd0: 0 below the first point or past the last,
 // else lerp inside the first segment whose upper rpm is > q.
 static float sample_curve(const std::vector<TorquePoint> &pts, float rpm)
@@ -137,7 +150,19 @@ void Car::update_suspension(float dt)
         w.ground_velocity = Vec3{0.0f, 0.0f, 0.0f};
         w.ground_friction = 0.0f;
         w.ground_rolling_resistance = 0.0f;
-        w.steer_angle = steer * max_steer * w.steer_factor;
+        // 0x4aa830: max_steer * steer, then Ackermann from e+0xa30.
+        float d0 = max_steer * steer;
+        if (fabsf(d0) <= 0.001f) {
+            w.steer_angle = 0.0f;
+        } else if (ackermann == 0.0f) {
+            w.steer_angle = w.steer_factor * d0;
+        } else {
+            float R = ackermann / (sinf(d0) / cosf(d0));
+            if (R > 0.0f)
+                w.steer_angle = atan2f(ackermann, w.mount.x + R) * w.steer_factor;
+            else
+                w.steer_angle = -atan2f(ackermann, -R - w.mount.x) * w.steer_factor;
+        }
     }
     if (!ground)
         return;
@@ -228,7 +253,7 @@ void Car::update_suspension(float dt)
 
         Vec3 f = up * load;
         // Gram-Schmidt: no force along the ground-plane projection of forward.
-        Vec3 fwd = mat_vec(r, Vec3{0.0f, 0.0f, 1.0f});
+        Vec3 fwd = mat_vec(wheel_frame(r, w), Vec3{0.0f, 0.0f, 1.0f});
         Vec3 fp = fwd - hit.normal * vec_dot(fwd, hit.normal);
         float fl = vec_length(fp);
         if (fl > 1e-8f) {
@@ -342,7 +367,7 @@ void Car::update_engine_and_drivetrain(float dt)
             continue;
         }
         Vec3 rel = w.ground_velocity - body.point_velocity(w.contact_local);
-        w.slip_velocity = mat_tvec(r, rel);
+        w.slip_velocity = mat_tvec(wheel_frame(r, w), rel);
         w.slip_velocity.z += w.spin * w.radius;
     }
 
@@ -434,8 +459,9 @@ void Car::update_tyre_forces(float dt)
             continue;
         }
 
+        Mat34 rw = wheel_frame(r, w);
         Vec3 rel = w.ground_velocity - body.point_velocity(w.contact_local);
-        Vec3 v = mat_tvec(r, rel);
+        Vec3 v = mat_tvec(rw, rel);
         float vz = v.z;
         float vx = w.slip_velocity.x;
         float avz = fabsf(vz);
@@ -470,7 +496,7 @@ void Car::update_tyre_forces(float dt)
             continue;
         }
 
-        Vec3 n_body = mat_tvec(r, w.normal_world);
+        Vec3 n_body = mat_tvec(rw, w.normal_world);
         float p2 = w.ground_friction * w.friction_eff;
         float p13 = w.ground_rolling_resistance + w.rolling_resistance;
         w.pacejka.p[2] = p2;
@@ -512,7 +538,7 @@ void Car::update_tyre_forces(float dt)
                                Vec3{1.0f, 0.0f, 0.0f});
         Vec3 bb = vec_normalize(vec_cross(a, n_body), Vec3{0.0f, 0.0f, 1.0f});
         Vec3 f_body = a * ts.f_lat + bb * (vz * ts.load * p13 * 0.01f - ts.f_long);
-        Vec3 f_world = mat_vec(r, f_body);
+        Vec3 f_world = mat_vec(rw, f_body);
 
         Vec3 point = w.contact_local;
         if (w.patch_angle > 1e-8f) {
