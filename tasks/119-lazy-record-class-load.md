@@ -1,6 +1,6 @@
 ---
 id: 119
-status: draft
+status: todo
 branch:
 depends: []
 ---
@@ -175,3 +175,12 @@ use after mount for every type the game instantiates.
   the node unloaded for that call and getTyped returns 0x80000001; src has no
   asynchronous resource layer, so `ensure_script_class` always parses
   synchronously. Shipped packages are local, so the observable result is the same.
+
+## Claude gate
+- Route EVERY reader of `Resource::script_class` through the lazy helper, not only
+  instantiate/script_instance: `grep -n "script_class" src/` (natives.cpp gr_is_scripted
+  etc. included; natives.cpp may be edited for that). Make the helper public on Runtime.
+- Keep vmboot green: `Config.init ... GameInit instance uses script class java.game.Init`
+  and the 600-frame report must still show `failed: 0`
+  (`tools/vmboot-capped.sh --selfcheck 2>&1 | grep -E '^  frames'`). Report that line and
+  how many `SERVICE MISSING` lines vmboot prints before/after.
