@@ -251,6 +251,17 @@ void World::unlink(RigidBody *b)
         }
 }
 
+void World::remove_body(RigidBody *b)
+{
+    if (!b) return;
+    unlink(b);
+    // 0x4f6850 (body+0x30 contact list): the body's contacts go with it.
+    for (size_t i = contacts.size(); i-- > 0;)
+        if (contacts[i].a == b || contacts[i].b == b)
+            contacts.erase(contacts.begin() + (long)i);
+    body_count--;
+}
+
 void World::attach_child(RigidBody *child, RigidBody *parent)
 {
     if (!child || !parent) return; // 0x4f7b20: head insert into the child list
@@ -848,7 +859,17 @@ static void consider_hull_pair(RigidBody &a, RigidBody &g, std::vector<Contact> 
                 float d = vclip_closest(cp, *cc.poly, bpose, face, &fa, &fb, &pa, &pb, &nn);
                 Vec3 support{0.0f, 0.0f, 0.0f};
                 float ds = hull_plane_distance(*cc.poly, cr, cp.pos, n, vw[0], &support);
-                bool use_support = ds < d;
+                // 0x4fc7e0: a penetrating V-Clip (d <= -margin, margin 0) is
+                // replaced by the min hull-vertex distance along the face normal.
+                // INVENTED (src has no prev-state TOI bisection to tell which side
+                // a hull came from): a child centre behind the face (the back face
+                // of a two-sided road) never approached its front, so such a face
+                // only counts while V-Clip reports separation; in front of the
+                // face the signed distance also catches a hull that crossed it.
+                bool front = vec_dot(n, cp.pos - vw[0]) > 0.0f;
+                if (!front && d <= 0.0f)
+                    continue;
+                bool use_support = d <= 0.0f || (front && ds < d);
                 float cand = use_support ? ds : d;
                 if (cand < best) {
                     best = cand;
@@ -927,8 +948,13 @@ static void refresh_hull_contacts(const World &w, RigidBody &a, RigidBody &g,
         Vec3 support{0.0f, 0.0f, 0.0f};
         float ds = hull_plane_distance(*cc.poly, pose_rotation(cpose), cpose.pos, n,
                                        vw[0], &support);
-        if (d == 0.0f || ds < d)
-            d = ds;
+        // Same rule as consider_hull_pair (INVENTED side gate).
+        if (vec_dot(n, cpose.pos - vw[0]) > 0.0f) {
+            if (d <= 0.0f || ds < d)
+                d = ds;
+        } else if (d <= 0.0f) {
+            continue;
+        }
         if (d > kKeepSlop)
             continue;
         Contact c = old;

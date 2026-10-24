@@ -215,7 +215,9 @@ static void gather_ground_soup(const RpkArchive &rpk, const RpkRecord &rec,
 // 0x4bade0 type_ground vf3, body part: mass-0 kind-0 box with flag 4 (static,
 // no integration) added to the process world and kept on the resource.
 // INVENTED timing: the exe builds it when the map node becomes resident
-// (Collide__groundTree 0x4fe6f0 requestLoad); src builds it once at mount.
+// (0x5195a0 load -> vf3); src builds it when a script handle first binds the
+// record (Runtime::bind), not at mount: mounting every map package at once
+// would stack all their soups at the origin.
 static void create_ground_body(Runtime &rt, Runtime::Resource *r)
 {
     if (r->ground_body) return;
@@ -426,7 +428,6 @@ void Runtime::mount_package(const Package *p)
             r->next_sibling = nullptr;
             ch.push_back(r);
         }
-        if (rec.type == 1) create_ground_body(*this, r);
     }
 }
 
@@ -585,6 +586,7 @@ void Runtime::bind(Handle *h, Resource *r)
     if (r->handles) r->handles->prev = h;
     r->handles = h;
     r->refs++;
+    if (r->record && r->type == 1) create_ground_body(*this, r);
 }
 
 void Runtime::bind(Handle *h, uint32_t id, const Package *base)
@@ -600,6 +602,7 @@ void Runtime::bind(Handle *h, uint32_t id, const Package *base)
     if (r->handles) r->handles->prev = h;
     r->handles = h;
     r->refs++;
+    if (r->record && r->type == 1) create_ground_body(*this, r);
 }
 
 Runtime::Resource *Runtime::instantiate(Resource *type, Resource *parent,
@@ -850,6 +853,12 @@ void Runtime::unload(Resource *r)
     std::vector<Resource *> children = r->children;
     for (Resource *c : children)
         if (c->type == 1) unload(c);
+    // +0x154 native instance dtor, type_ground vf4 0x4bb3d0: its groundbody
+    // leaves the world (0x4fadf0).
+    if (r->ground_body) {
+        process_world().remove_body(r->ground_body.get());
+        r->ground_body.reset();
+    }
     // U2: 0x54c600 unroots the script object then the slot is zeroed.
     // shortcut: the src VM has no root list; dropping the pointer is the whole effect.
     r->script = nullptr;
@@ -860,7 +869,7 @@ void Runtime::unload(Resource *r)
     // `instance` stands in for the runtime-created 0xffff prefix.
     for (Resource *c : children)
         if (c->instance || (c->package && c->package == r->package)) destroy(c);
-    // shortcut: +0x154 native instance dtor, "Undefined GameType Destructor"
+    // shortcut: other +0x154 native instance dtors, "Undefined GameType Destructor"
     // log, arrays +0x11c/+0x124/+0x13c/+0x150, handles +0x128/+0x140 and the
     // loaded bit (0x51f790) have no src counterpart.
 }

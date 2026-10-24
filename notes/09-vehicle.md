@@ -538,3 +538,25 @@ Exe chain (asm/Ghidra 12.1.4):
   - `if (!(root+0x58 & 0x80)) PhysBody__sleep 0x506d90(root)`: a placed car sleeps until "wakeup"
     (Gamemode.unlockCars, Gamemode.java:774-800, after the countdown).
   - car+0x70 &= ~0x30000 (| 0x10000 / 0x20000 for dir -1 / 1).
+
+Career-map drive failures after the placement port (card 164 finish, 2026-10-24): not the placement.
+- Ground bodies: src built a `groundbody` for every type-1 record at package mount, so city, city2,
+  test_track, ROC_track, carlot and the garage rooms all sat at the origin together with the race map;
+  the car hit their faces on the start straight (contacts against soups with > 75750 faces). The exe
+  builds it in `type_ground__vf3` 0x4bade0 when the instance is made resident (0x5195a0) and frees it
+  in vf4 0x4bb3d0 (0x4fb2a0 def release; body removal 0x4fadf0 = unlink + contacts + `w+0x54 -= 1`).
+  src now creates it on the first script handle bind of the record (INVENTED stand-in for residency)
+  and removes it in `Runtime::unload` (scripts call `map.unload()`, Track.java:1132, Garage.java:489).
+- Two-sided road: the career map stores the road twice (e.g. faces 59838/59839, normals +y/-y). 0x4fc7e0
+  uses the min hull-vertex distance only when V-Clip penetrates (d <= -margin); src took min(V-Clip,
+  signed plane distance) on every face, so a hull above the back face got ~-1 m and was pushed down
+  through the road. src now follows the d <= 0 rule and skips a face whose front the hull centre is
+  not on while V-Clip penetrates (INVENTED: no prev-state TOI bisection).
+- Pacejka p13: 0x49ef5a writes slot 13 only when sigma > 1e-4; src's per-tick WheelData -> sim copy
+  reset it to the default 0.015 on free-rolling wheels. The written value is now kept.
+- Soft rev limiter (s1, `L = (lim - nxt)/(rpm - nxt)` while rpm > lim and falling): the long straight
+  holds the SunStrip on the limiter; top-gear engine rpm floats to ~6870 (RPM_limit 6750), 43.98 m/s vs
+  the 43.86 m/s computed at RPM_limit. The A1Ring drive never reached the limiter.
+- Open: the used car is picked by a time-seeded rand (Math.randomize 0x4dee90); other picks (Axis 200S,
+  Einvagen 110 GTK) fail vmboot checks that assume the SunStrip (D18V slot 401, getWheelID) and the
+  Axis 200S hull 15 sits ~8 cm below its tyre plane at rest.

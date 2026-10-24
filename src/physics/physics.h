@@ -244,6 +244,9 @@ struct World {
     // 0x501d00: remove from the list/parent that holds it. 0x4f7b20: head
     // insert into a parent's child list.
     void unlink(RigidBody *b);
+    // 0x4fadf0: unlink, drop the body's contacts, w+0x54 -= 1 (root only; the
+    // exe recurses into children, src callers remove childless bodies).
+    void remove_body(RigidBody *b);
     void attach_child(RigidBody *child, RigidBody *parent);
     // 0x506d90 / 0x507060: only root-level bodies change lists; children are
     // recursed.

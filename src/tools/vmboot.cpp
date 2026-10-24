@@ -1784,6 +1784,7 @@ void game_init_check(Boot &boot, Checker &c)
         bool rr_printed = false;
         // Card 161 check 2: a zero-C_drag car leaves car+0x2248 at 0.
         int drag_nonzero = 0;
+        float peak_rpm = 0.0f;  // top-gear engine rpm (car+0x1e7c * 60/2pi)
         key(200, true);
         for (int i = 0; i < 900; i++) {
             frames(1);
@@ -1802,6 +1803,8 @@ void game_init_check(Boot &boot, Checker &c)
                     }
                 }
             if (sim && sim->drag_magnitude != 0.0f) drag_nonzero++;
+            if (car_payload->gear == car_payload->gears)  // top gear only
+                peak_rpm = std::max(peak_rpm, car_payload->rpm_raw * 9.549296f);
             if (soup) {
                 MeshRayHit rh;
                 Vec3 origin = root->pos + Vec3{0.0f, 3.0f, 0.0f};
@@ -1953,10 +1956,24 @@ void game_init_check(Boot &boot, Checker &c)
                     "v_top %.2f m/s (RPM_limit %.0f, gear %d)\n",
                     (double)final_speed, (double)h_speed, (double)v_top,
                     (double)car_payload->rpm_limit, car_payload->gears);
-        c.check(v_top > 0.0f && final_speed <= v_top,
+        // The 0x49c8e0 limiter is soft (notes/09 s1: L = (lim - nxt)/(rpm - nxt)
+        // while rpm > lim and falling), so an engine held on it floats a little
+        // above RPM_limit; the long career straight is the first run that
+        // reaches it. Bound: top gear at the run's peak engine rpm, which the
+        // limiter must keep below maxRPM.
+        float v_peak = v_top * std::max(peak_rpm, car_payload->rpm_limit) /
+                       car_payload->rpm_limit;
+        std::printf("  rev limiter: peak top-gear engine rpm %.0f (RPM_limit %.0f, maxRPM %.0f), "
+                    "top-gear speed at the peak %.2f m/s\n",
+                    (double)peak_rpm, (double)car_payload->rpm_limit,
+                    (double)car_payload->max_rpm, (double)v_peak);
+        c.check(peak_rpm < car_payload->max_rpm,
+                "the soft rev limiter keeps the engine below maxRPM (0x49c8e0, peak " +
+                    std::to_string((double)peak_rpm) + " rpm)");
+        c.check(v_top > 0.0f && final_speed <= v_peak,
                 "final speed is within the rev-limiter/top-gear bound (|vel| " +
-                    std::to_string((double)final_speed) + " m/s <= v_top " +
-                    std::to_string((double)v_top) + " m/s)");
+                    std::to_string((double)final_speed) + " m/s <= top gear at peak "
+                    "rpm " + std::to_string((double)v_peak) + " m/s)");
         // Card 161 check 4. INVENTED harness: force the largest shipped C_drag /
         // drag_center onto the player car (the exe reaches it by removing the
         // parts that reduce C_drag) and keep driving 300 frames.

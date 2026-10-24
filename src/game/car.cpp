@@ -1592,6 +1592,14 @@ void drive_cars(float dt)
             }
         sim.ground = ground;
         sim.update(dt);
+        // 0x49ef5a writes slot 13 into the wheel's own pacejka array; a
+        // free-rolling wheel (sigma <= 1e-4) skips the write and keeps it, so
+        // the per-tick copy above must not reset it to the default.
+        // shortcut: slot 2 (also written there) is not copied back; set_friction
+        // owns it in src.
+        if (sim.wheels.size() == c->wheels.size())
+            for (size_t i = 0; i < sim.wheels.size(); i++)
+                c->wheels[i].pacejka[13] = sim.wheels[i].pacejka.p[13];
         c->rpm_raw = e.omega;
         c->rpm_smoothed = e.smoothed_omega;
         c->shaft_speed = sim.shaft_speed;

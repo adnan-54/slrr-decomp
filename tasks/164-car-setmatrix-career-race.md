@@ -1,6 +1,6 @@
 ---
 id: 164
-status: blocked
+status: implemented
 branch: card/164
 depends: [163]
 ---
@@ -129,46 +129,22 @@ the same native), rem_part/uninstall 0x4cb510.
 
 ## Result
 
-**Blocked after 2 failed vmboot runs** (the card's stop rule). The placement implementation is in and
-verified; the career-map drive checks still fail because the car leaves the ground during the 900-frame
-launch.
-
-Implemented:
-- `src/game/car.cpp car_set_matrix` = type_car vf7 0x4a99b0 (4-wheel contact branch, wheel-contact
-  centroid, `root.pos = pos + R*com` per 0x4eac50, vel/angvel/steer/gear/engine reset, ray_len, sleep
-  0x506d90, `flags &= ~0x30000`). Shortcut comments for flaps, render copies 0x12c/0x138/0x4c6d30,
-  0x4aa830, sensor pose refresh 0x4f4360/0x4f4310 and the cfg `center` keyword (0 in shipped cfgs).
-- `src/script/natives.cpp gr_set_matrix`: keeps the Resource pos/ori write, then calls the car vf7.
-- vmboot: Garage sends CMD_EVENTLIST 133; `Track.game` check is now "non-null java.game.Gamemode";
-  new checks 1-3; the INVENTED floor fixture is gone; INVENTED `restore_spawn` puts the car back on the
-  grid before the auto-gearbox launch and before the semi-auto run.
-- No map name in src/game, src/script, src/physics (grep: no hits).
-
-Passing (run 2): gamemode `java.game.CircuitRacing`; map leaf `norisring` (10696 type-1 instances, 6942
-PHYS, 75750 faces, 56881 verts; record id 1, not in the four-row corpus table); grid 16 element(s),
-grid 40.067 -4.301 22.549 vs car_root 40.077 -3.694 22.526 (xz gap 0.025 m); 0 other roots within 2 m;
-|vel| 0.000000 at drive start; springs carry 12559.8 N vs weight 12559.7 N (loads 3104.5/3223.6/3064.0/
-3167.6 vs shares 3169.7/3169.7/3110.2/3110.2); no hull contact at rest; 48 hulls; V-Clip 11/11; wheel
-sensor hits tri 59859 (normal +y); throttle/steer input checks pass.
-
-Run 1 (no spawn restore): 134 checks, 4 fail: soup above car_root 451/900 frames (min -1.441 m); auto
-clutch max 0; final speed 0.91 m/s (v1 12.42); forced-drag moving 0/300. ~100 "Voronoi error" lines.
-
-Run 2 (with restore): 134 checks, 5 fail:
-- soup above car_root 3/900 frames, first at frame 160, min margin -1.223 m (FAIL);
-- pacejka p13 12 bad of 574 (only the first frames; likely stale contact state after the teleport);
-- auto clutch max 0.000 over 30 frames after engaging 1st (FAIL);
-- auto drive final speed 2.54 m/s < v1 12.42 (FAIL), final pos 54.9 -11.1 17.5 — the car is below the
-  road and still falling;
-- semi-auto final |vel| 44.22 m/s > v_top 43.86 (FAIL), pos 49.4 -114.9 13.8, velocity (0.22, -44.22,
-  ...) — free fall out of the world.
-13 "Voronoi error (infinite loop)" lines (was 105 in the scratch probe).
-
-Diagnosis: every remaining failure is downstream of the car leaving the map ground during the launch,
-not of the placement (the new checks 1-3 and all settle/spring/sensor/V-Clip checks pass, and the
-"forced-drag run" now moves 300/300). The car is airborne after frame 160 (the road plane is above
-car_root: fell through/off the ground) and keeps falling in the semi run. Open question for the next run:
-why. The AI grid slots line up along +z (9 m apart), while the launch ends up displaced +x; either the
-`startGridData` Ypr heading or the ground soup ~15 m from the grid is the cause. Next diagnostic (needs
-another vmboot run): print `startGridData.elementAt(1)` (Ypr) and per-30-frame root pos/rot, contact
-count and the hull contacts during the launch.
+Implemented (WIP by Flash + finish by Claude 2026-10-24). vmboot `selfcheck: PASSED (135 checks, 0 failure(s))`,
+0 failed threads; `make -C src clean check` green.
+- `car_set_matrix` (0x4a99b0) + `gr_set_matrix` -> vf7 as specified; Garage cmd 133; Track.game check is
+  "non-null java.game.Gamemode" (got `java.game.CircuitRacing`); map leaf norisring (record id 1, no corpus row);
+  INVENTED floor fixture removed; checks 1-3 added; no map names in src/game, src/script, src/physics.
+- grid 40.067 -4.301 22.549 vs car_root 40.077 -3.694 22.526 (xz gap 0.025 m); 0 other roots within 2 m;
+  |vel| 0 at drive start; springs 12559.8 N vs weight 12559.7 N; auto drive final 43.98 m/s (v1 12.42);
+  semi-auto final 42.04 m/s.
+- True causes of the 5 WIP failures (notes/09 "Career-map drive failures"): (1) every mounted map package
+  built a ground body at the origin (src mount-time create) -> now created on first handle bind, removed in
+  `Runtime::unload` (0x4bb3d0 / 0x4fadf0 `World::remove_body`); (2) two-sided road faces + min(V-Clip,
+  plane) distance pushed the hulls through the road -> 0x4fc7e0 d <= 0 rule + INVENTED side gate;
+  (3) p13 reset each tick by the WheelData copy on free-rolling wheels -> slot 13 kept (0x49ef5a);
+  clutch/final-speed/semi failures were the fall. (4) premise change: the car now reaches the soft rev
+  limiter (0x49c8e0), engine ~6870 rpm > RPM_limit 6750; the auto-drive top-speed check now bounds by top
+  gear at the peak top-gear rpm plus a new check that the peak stays below maxRPM.
+- "Voronoi error" lines: 248 per run (was 105 in the scratch probe; 20 with the earlier min(d, ds) rule,
+  which instead teleported the Axis 200S by a bogus negative V-Clip value).
+- Open: time-seeded dealer pick; Axis 200S / Einvagen 110 GTK runs fail SunStrip-specific checks.
