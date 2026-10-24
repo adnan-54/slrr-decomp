@@ -1147,6 +1147,9 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
         s.rest_len = w.rest_len;
         s.max_len = w.max_len;
         s.min_len = w.min_len;
+        // 0x4f3f10 L = W+0x5c, captured at create; the sensor body is never resized.
+        s.sensor_len = w.free_len;
+        s.ray_len = s.max_ray(); // S+0xf0 starts at the tick's miss value
         s.drive_ratio = w.drive_ratio;
         s.steer_factor = w.steer;
         s.set_drive(w.drive_eff);

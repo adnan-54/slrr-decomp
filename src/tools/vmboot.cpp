@@ -945,6 +945,13 @@ void game_init_check(Boot &boot, Checker &c)
     // Track.java:1056 call is commented out; in the exe the freeride car wakes
     // from player input (Vehicle__updateControls 0x498300 at 0x498599). Queue
     // the same command Vehicle.wakeUp (Vehicle.java:187) sends.
+    // 0x4f3d70 gate rejections, per wheel cumulative; diff across phases.
+    auto gate_rejects = [](const Car *c) {
+        unsigned n = 0;
+        if (c)
+            for (const Wheel &w : c->wheels) n += w.gate_rejects;
+        return n;
+    };
     if (car_res && car_payload && car_payload->root_body) {
         RigidBody *root = car_payload->root_body;
         // Floor = highest soup surface under the car's start (x,z): a downward
@@ -973,9 +980,12 @@ void game_init_check(Boot &boot, Checker &c)
             root->pos.y = floor_y + (w0.rest_ray() - w0.mount.y);
         }
         const float y_before = root->pos.y;
+        unsigned rejects_before = gate_rejects(car_payload->sim.get());
         boot.runtime()->queue_event(car_res, nullptr, 0x10,
                                     Value::make_str("wakeup"));
         for (int i = kFrames + 1; i <= kFrames + 300; i++) loop.frame(i * 16);
+        unsigned settle_rejects =
+            gate_rejects(car_payload->sim.get()) - rejects_before;
         bool awake = false;
         for (RigidBody *b : process_world().bodies)
             if (b == root) awake = true;
@@ -1056,6 +1066,7 @@ void game_init_check(Boot &boot, Checker &c)
         auto expected = build_collision_mesh(gverts, gtris, gnormals);
         bool normals_ok = ground && ground->def.shape.mesh && expected && sim;
         bool sensor_ok = normals_ok;
+        bool wheel_normals_ok = normals_ok;
         if (sim && ground && ground->def.shape.mesh && expected) {
             const CollisionMesh &cm = *ground->def.shape.mesh;
             Mat34 rr = root->rotation();
@@ -1087,18 +1098,31 @@ void game_init_check(Boot &boot, Checker &c)
                         normals_ok = false;
                 }
                 std::printf("    wheel %zu sensor (0x4fd110): %d hit(s), nearest |top-X| "
-                            "%.4f (ray_len %.4f), normal (%.4f %.4f %.4f) tri %u\n",
+                            "%.4f (ray_len %.4f), sensor_len %.4f max_ray %.4f, "
+                            "normal (%.4f %.4f %.4f) tri %u\n",
                             i, n, (double)nearest, (double)w.ray_len,
+                            (double)w.sensor_len, (double)w.max_ray(),
                             (double)nearest_normal.x, (double)nearest_normal.y,
                             (double)nearest_normal.z, nearest_tri);
                 if (n < 1 || std::fabs(nearest - w.ray_len) > 1e-3f)
                     sensor_ok = false;
+                // 0x4f3d70 S+0xc4: the sim wheel stores the PHYS face normal.
+                if (n < 1 ||
+                    float_bits(w.normal_world.x) != float_bits(nearest_normal.x) ||
+                    float_bits(w.normal_world.y) != float_bits(nearest_normal.y) ||
+                    float_bits(w.normal_world.z) != float_bits(nearest_normal.z))
+                    wheel_normals_ok = false;
             }
         }
         c.check(normals_ok,
                 "every sensor crossing uses the PHYS stored face normal (0x4fd110)");
         c.check(sensor_ok,
                 "every wheel sensor segment crosses the map soup at its ray_len");
+        c.check(wheel_normals_ok,
+                "every sim wheel's normal_world is the PHYS face normal under it "
+                "(0x4f3d70 S+0xc4)");
+        std::printf("  sensor gate (0x4f3d70): %u crossing(s) rejected (prev - d > r) "
+                    "over the 300 settle frames\n", settle_rejects);
 
         // Card 154 done-when a: the part on chassis slot 311+i is a Spring and
         // its updatevariables values reach the simulation wheel (0x4c8b10).
@@ -1381,6 +1405,7 @@ void game_init_check(Boot &boot, Checker &c)
         };
         std::vector<DriveSample> samples;
         float rpm_before = car_payload->rpm_smoothed;
+        unsigned launch_rejects0 = gate_rejects(sim);
         key(200, true);
         for (int i = 0; i < 900; i++) {
             frames(1);
@@ -1403,6 +1428,9 @@ void game_init_check(Boot &boot, Checker &c)
                                           kn ? ksum / (float)kn : 0.0f});
         }
         key(200, false);
+        std::printf("  sensor gate (0x4f3d70): %u crossing(s) rejected (prev - d > r) "
+                    "over the 900 launch frames\n",
+                    gate_rejects(sim) - launch_rejects0);
         int engage_i = -1;
         for (size_t i = 0; i < samples.size(); i++)
             if (samples[i].gear == 1) {

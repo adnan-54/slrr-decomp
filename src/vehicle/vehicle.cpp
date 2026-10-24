@@ -135,7 +135,7 @@ void Car::update_suspension(float dt)
 {
     for (Wheel &w : wheels) {
         w.contact = false;
-        w.ray_len = w.max_ray();
+        // ray_len keeps the previous tick's S+0xf0 (the 0x4f3d70 gate input).
         w.load = 0.0f;
         w.susp_velocity = 0.0f;
         w.normal_world = Vec3{0.0f, 1.0f, 0.0f};
@@ -152,10 +152,50 @@ void Car::update_suspension(float dt)
     for (Wheel &w : wheels) {
         Vec3 origin = body.pos + mat_vec(r, w.mount);
         RayHit hit;
-        if (!raycast_body(*ground, origin, -up, w.max_ray(), &hit))
+        float len = 0.0f;
+        const CollisionMesh *cm = ground->def.shape.type == SHAPE_MESH
+                                      ? ground->def.shape.mesh.get()
+                                      : nullptr;
+        if (cm && !cm->face_normals.empty()) {
+            // 0x4fd110 crossings of the sensor segment 0x4f3f10 (mount - L .. mount)
+            // -> 0x4f3d70: nearest crossing no more than r above the previous
+            // length; its stored PHYS face normal is the contact normal.
+            // INVENTED: queried at the start of this tick instead of the previous
+            // sub-step's collide pass (same pose if that runs after integrate;
+            // UNRESOLVED, notes/19 §7). Equal d2 ties follow the AABB tree, not
+            // the exe's node face order.
+            std::vector<SegmentCross> hits;
+            mesh_segment_cross(*cm, ground->pose(), origin - up * w.sensor_len, origin,
+                               &hits);
+            float best = w.max_ray() * w.max_ray() + 0.1f;
+            const SegmentCross *best_hit = nullptr;
+            for (const SegmentCross &h : hits) {
+                Vec3 d = origin - h.point;
+                float d2 = vec_dot(d, d);
+                if (w.ray_len - sqrtf(d2) > w.radius) {
+                    w.gate_rejects++;
+                    continue;
+                }
+                if (d2 < best) {
+                    best = d2;
+                    best_hit = &h;
+                }
+            }
+            if (w.max_ray() * w.max_ray() > best) {
+                len = fminf(sqrtf(best), w.max_ray());
+                hit.point = best_hit->point;
+                hit.normal = best_hit->normal;
+            } else {
+                w.ray_len = w.max_ray(); // miss: the next gate starts at max_ray
+                continue;
+            }
+        } else if (!raycast_body(*ground, origin, -up, w.max_ray(), &hit)) {
+            w.ray_len = w.max_ray();
             continue;
+        } else {
+            len = hit.distance;
+        }
 
-        float len = hit.distance;
         w.contact = true;
         w.ray_len = len;
         w.normal_world = hit.normal;

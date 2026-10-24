@@ -88,7 +88,9 @@ struct Wheel {
 
     // suspension object (S) results for this tick
     bool contact = false;
-    float ray_len = 0.0f;         // S+0xf0
+    float sensor_len = 0.0f;      // S capsule length L = W+0x5c, fixed at create
+    unsigned gate_rejects = 0;    // 0x4f3d70 crossings dropped by prev - d > r
+    float ray_len = 0.0f;         // S+0xf0; also the next tick's gate input
     float load = 0.0f;            // S+0xf4
     float susp_velocity = 0.0f;   // S+0xf8 (+ extends)
     Vec3 contact_local{0.0f, 0.0f, 0.0f}; // S+0xd8

@@ -1,6 +1,6 @@
 ---
 id: 157
-status: todo
+status: implemented
 branch: card/157
 depends: [156]
 ---
@@ -87,3 +87,33 @@ Per-face material friction (S+0xa8/+0xac: face mat -> ground shape material arra
 0x4f3d70 own-car-parts early return (src only queries the groundbody).
 
 ## Result
+Implemented.
+
+- `Wheel::sensor_len` (W+0x5c = `free_len`, captured once in the create wheel loop,
+  `src/game/car.cpp:1150`) and `Wheel::gate_rejects` (diagnostic counter). `ray_len`
+  (S+0xf0) now survives the per-tick reset and starts at `max_ray()`; it is the next
+  tick's 0x4f3d70 gate input.
+- `Car::update_suspension` (`src/vehicle/vehicle.cpp:134`): mesh ground with
+  `face_normals` -> `mesh_segment_cross` over `top - up*sensor_len .. top`
+  (0x4fd110), gate `prev - d > radius` rejected (0x4f3d70, S+0x68 = r), nearest
+  `d2 < best` wins; contact iff `max_ray()^2 > best`, `len = min(sqrt(best), max_ray())`,
+  point/normal from the crossing (PHYS face normal). Plane/box/sphere and SCX meshes
+  without stored normals keep `raycast_body`. INVENTED marker added for the query
+  timing/tie order.
+- `vmboot`: per-wheel `sensor_len/max_ray/ray_len/normal` print plus bitwise
+  `normal_world` vs PHYS face normal check; gate rejection counts printed for the
+  300 settle frames and the 900 launch frames.
+
+Checks (`make -C src clean check`, same vmboot binary under `ulimit -v 1500000` and
+`timeout 300`): `selfcheck: PASSED (103 checks, 0 failure(s))`, 0 failed threads
+(1522 threads, 30000 frames). Loads 3069.0/3260.2/3097.6/3133.7 N vs static shares
+3169.7/3169.7/3110.2/3110.2 N, sum 12560.4 N vs weight 12559.7 N (<2%), |vel.y| 0.079,
+no world contact on car_root/part_comp. Sensor: sensor_len 0.7050, max_ray
+0.5947/0.5988, ray_len 0.5504..0.5536; all four normal_world bitwise equal the PHYS
+face normal (tris 56279/56279/56279/37934); 0 gate rejections over the 300 settle
+frames, 1 over the 900 launch frames. max gear 5, final speed 103.41 m/s vs v1 12.42.
+
+Doubt: the exact `VMBOOT_MEM=4000000 VMBOOT_TIMEOUT=280 tools/vmboot-capped.sh`
+command could not be run in this session (the shell tool asks for approval on that
+script/inline `ulimit`); the `make check` run above executes the same binary with a
+tighter cap (1.5 GB / 300 s) and is green.
