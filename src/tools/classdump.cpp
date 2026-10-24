@@ -1158,6 +1158,27 @@ int main(int argc, char **argv)
         return selfcheck(argc - 2, argv + 2);
     if (strcmp(argv[1], "--corpus") == 0)
         return corpus(argc - 2, argv + 2);
+    if (strcmp(argv[1], "--disasm") == 0) {
+        for (int i = 2; i < argc; i++) {
+            ClassFile file;
+            std::string err;
+            if (!classfile_load(argv[i], &file, &err)) {
+                std::fprintf(stderr, "%s: %s\n", argv[i], err.c_str());
+                continue;
+            }
+            for (const ClassUnit &u : file.units) {
+                std::printf("unit %s\n", u.class_name(u.self_class).c_str());
+                for (size_t bi = 0; bi < u.bodies.size(); bi++) {
+                    std::printf(" body %zu\n", bi);
+                    for (size_t ii = 0; ii < u.bodies[bi].instrs.size(); ii++) {
+                        const Instr &in = u.bodies[bi].instrs[ii];
+                        std::printf("  %zu: op 0x%02x operand %u\n", ii, in.op, in.operand);
+                    }
+                }
+            }
+        }
+        return 0;
+    }
     if (strcmp(argv[1], "--natives-check") == 0) {
         if (argc != 3) {
             std::fprintf(stderr, "usage: classdump --natives-check <natives.tsv>\n");
