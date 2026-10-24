@@ -393,6 +393,10 @@ static int arg_cost(char param, const std::string &pdesc, const Value &v, const 
             return 1;
         }
         if (v.kind == Value::Str) return want == "java.lang.String" ? 0 : 1;
+        // 0x55bd80: an I/F argument fits a class parameter that String is
+        // assignable to (0x54ac60), cost 100; the value becomes a String.
+        if (v.kind == Value::Int || v.kind == Value::Float)
+            return want == "java.lang.String" || want == "java.lang.Object" ? 100 : -1;
         return (v.kind == Value::Array || v.kind == Value::Type)
                    ? 0
                    : (v.kind == Value::Null ? 1 : -1);
@@ -494,6 +498,11 @@ static void fill_frame(Frame *f, ClassState *decl, const MethodInfo *m, Object *
         // INVENTED: truncation like a C cast; the exe's F->I conversion is not traced.
         if (pi < params.size() && params[pi] == 'I' && v.kind == Value::Float)
             v = Value::make_int((int32_t)v.f);
+        if (pi < params.size() && params[pi] == 'L' &&
+            (v.kind == Value::Int || v.kind == Value::Float)) {
+            std::string str, e;  // 0x55bd80 number -> String parameter
+            if (stringify(v, &str, &e)) v = Value::make_str(str);
+        }
         f->locals[base + k] = v;
     }
 }
@@ -1794,6 +1803,11 @@ bool Vm::run_native(const std::string &cls, const std::string &name,
             v = Value::make_float((float)v.i);
         if (i < params.size() && params[i] == 'I' && v.kind == Value::Float)
             v = Value::make_int((int32_t)v.f);  // INVENTED: as in fill_frame
+        if (i < params.size() && params[i] == 'L' &&
+            (v.kind == Value::Int || v.kind == Value::Float)) {
+            std::string str, e;  // as in fill_frame
+            if (stringify(v, &str, &e)) v = Value::make_str(str);
+        }
         full.push_back(v);
     }
     auto it = natives_.find(cls + "." + name + sig);
