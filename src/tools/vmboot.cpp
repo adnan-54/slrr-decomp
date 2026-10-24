@@ -19,6 +19,7 @@
 #include "input/backend.h"
 #include "input/device.h"
 #include "platform/fs.h"
+#include "physics/physics.h"
 #include "resource/manager.h"
 #include "script/classfile.h"
 #include "script/compiler/decl.h"
@@ -175,6 +176,13 @@ struct Checker {
 bool contains(const std::vector<std::string> &v, const std::string &s)
 {
     return std::find(v.begin(), v.end(), s) != v.end();
+}
+
+uint32_t float_bits(float f)
+{
+    uint32_t u;
+    memcpy(&u, &f, sizeof u);
+    return u;
 }
 
 const ClassUnit *load_extra(Boot &boot, const std::string &rel, const std::string &cls,
@@ -1012,6 +1020,18 @@ int selfcheck()
     // Before any script runs: ControlSet.load resolves saved device names
     // through the table during Init(int), so the backend must be installed.
     install_synthetic_input();
+
+    // PhysicsWorld__init 0x4fffb0: the process world is created at engine
+    // startup, before any script runs (0x60251c).
+    World &world = process_world();
+    c.check(float_bits(world.step_size) == 0x3ca3d70au,
+            "process world step_size is 0.02f (0x4fffb0)");
+    c.check(float_bits(world.gravity.y) == 0xc11cf5c3u,
+            "process world gravity.y is -9.81f (0x4fffb0)");
+    c.check(float_bits(world.air_density) == 0x3fa57a78u,
+            "process world air_density is 1.2928f (0x4fffb0)");
+    c.check(world.time == 0.0f && world.accumulator == 0.0f,
+            "process world time and accumulator start at 0 (0x4fffb0)");
 
     Boot boot;
     BootResult first = boot.run(rpk);

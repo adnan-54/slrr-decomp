@@ -129,7 +129,15 @@ void RigidBody::set_static_shape(const Shape &s)
 
 void World::add_body(RigidBody *b)
 {
-    bodies.push_back(b);
+    bodies.insert(bodies.begin(), b); // 0x4f7830: head insert into the root's child list
+}
+
+World &process_world()
+{
+    // INVENTED: function-local static stands in for the exe's static world at
+    // 0x60251c, built by PhysicsWorld__init 0x4fffb0 at engine startup.
+    static World world;
+    return world;
 }
 
 // ---- RK4 integration (notes/08 §Integrator, FUN_00506530) ----
@@ -538,9 +546,15 @@ static void update_contacts(World &w, bool add_new)
 
 int World::step(float dt)
 {
-    if (dt < 0.0001f)
+    // PhysicsWorld__step 0x502060 prologue: dt joins the accumulator; a sum
+    // still below the threshold is kept there for the next call.
+    const float t = dt + accumulator;
+    accumulator = t;
+    if (t < 0.0001f)
         return 0;
-    const float h = dt;
+    accumulator -= t;
+    last_dt = t;
+    const float h = t;
 
     // Force model (FUN_004f8460): gravity + linear drag, once per step, per root.
     std::vector<StepState> states(bodies.size());
@@ -602,5 +616,6 @@ int World::step(float dt)
     for (Contact &c : contacts)
         if (c.mode == 6)
             c.mode = 7;
+    time += t; // 0x502060 epilogue: simulated time
     return 1;
 }

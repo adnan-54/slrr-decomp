@@ -195,8 +195,13 @@ struct Contact {
 //   the start-of-step state, which carries the solver impulses, forces and
 //   position offset; stop when no contact was near or the pass returned 0.
 struct World {
+    // World+0x00..0x0c, PhysicsWorld__init 0x4fffb0.
+    float time = 0.0f;         // +0x00: simulated seconds
+    float accumulator = 0.0f;  // +0x04
+    float step_size = 0.02f;   // +0x08
+    float last_dt = 0.02f;     // +0x0c
     Vec3 gravity{0.0f, -9.81f, 0.0f}; // notes/11 §6 (PhysicsWorld__init 0x4fffb0)
-    float air_density = 1.2935f;      // +0x364, buoyancy path (body def flag 0x80) TODO
+    float air_density = 1.2928f;      // +0x364 = 0x3fa57a78, buoyancy path (body def flag 0x80) TODO
     std::vector<RigidBody *> bodies;  // root bodies
     std::vector<Contact> contacts;    // world+0x1d8
     int last_iterations = 0;
@@ -205,3 +210,7 @@ struct World {
     void add_body(RigidBody *b);
     int step(float dt);
 };
+
+// The process-wide world (g_physWorld, 0x60251c): the exe creates it at engine
+// startup, before any script runs (PhysicsWorld__init 0x4fffb0).
+World &process_world();
