@@ -1594,7 +1594,8 @@ int main(int argc, char **argv)
                     std::printf(" body %zu\n", bi);
                     for (size_t ii = 0; ii < u.bodies[bi].instrs.size(); ii++) {
                         const Instr &in = u.bodies[bi].instrs[ii];
-                        std::printf("  %zu: op 0x%02x operand %u\n", ii, in.op, in.operand);
+                        std::printf("  %zu: op 0x%02x line %u operand %u\n", ii, in.op,
+                                    in.line, in.operand);
                     }
                 }
             }
