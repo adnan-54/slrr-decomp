@@ -1232,6 +1232,123 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
     if (root && !root->asleep) world.sleep(root);               // 0x506d90
 }
 
+// 0x4a99b0 type_car vf7 (GameRef.setMatrix 0x4db950 -> 0x4eb3f0): the script
+// passes the tyre contact point and orientation. The given point is moved down
+// to where the four tyre contact patches touch (rotated wheel-hub centroid at
+// static spring compression), then 0x4eac50 puts the compound root there. The
+// remaining args of 0x4a99b0 (vel/angvel/steer/spin/pitchadd/dir) are zero
+// here because setMatrix only sends pos and ypr.
+bool car_set_matrix(Runtime &rt, Runtime::Resource *carres, const float pos[3],
+                    const float ypr[3])
+{
+    (void)rt;
+    auto it = g_cars.find(carres);
+    if (it == g_cars.end()) return false;
+    CarData *car = it->second.get();
+    if (!car->root_body || !car->chassis_body) return false;
+
+    float p[3] = {pos[0], pos[1], pos[2]};
+    float ang[3] = {ypr[0], ypr[1], ypr[2]};
+    Mat34 R;
+    euler_to_mat(&R, ang);
+
+    const size_t wheel_count = car->wheels.size();
+    // weight = |g| / (def+0x2c) of the car+0x13ec body = part_comp's weight;
+    // that body's mass is the cfg body-line sum, the same one the spring rate
+    // (M+0x1f34) was derived from in 0x4992e0.
+    float mass = car->chassis_body->def.inv_mass > 0.0f
+                     ? 1.0f / car->chassis_body->def.inv_mass
+                     : 0.0f;
+    float weight = vec_length(process_world().gravity) * mass;
+    if (wheel_count < 4) {
+        // shortcut: the cfg `center` keyword (M+0x1f1c) is 0 in every shipped
+        // cfg and its parser is not ported, so R * M_center adds nothing.
+    } else {
+        // 0x4a99b0: tyre contact of wheel i = hub - (radius + rest) + the static
+        // compression (weight/n)/spring, along the chassis y axis.
+        Vec3 c[4];
+        for (int i = 0; i < 4; i++) {
+            const WheelData &w = car->wheels[(size_t)i];
+            float sag = (w.spring_k > 0.0f)
+                            ? weight / (float)wheel_count / w.spring_k
+                            : 0.0f;
+            c[i] = Vec3{w.hub[0], w.hub[1] - (w.radius + w.rest_len) + sag,
+                        w.hub[2]};
+        }
+        // fpatan order checked in asm 0x4a9db6..0x4a9dcd.
+        ang[1] += atan2f((c[2].y + c[3].y - c[0].y - c[1].y) * 0.5f,
+                         (c[2].z + c[3].z - c[0].z - c[1].z) * 0.5f);
+        ang[2] -= atan2f((c[1].y + c[3].y - c[0].y - c[2].y) * 0.5f,
+                         (c[1].x + c[3].x - c[0].x - c[2].x) * 0.5f);
+        euler_to_mat(&R, ang);
+        Vec3 mean = (c[0] + c[1] + c[2] + c[3]) * 0.25f;
+        Vec3 v = mat_vec(R, mean);
+        p[0] -= v.x;
+        p[2] -= v.z;
+        p[1] -= std::min(v.y, 0.0f);  // -(R*M_center).y = 0
+    }
+
+    // 0x4e9730 walks part_comp up to its root and returns the child offset in
+    // root frame; src keeps that offset as -com (root->pos is the COM).
+    Vec3 root_pos = Vec3{p[0], p[1], p[2]} +
+                    mat_vec(R, Vec3{car->com[0], car->com[1], car->com[2]});
+    Quat root_rot;
+    mat_to_quat(&root_rot, &R);
+    RigidBody *root = car->root_body;
+    bool moved = root->pos.x != root_pos.x || root->pos.y != root_pos.y ||
+                 root->pos.z != root_pos.z || root->rot.x != root_rot.x ||
+                 root->rot.y != root_rot.y || root->rot.z != root_rot.z ||
+                 root->rot.w != root_rot.w;
+    root->pos = root_pos;
+    root->rot = root_rot;
+    if (moved) {
+        // 0x4eac50 (root+0x70 / 0x506ce0): the velocity arguments of 0x4a99b0
+        // are zero for setMatrix.
+        root->vel = Vec3{0.0f, 0.0f, 0.0f};
+        root->angular_momentum = Vec3{0.0f, 0.0f, 0.0f};
+        // shortcut: car+0x12c/+0x138 and 0x4c6d30 (render copies) stay unported.
+        for (size_t i = 0; i < car->wheels.size(); i++) {
+            WheelData &w = car->wheels[i];
+            w.spin = 0.0f;  // W+0xc0
+            if (!car->sim || i >= car->sim->wheels.size()) continue;
+            Wheel &s = car->sim->wheels[i];
+            s.spin = 0.0f;
+            s.load = 0.0f;  // S+0xf4
+            // shortcut: the sensor pose refresh 0x4f4360/0x4f4310 is not
+            // ported; src rays use the body pose. S+0xf0 starts at the static
+            // length (pitch-add is 0).
+            float sag = (w.spring_k > 0.0f)
+                            ? weight / (float)wheel_count / w.spring_k
+                            : 0.0f;
+            s.ray_len = (w.radius + w.rest_len) - sag;
+            car->flags |= 0x100000u;
+        }
+    }
+
+    car->flags &= ~0x30000u;  // dir 0: neither -1 (0x10000) nor 1 (0x20000)
+    // 0x4a99b0 tail: gear, steer, pedal inputs and engine/shaft speeds reset.
+    car->gear = 0;
+    car->gear_copy = 0;
+    car->steer_input = 0.0f;
+    car->throttle = 0.0f;
+    car->brake_input = 0.0f;
+    car->handbrake_input = 0.0f;
+    car->rpm_raw = 0.0f;
+    car->shaft_speed = 0.0f;
+    car->rpm_smoothed = 0.0f;
+    if (car->sim) {
+        car->sim->engine.omega = 0.0f;
+        car->sim->engine.smoothed_omega = 0.0f;
+        car->sim->shaft_speed = 0.0f;
+    }
+    if (std::fabs(car->steer_copy - car->steer_input) > 0.001f) {
+        // shortcut: 0x4aa830 (steering helper / wheel pose update) not ported.
+        car->steer_copy = car->steer_input;
+    }
+    process_world().sleep(root);  // 0x506d90: a placed car sleeps until "wakeup"
+    return true;
+}
+
 int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
                 const Value &param)
 {

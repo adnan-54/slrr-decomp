@@ -2426,6 +2426,11 @@ bool gr_set_matrix(Vm &vm, const Args &a, Value *out, std::string *err)
             r->pos[i] = pos[i];
             r->ori[i] = ori[i];
         }
+        // 0x4eb3f0: the typed object's vf7 gets the formatted "ffffff" pose.
+        // For a car that is type_car__vf7 0x4a99b0, which moves the compound
+        // root (0x4eac50) and sleeps it. shortcut: vf7 of non-car typed objects
+        // is not ported, they keep the Resource pose write only.
+        if (Runtime *rt = game_rt()) game::car_set_matrix(*rt, r, pos, ori);
     }
     *out = Value::make_null();
     return true;

@@ -502,9 +502,10 @@ void game_init_check(Boot &boot, Checker &c)
     // raw key byte's high bit.
     const int kFrames = 30000, kPress = 3000, kRelease = 3060, kSelect = 3600;
     const int kGarageCmd = 6300, kBuyCmd = 12300, kBackCmd = 14000;
-    // Garage.java:99,1598 CMD_TESTDRIVE -> freeride EventList; EventList.java:52,537
-    // CMD_RACE -> freerideSetup() + java.game.Track.
-    const int kTestDriveCmd = 18300, kRaceCmd = 20000;
+    // Garage.java:98,1587-1593 CMD_EVENTLIST -> the amateur EventList;
+    // EventList.java:52,537-545 CMD_RACE (Generator.eGen) -> gamemode Setup +
+    // java.game.Track.
+    const int kEventListCmd = 18300, kRaceCmd = 20000;
     FrameLoop loop(0);
     // Card 158: sit on the world's drive slot (0x502060 C); advance_sim only
     // installs the default when the slot is empty.
@@ -546,8 +547,8 @@ void game_init_check(Boot &boot, Checker &c)
     std::string dealer_from = "(none)";
     std::string buy_from = "(none)";
     bool dealer_at_garage = false, dealer_started = false, buy_at_market = false;
-    std::string testdrive_from = "(none)", race_from = "(none)";
-    bool testdrive_at_garage = false, race_at_eventlist = false;
+    std::string eventlist_from = "(none)", race_from = "(none)";
+    bool eventlist_at_garage = false, race_at_eventlist = false;
     for (int i = kSelect + 1; i <= kFrames; i++) {
         g_input->devices[0].raw.keys[0x1c] = 0;
         loop.frame(i * 16);
@@ -619,30 +620,33 @@ void game_init_check(Boot &boot, Checker &c)
                 }
             }
         }
-        if (i == kTestDriveCmd) {
-            // Garage.java:99,1598: CMD_TESTDRIVE changes the section to a
-            // freeride EventList.
+        if (i == kEventListCmd) {
+            // Garage.java:98,1587-1593: CMD_EVENTLIST changes the section to the
+            // amateur career EventList.
             Value st;
             std::string terr;
             if (actual_state(boot, &st, &terr)) {
-                testdrive_from = object_class(boot, st.obj);
-                testdrive_at_garage = is_a(boot, st.obj->cls, "java.game.Garage");
-                if (testdrive_at_garage) {
-                    // INVENTED: stands in for clicking the Garage Test Drive button.
-                    bool ok = osd_command(boot, st.obj, 134, "THRD-GARAGE-TESTDRIVE", &terr);
+                eventlist_from = object_class(boot, st.obj);
+                eventlist_at_garage = is_a(boot, st.obj->cls, "java.game.Garage");
+                if (eventlist_at_garage) {
+                    // INVENTED: stands in for clicking the Garage "Browse racing
+                    // events" button.
+                    bool ok = osd_command(boot, st.obj, 133, "THRD-GARAGE-EVENTLIST",
+                                          &terr);
                     if (!ok && !terr.empty())
-                        std::printf("  garage cmd 134: not started (%s)\n", terr.c_str());
+                        std::printf("  garage cmd 133: not started (%s)\n",
+                                    terr.c_str());
                 } else {
-                    std::printf("  garage cmd 134 skipped: actualState is %s\n",
-                                testdrive_from.c_str());
+                    std::printf("  garage cmd 133 skipped: actualState is %s\n",
+                                eventlist_from.c_str());
                 }
             }
         }
         if (i == kRaceCmd) {
             // EventList.java:44,345: CMD_RACE belongs to the Generator dialog,
             // not the EventList (which only holds it in eGen, EventList.java:22);
-            // the Generator's osdCommand freerideSetup()s and changes the section
-            // to java.game.Track (EventList.java:52,537-545).
+            // the Generator's osdCommand starts the career Gamemode Setup and
+            // changes the section to java.game.Track (EventList.java:537-545).
             Value st;
             std::string rerr;
             if (actual_state(boot, &st, &rerr)) {
@@ -656,7 +660,7 @@ void game_init_check(Boot &boot, Checker &c)
                         gen = gv.obj;
                 }
                 if (gen) {
-                    // INVENTED: stands in for clicking the freeride Race button.
+                    // INVENTED: stands in for clicking the Generator Race button.
                     bool ok = osd_command(boot, gen, 0x10E, "THRD-EVENT-RACE", &rerr);
                     if (!ok && !rerr.empty())
                         std::printf("  eventlist cmd 0x10E: not started (%s)\n",
@@ -735,10 +739,10 @@ void game_init_check(Boot &boot, Checker &c)
     }
     // Shipped: the purchase's own AXIS_CANCEL (CarMarket.java:1139) or the
     // frame-14000 AXIS_CANCEL returns to the Garage with player.car set; read
-    // there because CMD_TESTDRIVE changes the section again.
-    c.check(testdrive_from == "java.game.Garage",
-            "back from the used dealer: actualState is java.game.Garage at the testdrive "
-            "cmd (got " + testdrive_from + ")");
+    // there because CMD_EVENTLIST changes the section again.
+    c.check(eventlist_from == "java.game.Garage",
+            "back from the used dealer: actualState is java.game.Garage at the eventlist "
+            "cmd (got " + eventlist_from + ")");
     c.check(player_car != nullptr, "buying the shown used car sets GameLogic.player.car");
 
     // Vehicle.java:49 holds the Chassis script object; its handle target is the
@@ -961,18 +965,20 @@ void game_init_check(Boot &boot, Checker &c)
                 process_world().body_count ==
                     2 * cars_with_bodies + (int)process_world().statics.size(),
             "world body_count counts both bodies of every car and the grounds (0x4f7830)");
-    // Track.java:291-299: the freeride race builds Track(game = the event's
+    // Track.java:291-309: the career race builds Track(game = the event's
     // careerGM, map = new GroundRef(td.map_id)).
     c.check(class_after == "java.game.Track",
-            "testdrive -> race reaches java.game.Track (got " + class_after + ")");
+            "eventlist race reaches java.game.Track (got " + class_after + ")");
     std::string game_after = "(none)", map_after = "(none)";
-    Object *map_object = nullptr;
+    Object *game_object = nullptr, *map_object = nullptr;
     if (have_state_after && state_after.kind == Value::Obj && state_after.obj) {
         Value gv, mv;
         std::string ferr;
         if (boot.vm()->get_instance_field(state_after.obj, "game", &gv, &ferr) &&
-            gv.kind == Value::Obj && gv.obj)
+            gv.kind == Value::Obj && gv.obj) {
+            game_object = gv.obj;
             game_after = object_class(boot, gv.obj);
+        }
         ferr.clear();
         if (boot.vm()->get_instance_field(state_after.obj, "map", &mv, &ferr) &&
             mv.kind == Value::Obj && mv.obj) {
@@ -980,8 +986,9 @@ void game_init_check(Boot &boot, Checker &c)
             map_object = mv.obj;
         }
     }
-    c.check(game_after == "java.game.Freeride",
-            "Track.game is the freeride gamemode (got " + game_after + ")");
+    c.check(game_object && is_a(boot, game_object->cls, "java.game.Gamemode"),
+            "Track.game is a non-null java.game.Gamemode (got " + game_after + ")");
+    std::printf("  gamemode: %s\n", game_after.c_str());
     c.check(map_after == "java.util.resource.GroundRef",
             "Track.map is a non-null GroundRef (got " + map_after + ")");
 
@@ -1006,7 +1013,7 @@ void game_init_check(Boot &boot, Checker &c)
                 mt.instances, mt.phys_chunks, mt.faces, mt.verts);
     c.check(map_err.empty(), "Track.map type-1 blob tree parses" +
                                  (map_err.empty() ? std::string() : ": " + map_err));
-    c.check(mt.faces > 0, "freeride map has ground triangles (" +
+    c.check(mt.faces > 0, "map has ground triangles (" +
                               std::to_string(mt.faces) + ")");
     // Corpus rows from notes/19 §7, keyed by the package leaf name.
     struct MapRow {
@@ -1031,14 +1038,14 @@ void game_init_check(Boot &boot, Checker &c)
     if (row) {
         c.check(mt.instances == row->instances && mt.phys_chunks == row->phys_chunks &&
                     mt.faces == row->faces && mt.verts == row->verts,
-                std::string("freeride map ") + row->name + " totals match the corpus table");
+                std::string("map ") + row->name + " totals match the corpus table");
     } else {
-        // INVENTED: the shipped freeride event picks multibot/maps/A1Ring.rpk,
-        // outside the card's four-map corpus; use the record layout instead:
+        // INVENTED: the shipped career event picks a map outside the card's
+        // four-map corpus; use the record layout instead:
         // Track.map must be the package's top type-1 record (id 1, notes/01).
         c.check(map_res && map_res->record && map_res->record->id == 1 &&
                     map_res->record->type == 1,
-                "freeride map record is the package's type-1 master (id 1)");
+                "map record is the package's type-1 master (id 1)");
         std::printf("  note: %s has no corpus table row (multibot map)\n", leaf.c_str());
     }
 
@@ -1087,17 +1094,75 @@ void game_init_check(Boot &boot, Checker &c)
                                        top - cm.bounds_min.y + 1.0f, &hit);
             if (floor_found) floor_y = hit.point.y;
         }
-        // INVENTED (fixture): Vehicle.create is called with the 0,0,0 of
-        // Vehicle.java:111, which is 16.9 m above the A1Ring soup at the map
-        // origin. A drop from there reaches the floor above the suspension
-        // ray's speed and tunnels past it (no capsule sensor bodies yet, card
-        // 146 "Not this card"), so start the car on the soup with the wheel 0
-        // ray just touching: the short part springs (rest 0.266, max_len =
-        // rest_len) cannot catch a 1 m drop.
-        if (floor_found && car_payload->sim && !car_payload->sim->wheels.empty()) {
-            const Wheel &w0 = car_payload->sim->wheels[0];
-            root->pos.y = floor_y + (w0.rest_ray() - w0.mount.y);
+        // Card 164 checks 1-3 at the drive start (before the 300 settle
+        // frames). The map script placed the car with Track.applyStartGrid
+        // (Track.java:2901-2941) -> GameRef.setMatrix -> type_car vf7 0x4a99b0.
+        // Check 1: the start grid is applied; startGridData holds pos/Ypr pairs.
+        Value gridv;
+        float grid[3] = {0.0f, 0.0f, 0.0f};
+        int grid_n = 0;
+        bool grid_pos_ok = false;
+        std::string gerr;
+        if (have_state_after && state_after.obj &&
+            boot.vm()->get_instance_field(state_after.obj, "startGridData", &gridv,
+                                          &gerr) &&
+            gridv.kind == Value::Obj && gridv.obj) {
+            Value sz;
+            if (rt->call_method(gridv.obj, "size", {}, &sz, &gerr) &&
+                sz.kind == Value::Int)
+                grid_n = sz.i;
+            Value el;
+            if (grid_n > 0 && rt->call_method(gridv.obj, "elementAt",
+                                              {Value::make_int(0)}, &el, &gerr) &&
+                el.kind == Value::Obj && el.obj) {
+                Value xv, yv, zv;
+                if (boot.vm()->get_instance_field(el.obj, "x", &xv, &gerr) &&
+                    boot.vm()->get_instance_field(el.obj, "y", &yv, &gerr) &&
+                    boot.vm()->get_instance_field(el.obj, "z", &zv, &gerr) &&
+                    xv.kind == Value::Float && yv.kind == Value::Float &&
+                    zv.kind == Value::Float) {
+                    grid[0] = xv.f;
+                    grid[1] = yv.f;
+                    grid[2] = zv.f;
+                    grid_pos_ok = true;
+                }
+            }
         }
+        float grid_dx = root->pos.x - grid[0], grid_dz = root->pos.z - grid[2];
+        float grid_gap = sqrtf(grid_dx * grid_dx + grid_dz * grid_dz);
+        std::printf("  start grid: %d element(s), grid %.3f %.3f %.3f, car_root "
+                    "%.3f %.3f %.3f, xz gap %.3f m\n",
+                    grid_n, (double)grid[0], (double)grid[1], (double)grid[2],
+                    (double)root->pos.x, (double)root->pos.y,
+                    (double)root->pos.z, (double)grid_gap);
+        c.check(grid_n > 0 && grid_pos_ok && grid_gap <= 3.0f,
+                "the script placed the car on Track.startGridData[0] xz (gap " +
+                    std::to_string((double)grid_gap) +
+                    " m; 0x4a99b0 shifts only by the wheel-contact centroid)");
+        // Check 2: no other car root is stacked on the player's; every car body
+        // starts at the origin and only setMatrix moves it.
+        int near_roots = 0;
+        std::vector<game::CarData *> start_payloads = game::car_payloads();
+        std::printf("  car roots:");
+        for (game::CarData *cp : start_payloads) {
+            RigidBody *b = cp->root_body;
+            if (!b || b == root) continue;
+            std::printf(" %.2f/%.2f/%.2f", (double)b->pos.x, (double)b->pos.y,
+                        (double)b->pos.z);
+            if (!(b->def.inv_mass > 0.0f) || b->parent) continue;
+            float dx = b->pos.x - root->pos.x, dz = b->pos.z - root->pos.z;
+            if (sqrtf(dx * dx + dz * dz) < 2.0f) near_roots++;
+        }
+        std::printf(" (player %.2f/%.2f/%.2f)\n", (double)root->pos.x,
+                    (double)root->pos.y, (double)root->pos.z);
+        c.check(near_roots == 0,
+                "no other car root body within 2 m of the player car_root (" +
+                    std::to_string(near_roots) + " stacked)");
+        // Check 3: the placed car was slept by 0x506d90, so it neither fell nor
+        // got thrown: it is at rest at the drive start.
+        c.check(vec_length(root->vel) < 0.5f,
+                "placed car is at rest at the drive start (|vel| " +
+                    std::to_string((double)vec_length(root->vel)) + " m/s)");
         const float y_before = root->pos.y;
         unsigned rejects_before = gate_rejects(car_payload->sim.get());
         boot.runtime()->queue_event(car_res, nullptr, 0x10,
@@ -1139,7 +1204,7 @@ void game_init_check(Boot &boot, Checker &c)
             if (b == root) awake = true;
         c.check(awake,
                 "queued \"wakeup\" puts car_root back in the active body list (0x507060)");
-        c.check(floor_found, "freeride map soup lies under the car start");
+        c.check(floor_found, "map soup lies under the car start");
 
         // 0x47be30 drive callback: the woken car is carried by its suspension
         // springs (Vehicle__update 0x49c8e0) instead of the car_root box.
@@ -1598,10 +1663,22 @@ void game_init_check(Boot &boot, Checker &c)
     // Up (0xc8) -> axis 28 throttle, Left/Right (0xcb/0xcd) -> axis 1 steer.
     if (car_payload && car_payload->root_body) {
         RigidBody *root = car_payload->root_body;
-        // INVENTED harness: spawn pose, restored before the independent
-        // semi-auto run (the earlier launches reach the map edge).
+        // INVENTED harness: spawn pose, restored before the runs that must
+        // start from the grid (the launches above leave the start straight).
         const Vec3 semi_spawn = root->pos;
         const Quat semi_rot = root->rot;
+        auto restore_spawn = [&]() {
+            root->pos = semi_spawn;
+            root->rot = semi_rot;
+            root->vel = Vec3{0.0f, 0.0f, 0.0f};
+            root->angular_momentum = Vec3{0.0f, 0.0f, 0.0f};
+            root->pos_correction = Vec3{0.0f, 0.0f, 0.0f};
+            if (sim)
+                for (Wheel &w : sim->wheels) {
+                    w.spin = 0.0f;
+                    w.kappa_prev = 0.0f;
+                }
+        };
         int fr = kFrames + 300;
         auto key = [](int dik, bool down) {
             g_input->devices[0].raw.keys[dik] = down ? 0x80 : 0;
@@ -1673,6 +1750,9 @@ void game_init_check(Boot &boot, Checker &c)
         // Card 152: auto gearbox + auto clutch from standstill (0x497930 /
         // 0x4977a0). INVENTED fixture: 0x4a4067 "reset" clears the gear and
         // the shaft speed, like the command Track.enter sends.
+        // INVENTED harness: the control launches above leave the grid, so the
+        // standstill launch starts from the spawn pose.
+        restore_spawn();
         game::car_command(*rt, car_res, 0x10, Value::make_str("reset"));
         int settle = 0;
         while (std::fabs(car_payload->shaft_speed) > 1.0f && settle < 300) {
@@ -1696,7 +1776,7 @@ void game_init_check(Boot &boot, Checker &c)
                                         ? ground->def.shape.mesh.get()
                                         : nullptr;
         const Pose soup_pose = ground ? ground->pose() : Pose{};
-        int soup_passed = 0;
+        int soup_passed = 0, soup_first = -1;
         float min_margin = 1e30f;
         // Card 161 check 1: pacejka slot 13 is gm+0x54 + W+0x74 (0x49ef5a).
         float rr_ground = ground ? ground->def.shape.rolling_resistance : 0.0f;
@@ -1729,7 +1809,10 @@ void game_init_check(Boot &boot, Checker &c)
                                  10.0f, &rh)) {
                     float margin = root->pos.y - rh.point.y;
                     if (margin < min_margin) min_margin = margin;
-                    if (!(rh.point.y < root->pos.y)) soup_passed++;
+                    if (!(rh.point.y < root->pos.y)) {
+                        soup_passed++;
+                        if (soup_first < 0) soup_first = i;
+                    }
                 }
             }
             // 0x4b19a0 mean driven-wheel slip, one value per frame.
@@ -1756,8 +1839,8 @@ void game_init_check(Boot &boot, Checker &c)
                     gate_rejects(sim) - launch_rejects0);
         if (min_margin < 1e29f)
             std::printf("  hull vs soup (0x4feb20/0x4fc7e0): %d frame(s) with the soup "
-                        "above car_root, min soup margin %.3f m\n",
-                        soup_passed, (double)min_margin);
+                        "above car_root, first at frame %d, min soup margin %.3f m\n",
+                        soup_passed, soup_first, (double)min_margin);
         else
             std::printf("  hull vs soup (0x4feb20/0x4fc7e0): no soup hit under car_root "
                         "over the 900 frames\n");
@@ -1844,9 +1927,11 @@ void game_init_check(Boot &boot, Checker &c)
                  0.10471976f / (car_payload->ratio[1] * car_payload->rearend_ratio) *
                  car_payload->wheels[0].radius;
         std::printf("  auto drive: max gear %d, final speed %.2f m/s (v1 %.2f), mean "
-                    "driven kappa %.3f over the last %d frames (0x4b19a0)\n",
+                    "driven kappa %.3f over the last %d frames, pos %.1f %.1f %.1f "
+                    "(0x4b19a0)\n",
                     max_gear, (double)final_speed, (double)v1,
-                    (double)(kappa_n ? kappa_sum / (float)kappa_n : 0.0f), kappa_n);
+                    (double)(kappa_n ? kappa_sum / (float)kappa_n : 0.0f), kappa_n,
+                    (double)root->pos.x, (double)root->pos.y, (double)root->pos.z);
         c.check(max_gear >= 2, "auto gearbox reaches 2nd gear without a gear key "
                                "(0x497930, got " + std::to_string(max_gear) + ")");
         c.check(v1 > 0.0f && final_speed > v1,
@@ -1928,18 +2013,9 @@ void game_init_check(Boot &boot, Checker &c)
         // INVENTED harness: Track.enter sends "transmission " +
         // Config.player_transmission (default 1); 5 is the shipped
         // Vehicle.TRANSMISSION_SEMIAUTO.
-        // INVENTED harness: the 1200 frames above have carried the car to the
-        // edge of the test-track ground, so put it back at the spawn pose.
-        root->pos = semi_spawn;
-        root->rot = semi_rot;
-        root->vel = Vec3{0.0f, 0.0f, 0.0f};
-        root->angular_momentum = Vec3{0.0f, 0.0f, 0.0f};
-        root->pos_correction = Vec3{0.0f, 0.0f, 0.0f};
-        if (sim)
-            for (Wheel &w : sim->wheels) {
-                w.spin = 0.0f;
-                w.kappa_prev = 0.0f;
-            }
+        // INVENTED harness: the 1200 frames above have carried the car away
+        // from the grid, so put it back at the spawn pose.
+        restore_spawn();
         game::car_command(*rt, car_res, 0x10, Value::make_str("transmission 5"));
         c.check((car_payload->flags & 0x70u) == 0x60u,
                 "transmission 5 sets the semi-auto flags 0x20|0x40 (got " +

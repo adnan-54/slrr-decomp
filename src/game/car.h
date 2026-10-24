@@ -272,6 +272,12 @@ bool load_part_cfg(Runtime &rt, Runtime::Resource *r, CfgFile *cfg,
 // (0x4bf4e0 sets M+0xff0; -1 = no body line).
 void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
                        Runtime::Resource *type, const std::string &params);
+// 0x4a99b0 type_car vf7 (reached from GameRef.setMatrix 0x4db950 -> 0x4eb3f0):
+// place the car so its tyres touch `pos` with orientation `ypr` (yaw, pitch,
+// roll), zero its velocities and put it to sleep (0x506d90). Returns false when
+// the resource is not a car payload (g_cars lookup).
+bool car_set_matrix(Runtime &rt, Runtime::Resource *car, const float pos[3],
+                    const float ypr[3]);
 // 0x4a2e60 type_car__vf14 EVENT_COMMAND (0x10) branch: "brake", "start",
 // "suspend", "wakeup", "reset". Returns 1 when the command was consumed (the
 // script handleEvent is then suppressed), 0 for anything else.
