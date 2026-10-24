@@ -463,7 +463,9 @@ void Runtime::bind(Handle *h, Resource *r)
     unlink(h);
     if (!r) return;
     h->target = r;
-    h->id = r->id;
+    // A record node's runtime id (+0x80) is the global registry<<16 | local id
+    // (0x51e860, notes/16); src keeps record ids local, so convert here.
+    h->id = r->record && r->package ? resources_->global_id(*r->package, r->id) : r->id;
     h->next = r->handles;
     if (r->handles) r->handles->prev = h;
     r->handles = h;
