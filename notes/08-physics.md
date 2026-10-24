@@ -87,3 +87,32 @@ Matrices are 3 rows × stride 4 floats (`Mat34`, 12 floats), quaternions `{x,y,z
 | 0x202 | `0x509f10` / `0x509130` (returns *squared* distance → `sqrt`, negated if inside) |
 | 0x203, 0x302 | `0x50aa60` then segment/plane clip code (`0x50e2d0` transforms points between the two bodies' frames) |
 Returns signed separation (negative = penetration); unknown kind pairs return 0. `FUN_00506c00(a, b, out, t)` = state interpolation (`pos = a·t + b·(1-t)`, quaternion slerp `FUN_005681c0`, matrix rebuilt, time lerped). `FUN_004f9750(body)` = collision-event filter: body not flagged `0x200000`, speed² ≤ 10000 (100 m/s), and some attached game object (type `0xa0000000`) with physics data whose flags `&0xa0 == 0`.
+
+## Process-wide world and `Game__physicsTick` 0x47e050 (2026-10-24, card 138/139 RE)
+**Owner.** One static `PhysicsWorld` at **0x60251c** (`g_physWorld` = `PTR_DAT_005dadf0`, bytes `1c 25 60 00`). Created once at engine startup by `Game__init` **0x47cd20** (only caller of `PhysicsWorld__init` 0x4fffb0): sets `game+0x27c = 1.0f` (time warp; `System.timeWarp` 0x4e5880 -> 0x47dfd0 changes it), zeroes the game callback counters `+0x214/+0x218/+0x21c`, then `PhysicsWorld__init`. Not per track/map: the world exists from boot, before any script runs.
+**`PhysicsWorld__init` 0x4fffb0** (float slots `w[i]`): `w[0]=0` simulated time (read by `System.simTime` 0x4e5810), `w[1]=0` step accumulator, `w[2]=w[3]=0.02` (0x3ca3d70a; `w[2]` = nominal sub-step read by 0x47e050 at `+8`, `w[3]` = last step dt), `w[8]=0` (avg ms per sim-second), `w[0x1e]=w[0x1f]=1` (+0x78 gravity on, +0x7c), gravity `w[0x71..0x73]=(0,-9.81 [0xc11cf5c3],0)`, `w[0xd9]=1.2935` (0x3fa57a78), plane point `w[0xda..0xdc]=(0,-7,0)`, normal `w[0xdd..0xdf]=(0,-1,0)`, `w[0xe5]=300`, `w[0xe6]=550`; two static root bodies from `0x4f7d60(0,…)` + `PhysicsWorld__addBody` 0x4f7830, `w[0x21]` (+0x84, parent of all dynamic bodies) and `w[0x22]` (+0x88), each with def flag `|= 0x100`. `DAT_0060250c/10/14 = &w[0xec]/&w[0xe8]/&w[0xea]`.
+**`PhysicsWorld__addBody` 0x4f7830**: alloc 0x218 body (ctor 0x4f72e0), `0x501f30(body, def, a, b)`, `world+0x54 += 1`; if root `w[0x21]` exists and `def+0xb4 & 4 == 0`: **head insert** into root's child list (`body+0x28 = root+0x24; root+0x24 = body; body+0x20 = root`). So step order = reverse creation order (src `World::add_body` appends: differs). Callers: `Vehicle__createCar` 0x4992e0 (no direct callers: reached through a vtable), `PhysicsRef` attach 0x4e8a50 (`addBody` then 0x524620 binds the body to the script resource), and 0x4fffb0.
+**`PhysicsWorld__step` 0x502060 prologue/epilogue** (ECX = world): `t = dt + w[1]; w[1] = t; if (t < 0.0001) return 0;` (dt accumulates, nothing runs); if `DAT_006052ac` (set by 0x4f8450 at the start of every 0x47e050 tick) clear `+0xb8/+0xbc/+0xc0` of every node in contact list `w[0x76]` and clear the flag; `w[1] -= t` (back to 0); `w[3] = t`; body of the step as above with dt = `t`; on exit `w[0] += t`, `DAT_006028e4 += (iters − DAT_006028e4)·0.1`, return 1. Between, 0x47be30(t) (ECX = game) walks the game mode-9 callback list (`registerCallback(h, 9)` 0x47d670, count `game+0x218`) and calls 0x47be90 = native `vf+0x30(obj+0x4c, t)` of the bound object or script method `"drive"`; dead nodes (`+0x2c == 0`) are deleted.
+**`Game__physicsTick` 0x47e050** (ECX = game, called by the main loop every >15 ms control step):
+```
+step = min(game+0x27c * frameDt[0x5f0c88], 0.1f [0x5da468])
+ctrlAcc[0x5f0c8c] += step
+if (ctrlAcc > 0.0001f [0x5938c4]) { 0x47bc20(ctrlAcc); ctrlAcc = 0 }   // mode-8 list (count game+0x214): 0x47bc80 = native vf+0x2c or script "control"(dt)
+perfStart(0)                                                         // 0x56a230
+done = 0; nominal = world->w[2]                                       // 0.02
+if (!quit[0x5f0c74]) { DAT_006052ac = 1 /*0x4f8450*/;
+  while (step > 0) { if (quit) break;
+    sub = step;
+    if (step >= nominal) sub = (step - nominal > nominal) ? nominal : step * 0.5f;  // last split halved
+    if (!world->step(sub)) break;          // 0x502060
+    step -= sub; done += sub;
+    Game__runTimers();                      // 0x47b700
+    Game__flushDeferred();                  // 0x47d070
+    DAT_005f0c70 = 0; }
+}
+if (!(done > 0)) Game__flushDeferred();     // exactly one flush when nothing stepped
+frameCounter[0x5f1e40] = (frameCounter + 1) % 1000 (cmovge at 999+1)
+if (done > 0) world->w[8] += (perfMs(0)/done - w[8]) * 0.1   // 0x56a260, double 0.1 @0x59a460
+camera follow snapshots: for i = DAT_005f1e44-1 .. 0 (entries 0x58 @0x5fe120): dead handle -> drop entry; else body = GameRef__getPhysBody 0x4eabc0, copy active-state pos (+0x64), vel (+0x70), rotation rows (+0xa4/+0xb4/+0xc4)
+```
+Consequences for src: with a 0.1 s cap and 0.02 nominal step 0.1 splits as 0.02, 0.02, 0.02 (remaining-nominal > nominal), then 0.04 → halved 0.02, then 0.02 → halved 0.01, then 0.01 (< nominal) = 6 sub-steps (float rounding can shift the boundary cases). Timers and deferred flush run after **each** sub-step and see the world time `w[0]` that sub-step produced. `System.simTime` = `w[0]` (float), not a separate clock. src today: `natives::advance_sim` adds the whole capped step to a double `sim_seconds`, `FrameLoop::frame` calls flush, advance, run_timers once (boot.cpp:194-198). Not reached by vmboot so far and not ported by 138/139: the mode-8/9 callback consumers (0x47bc20/0x47bc80, 0x47be30/0x47be90; shipped sl scripts never call `registerCallback`, natives register the car), perf timers, camera snapshots, car body creation (`Vehicle__createCar` via vtable), native ground (`type_ground__vf3` 0x4bade0).
