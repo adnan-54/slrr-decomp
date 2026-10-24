@@ -178,3 +178,30 @@ Queue node: `ResourceRefDLNode__vf0` 0x47b4b0 unlinks its handle from R (if stil
 - `Game__queueDelete` 0x47b970 ← `Handle__queueDelete` 0x4e9450 (`id != 0 && res != 0`), plus engine code: `type_car__vf14` 0x4a2e60, 0x4be600, 0x4becc0, `type_part__vf4` 0x4c3a50, `type_part__vf14` 0x4c4400, `GameRef__getPhysBody` 0x4eabc0, `ResourceInstance_Render__vf12` 0x51d550.
 - `Handle__queueDelete` 0x4e9450 ← natives `ResourceRef.destroy` 0x4e32b0, `Viewport.destroy` 0x4e6c90, `Camera.destroy` 0x4d8fc0 (an extra 0x4e9450 call when the camera typed `+0x110` id is a runtime id; its ECX not traced), and 44 engine functions (native `type_*` handlers vf4/vf13/vf14 of BOT, building, button, camera, car, cursor, ground, object, part, ped, player, trigger, trlight; `Camera__chaseAndDebugHud` 0x47f980; 23 unnamed: 0x416400 0x417080 0x4177a0 0x41cd70 0x41e580 0x41ed70 0x47c030 0x485600 0x487740 0x4877a0 0x488ae0 0x4a0c10 0x4ad330 0x4ad770 0x4ae5c0 0x4b1d50 0x4bdb90 0x4c2b10 0x4c6140 0x4c72d0 0x4c75a0 0x4d1fe0 0x4d34b0 — none is in `analysis/natives.tsv`). UNRESOLVED: whether any native reaches those unnamed helpers.
 So the only script natives that must go through the queues are `ResourceRef.unload` (type 1), `ResourceRef.destroy`, `Viewport.destroy` and `Camera.destroy` (src: engine stub). Card 074.
+
+## 5. How far the vmboot flow gets (2026-10-24, after card 136)
+vmboot 30000 frames: MainMenu -> NEW CAREER -> Garage -> used dealer -> buy -> Garage ->
+CMD_TESTDRIVE (134) -> `EventList(MODE_FREERIDE)` (Garage.java:1598-1600). 0 failed threads,
+but `final actualState` stays `java.game.EventList`. Cause is the **vmboot driver, not the VM**:
+- `EventList implements GameState` has only `mode`/`eGen` + enter/exit (EventList.java:14-42);
+  the race UI and `osdCommand(int)` live in `Generator extends Dialog` (EventList.java:44+,
+  `eGen = new Generator(mode)` in enter). `CMD_RACE = 0x10E` is a Generator constant;
+  its button `button_gorace.addItem("", CMD_RACE)` (EventList.java:345) is created while
+  `osd.globalHandler = this` (Generator ctor), and Osd buttons get `globalHandler` as their
+  target (2.2.1 Osd.java:85,1052). The R hotkey also targets `this` = Generator (:156).
+- vmboot sends `osdCommand(0x10E)` to the EventList; `find_method` resolves it to
+  `java.lang.Object.osdCommand(I)V` (empty body, shipped Object.class), so THRD-EVENT-RACE
+  finishes `done` doing nothing. GameState (GameState.java) declares nothing. VM is right.
+- Probe (local vmboot patch, reverted): sending 0x10E to `EventList.eGen` instead reaches
+  `java.game.Track` at frame 20001, still 0 failed threads; Track.game = `java.game.Freeride`,
+  Track.map = `GroundRef`, Track.parentState = the EventList, `java.game.Track<..>` thread
+  waits in `GameType.run` line 157 (message loop), Navigator/Timer watcher threads sleep.
+  No `native not implemented` on the way (Track.enter's natives all exist).
+Next blocker after that (not a script failure, engine services missing): the car does not
+move. `Game__physicsTick` 0x47e050 sub-steps `PhysicsWorld__step` 0x502060 (step size
+`*(PTR_005dadf0+8)`, last split halved), each followed by `0x47b700` timers +
+`0x47d070` deferred flush, then refreshes the per-camera follow snapshots (`DAT_005f1e44`
+list, `GameRef__getPhysBody` 0x4eabc0 -> body+0xb4 frame `+0x20c*0xd4`). src
+`natives::advance_sim` ports only the clock part; there is no process-wide physics world
+and no native ground object (`type_ground__vf3` 0x4bade0, notes/19 §1/§4), so the player
+car is never put into a world nor integrated. Card 137 = driver fix + hard check.
