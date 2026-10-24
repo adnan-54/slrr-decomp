@@ -18,7 +18,11 @@ Co-Authored-By: DeepSeek V4 Flash <noreply@deepseek.com>"; fi
   if ! git rev-parse -q --verify card/$id >/dev/null || [ "$(git rev-list --count main..card/$id)" = 0 ]; then
     echo "FAIL $id: no commit on card/$id"; git status --short | head; exit 1; fi
   if git show card/$id:"$card" | grep -q "^status: blocked"; then echo "BLOCKED $id: card/$id kept unmerged (agent hit its stop rule)"; exit 1; fi
+  # check on the card branch first: a red card must never land on main
+  git switch -q card/$id
+  if ! make -C src clean check > "${LOGDIR:-/tmp}/ds-check-$id.txt" 2>&1; then
+    git switch -q main; echo "FAIL $id: make check (card/$id kept unmerged)"; tail -20 "${LOGDIR:-/tmp}/ds-check-$id.txt"; exit 1; fi
+  git switch -q main
   if ! git merge -q --ff-only card/$id && ! git merge -q --no-edit card/$id; then echo "FAIL $id: merge"; exit 1; fi
-  if ! make -C src clean check > "${LOGDIR:-/tmp}/ds-check-$id.txt" 2>&1; then echo "FAIL $id: make check"; tail -20 "${LOGDIR:-/tmp}/ds-check-$id.txt"; exit 1; fi
   echo "OK $id"
 done
