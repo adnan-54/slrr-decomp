@@ -140,6 +140,35 @@ bool menu_probe(Boot &boot, int *show, int *seek, std::string *err)
     return true;
 }
 
+// INVENTED: stands in for a player picking the car this check is written for.
+// True when the dealer's shown car (CarMarket.cars[curcar]) has a Duhen_D18V_block
+// in its chassis slot 401 (_main_200S.cfg:387). Chassis.addStockParts rolls each
+// stock part at random (Chassis.java:931-937), so some used cars come without
+// an engine and other models carry other blocks.
+bool shown_car_has_engine(Boot &boot, Object *market)
+{
+    std::string e;
+    Value cars, cur;
+    if (!boot.vm()->get_instance_field(market, "cars", &cars, &e) || cars.kind != Value::Array ||
+        !cars.arr)
+        return false;
+    if (!boot.vm()->get_instance_field(market, "curcar", &cur, &e) || cur.kind != Value::Int ||
+        cur.i < 0 || (size_t)cur.i >= cars.arr->elems.size())
+        return false;
+    const Value &car = cars.arr->elems[(size_t)cur.i];
+    if (car.kind != Value::Obj || !car.obj) return false;
+    Runtime *rt = boot.runtime();
+    Runtime::Handle *h = rt->handle(car.obj);
+    game::PartData *pd = h && h->target ? game::part_data(*rt, h->target) : nullptr;
+    if (!pd) return false;
+    for (game::Slot &sl : pd->slots)
+        if (sl.id == 401)
+            return sl.attached &&
+                   object_class(boot, sl.attached).find("Duhen_D18V_block") !=
+                       std::string::npos;
+    return false;
+}
+
 // Spawned like the runtime's THRD-CREATE threads so a dialog that sleeps or waits
 // inside the handler continues in the frame loop instead of blocking here.
 bool osd_command(Boot &boot, Object *receiver, int cmd, const char *thread_name,
@@ -466,6 +495,16 @@ void game_init_check(Boot &boot, Checker &c)
                 std::printf("  garage cmd skipped: actualState is %s\n",
                             dealer_from.c_str());
             }
+        }
+        if (i >= kBuyCmd - 2000 && i < kBuyCmd && (i - (kBuyCmd - 2000)) % 100 == 0) {
+            // Browse right (CarMarket.java:824-827, Input.AXIS_MENU_RIGHT 58) until
+            // the shown car has the D18V block; stops at the first car that has it.
+            Value st;
+            std::string berr;
+            if (actual_state(boot, &st, &berr) &&
+                object_class(boot, st.obj) == "java.game.CarMarket" &&
+                !shown_car_has_engine(boot, st.obj))
+                osd_command(boot, st.obj, 58, "THRD-MARKET-BROWSE", &berr);
         }
         if (i == kBuyCmd || i == kBackCmd) {
             // CarMarket.java:817-867,1013-1153: AXIS_SELECT buys the shown car
