@@ -1,7 +1,7 @@
 ---
 id: 132
-status: todo
-branch:
+status: implemented
+branch: card/132
 depends: [131]
 ---
 # compiler stage 4a: TREE codegen basics + per-body comparison

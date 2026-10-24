@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include <algorithm>
 
@@ -69,8 +70,6 @@ const char *primitive_desc(const std::string &s)
     return nullptr;
 }
 
-bool primitive_type(const std::string &s) { return primitive_desc(s) != nullptr; }
-
 bool object_desc(const std::string &d)
 {
     return d.size() >= 2 && d[0] == 'L' && d[d.size() - 1] == ';';
@@ -79,6 +78,17 @@ bool object_desc(const std::string &d)
 std::string desc_class(const std::string &d)
 {
     return object_desc(d) ? d.substr(1, d.size() - 2) : std::string();
+}
+
+// Descriptor -> CONST_CLASS naming: "[Ljava.lang.String;" -> "[java.lang.String"
+// (Bot.class: array length memberref class).
+std::string desc_ref_name(const std::string &d)
+{
+    size_t n = 0;
+    while (n < d.size() && d[n] == '[') n++;
+    std::string base = d.substr(n);
+    if (object_desc(base)) base = desc_class(base);
+    return d.substr(0, n) + base;
 }
 
 // Parameter descriptors of a method signature, e.g. "(IF)V" -> {"I","F"}.
@@ -138,6 +148,31 @@ std::string unquote(const std::string &raw)
     return out;
 }
 
+// Float literal value as the exe computes it: lexer 0x5523f0 (token 0x14c)
+// -> sscanf "%f" 0x5693c0 -> the exe's own scanf 0x527140 -> 0x527530: int
+// part as int32 -> float, then per fraction digit v += d * p, p *= 0.1f, all
+// in single precision (SSE). Stops at the first non-digit ('e', 'f').
+float parse_float(const std::string &text)
+{
+    const char *p = text.c_str();
+    bool neg = *p == '-';
+    if (neg) p++;
+    uint32_t ip = 0; // converted as unsigned (sign-bit table at 0x593fb0)
+    while (*p >= '0' && *p <= '9') ip = ip * 10u + (uint32_t)(*p++ - '0');
+    float v = (float)(double)ip;
+    if (*p == '.') {
+        p++;
+        const float tenth = 0.1f;
+        float scale = tenth;
+        while (*p >= '0' && *p <= '9') {
+            float d = (float)(*p++ - '0') * scale;
+            scale = scale * tenth;
+            v = v + d;
+        }
+    }
+    return neg ? -v : v;
+}
+
 struct ResourceLit {
     std::string name; // "parts\engines\Foo.rpk"
     uint32_t id = 0;
@@ -185,9 +220,22 @@ private:
     ClassUnit u_;
     ClassSym self_;
     std::map<std::string, int> intern_;
-    std::vector<std::vector<std::pair<std::string, std::string>>> scopes_;
+
+    struct LocalSym {
+        std::string name, desc;
+        int slot = 0;
+    };
+    std::vector<std::vector<LocalSym>> scopes_;
     std::vector<int> scope_next_; // next free local slot per open scope
     int max_slots_ = 0;
+
+    // Parsed bodies, kept for the codegen pass (stage 4).
+    std::vector<std::vector<BodyAst>> field_ast_;
+    std::vector<BodyAst> method_ast_;
+    std::vector<bool> method_has_body_;
+    std::vector<int> method_locals_;
+    bool cur_ctor_ = false;
+    bool cur_static_ = false;
 
     // ---- constants -----------------------------------------------------
 
@@ -267,6 +315,12 @@ private:
         return idx;
     }
 
+    // Body constants are created in two walks of the codegen (Axis_FL_door:
+    // member/class refs in postfix emission order, then string literals,
+    // resources and by-name member/method names). dry_ = first walk.
+    bool dry_ = false;
+    int lit_str(const std::string &s) { return dry_ ? 0 : add_str(s); }
+
     // ---- type names ----------------------------------------------------
 
     std::string resolve_class(const std::string &name) const
@@ -327,27 +381,38 @@ private:
                                std::string *owner) const;
     const MethodSym *find_method(const std::string &cls, const std::string &name,
                                  const std::vector<std::string> &args,
-                                 std::string *owner) const;
+                                 std::string *owner, bool *exact = nullptr) const;
 
     bool local_type(const std::string &name, std::string *desc) const
     {
         for (size_t i = scopes_.size(); i-- > 0;)
             for (auto it = scopes_[i].rbegin(); it != scopes_[i].rend(); ++it)
-                if (it->first == name) {
-                    *desc = it->second;
+                if (it->name == name) {
+                    *desc = it->desc;
                     return true;
                 }
         return false;
     }
-    void declare_local(const std::string &name, const std::string &desc)
+    bool local_slot(const std::string &name, int *slot) const
+    {
+        for (size_t i = scopes_.size(); i-- > 0;)
+            for (auto it = scopes_[i].rbegin(); it != scopes_[i].rend(); ++it)
+                if (it->name == name) {
+                    *slot = it->slot;
+                    return true;
+                }
+        return false;
+    }
+    int declare_local(const std::string &name, const std::string &desc, int slot = -1)
     {
         if (scopes_.empty()) {
             scopes_.push_back({});
             scope_next_.push_back(0);
         }
-        scopes_.back().push_back({name, desc});
-        int slot = scope_next_.back()++;
+        if (slot < 0) slot = scope_next_.back()++;
+        scopes_.back().push_back({name, desc, slot});
         if (slot + 1 > max_slots_) max_slots_ = slot + 1;
+        return slot;
     }
     void push_scope()
     {
@@ -365,11 +430,30 @@ private:
 
     // ---- constant collection ------------------------------------------
 
-    void expr(const Expr &e);
-    void emit_member(const Expr &e);
-    void emit_call(const Expr &e);
-    void scan_stmt(const Stmt &s);
-    void scan_stmts(const std::vector<std::unique_ptr<Stmt>> &stmts);
+    void collect_types(const Expr &e);
+    void collect_types_stmt(const Stmt &s);
+    void scan_locals_stmt(const Stmt &s);
+
+    // ---- TREE codegen --------------------------------------------------
+
+    void ins(Body *b, uint8_t op, int line, uint32_t operand = 0);
+    void patch_jump(Body *b, size_t at, size_t target);
+    void gen_expr(const Expr &e, Body *b);
+    void gen_member_path(const Expr &e, Body *b);
+    void gen_call(const Expr &e, Body *b, bool value);
+    void gen_stmt(const Stmt &s, Body *b);
+    void gen_stmts(const std::vector<std::unique_ptr<Stmt>> &stmts, Body *b);
+    void gen_field_init(const BodyAst &ast, int line, Body *b);
+    void setup_method_scopes(const MethodDecl &m);
+    void gen_method(const MethodDecl &m, const BodyAst &ast, Body *b);
+    void gen_live_run(Body *b, int line);
+    std::vector<int> live_slots() const;
+    const MethodSym *resolve_call(const Expr &e, std::string *cls, bool *exact) const;
+    bool simple_receiver(const Expr &e) const;
+    int chain_len(const Expr &e) const;
+    bool typed_arg(const Expr &e) const;
+    int node_kind(const Expr &e) const;
+    int reduce_line(const Stmt &s) const;
 };
 
 void Emitter::build_self_sym()
@@ -417,8 +501,9 @@ const FieldSym *Emitter::find_field(const std::string &cls, const std::string &n
 
 const MethodSym *Emitter::find_method(const std::string &cls, const std::string &name,
                                       const std::vector<std::string> &args,
-                                      std::string *owner) const
+                                      std::string *owner, bool *exact_out) const
 {
+    if (exact_out) *exact_out = false;
     const MethodSym *fallback = nullptr;
     std::string fallback_owner;
     std::string cur = cls;
@@ -435,6 +520,7 @@ const MethodSym *Emitter::find_method(const std::string &cls, const std::string 
                 if (args[i].empty() || ps[i] != args[i]) exact = false;
             if (exact) {
                 if (owner) *owner = cur;
+                if (exact_out) *exact_out = true;
                 return &*it;
             }
             if (!fallback) {
@@ -587,166 +673,154 @@ std::string Emitter::infer(const Expr &e) const
     return std::string();
 }
 
-void Emitter::emit_member(const Expr &e)
+// 0x11 operand: number of segments of a dotted name chain, the invoked
+// method included (Part.class: drag_matrix.pos.toString() -> 3).
+int Emitter::chain_len(const Expr &e) const
 {
-    if (!e.kids.empty()) {
-        const Expr &recv = *e.kids[0];
-        std::string cls;
-        if (class_receiver(recv, &cls)) {
-            std::string owner;
-            if (const FieldSym *f = find_field(cls, e.text, &owner))
-                add_member(cls, e.text, f->desc);
-        } else {
-            std::string rd = infer(recv);
-            if (!rd.empty() && rd[0] == '[') {
-                if (e.text == "length") add_member(rd, "length", "I");
-            } else {
-                std::string c = desc_class(rd);
-                if (!c.empty()) {
-                    std::string owner;
-                    if (const FieldSym *f = find_field(c, e.text, &owner))
-                        add_member(c, e.text, f->desc);
-                }
-            }
-        }
-    }
-    for (const auto &k : e.kids) expr(*k);
+    return e.kind == ExprKind::Member && !e.kids.empty() ? 1 + chain_len(*e.kids[0]) : 1;
 }
 
-void Emitter::emit_call(const Expr &e)
+bool Emitter::simple_receiver(const Expr &e) const
 {
-    std::string cls = fqn_;
+    if (e.kind == ExprKind::Name) return true;
+    if (e.kind == ExprKind::Member && !e.kids.empty()) return simple_receiver(*e.kids[0]);
+    return false;
+}
+
+int Emitter::node_kind(const Expr &e) const
+{
+    switch (e.kind) {
+    case ExprKind::Null: return 0; // never used as a node kind
+    default: return (int)e.kind;
+    }
+}
+
+bool Emitter::typed_arg(const Expr &e) const
+{
+    switch (e.kind) {
+    case ExprKind::Name:
+    case ExprKind::Index:
+    case ExprKind::This:
+    case ExprKind::Null:
+    case ExprKind::IntLit:
+    case ExprKind::FloatLit:
+    case ExprKind::StringLit:
+    case ExprKind::CharLit:
+    case ExprKind::BoolLit:
+    case ExprKind::ResourceLit:
+        return true;
+    default:
+        return false;
+    }
+}
+
+const MethodSym *Emitter::resolve_call(const Expr &e, std::string *cls, bool *exact) const
+{
+    *exact = false;
+    std::string c = fqn_;
     size_t first_arg = 0;
     if (e.flag && !e.kids.empty()) {
         const Expr &recv = *e.kids[0];
         first_arg = 1;
-        if (recv.kind == ExprKind::This) {
-            cls = fqn_;
-        } else if (recv.kind == ExprKind::Super) {
-            cls = super_;
-        } else if (class_receiver(recv, &cls)) {
-            // static receiver
-        } else {
-            cls = desc_class(infer(recv));
-        }
+        if (recv.kind == ExprKind::This) c = fqn_;
+        else if (recv.kind == ExprKind::Super) c = super_;
+        else if (class_receiver(recv, &c)) { /* static receiver */ }
+        else c = desc_class(infer(recv));
     }
     std::vector<std::string> args;
     for (size_t i = first_arg; i < e.kids.size(); i++) args.push_back(infer(*e.kids[i]));
-    if (!cls.empty()) {
+    if (!c.empty()) {
         std::string owner;
-        if (const MethodSym *m = find_method(cls, e.text, args, &owner))
-            add_member(cls, e.text, m->sig);
+        if (const MethodSym *m = find_method(c, e.text, args, &owner)) {
+            *cls = c;
+            // Binding to a memberref needs every argument's type known when
+            // the call is compiled: operator, call and `new` results are not
+            // (canister_1 tHUF2USD(66+2), setMaxWear(kmToMaxWear(..)),
+            // Axis_200S addElement(new Integer(39)) go by name).
+            // Types must match the signature, except that an int literal
+            // fits a float parameter (Baiern_FL_butterfly_door tHUF2USD(242)
+            // binds), null fits any reference (i6_type_multi_fuel_rail
+            // addItem(.., null)) and object types are not compared (Axis_VT
+            // addElement(vmd) with a VehicleModel local binds).
+            // INVENTED: object assignability is not checked at all.
+            std::vector<std::string> ps = sig_params(m->sig);
+            *exact = ps.size() == args.size();
+            for (size_t i = first_arg; i < e.kids.size() && *exact; i++) {
+                const Expr &a = *e.kids[i];
+                const std::string &want = ps[i - first_arg];
+                if (!typed_arg(a)) *exact = false;
+                else if (args[i - first_arg] != want &&
+                         !(a.kind == ExprKind::IntLit && want == "F") &&
+                         !(a.kind == ExprKind::Null && (object_desc(want) || want[0] == '[')) &&
+                         !(object_desc(args[i - first_arg]) && object_desc(want)))
+                    *exact = false;
+            }
+            return m;
+        }
     }
-    for (const auto &k : e.kids) expr(*k);
+    return nullptr;
 }
 
-void Emitter::expr(const Expr &e)
+void Emitter::collect_types(const Expr &e)
 {
     switch (e.kind) {
-    case ExprKind::StringLit:
-        add_str(unquote(e.text));
-        break;
-    case ExprKind::ResourceLit: {
-        ResourceLit r = parse_resource(e.text);
-        add_resource(r.name, r.id);
-        break;
-    }
-    case ExprKind::Name: {
-        std::string ld;
-        if (local_type(e.text, &ld)) break;
-        std::string owner;
-        if (const FieldSym *f = find_field(fqn_, e.text, &owner)) {
-            add_member(f->is_static ? owner : fqn_, e.text, f->desc);
-            break;
-        }
-        std::string cls;
-        if (class_receiver(e, &cls)) add_class(cls);
-        break;
-    }
-    case ExprKind::Member:
-        emit_member(e);
-        break;
-    case ExprKind::Call:
-        emit_call(e);
-        break;
     case ExprKind::New:
     case ExprKind::NewArray:
-        add_class(type_ref_name(e.text));
-        for (const auto &k : e.kids) expr(*k);
-        break;
-    case ExprKind::Cast: {
-        TypeSpelling t = split_type(e.text);
-        if (t.dims > 0 || !primitive_type(t.base)) add_class(type_ref_name(e.text));
-        for (const auto &k : e.kids) expr(*k);
-        break;
-    }
+        add_str(type_desc(e.text));
+        for (const auto &k : e.kids) collect_types(*k);
+        return;
     case ExprKind::InstanceOf:
-        add_class(type_ref_name(e.text));
-        for (const auto &k : e.kids) expr(*k);
-        break;
-    case ExprKind::ClassLit:
-        if (!e.kids.empty()) {
-            std::string cls;
-            if (class_receiver(*e.kids[0], &cls)) add_class(cls);
-        }
-        for (const auto &k : e.kids) expr(*k);
-        break;
+        add_str(type_desc(e.text));
+        for (const auto &k : e.kids) collect_types(*k);
+        return;
     default:
-        for (const auto &k : e.kids) expr(*k);
-        break;
+        for (const auto &k : e.kids) collect_types(*k);
+        return;
     }
 }
 
-void Emitter::scan_stmt(const Stmt &s)
+void Emitter::collect_types_stmt(const Stmt &s)
 {
     switch (s.kind) {
     case StmtKind::Block:
-        push_scope();
-        for (const auto &child : s.stmts) scan_stmt(*child);
-        pop_scope();
+        for (const auto &child : s.stmts) collect_types_stmt(*child);
         break;
     case StmtKind::LocalDecl:
         for (const DeclAst &d : s.decls) {
-            if (d.init) expr(*d.init);
-            declare_local(d.name, type_desc(s.type + std::string((size_t)d.dims * 2, '[')));
+            add_str(type_desc(s.type + std::string((size_t)d.dims * 2, '[')));
+            if (d.init) collect_types(*d.init);
         }
         break;
     case StmtKind::If:
-        expr(*s.expr);
-        scan_stmt(*s.then_stmt);
-        if (s.else_stmt) scan_stmt(*s.else_stmt);
+        if (s.expr) collect_types(*s.expr);
+        if (s.then_stmt) collect_types_stmt(*s.then_stmt);
+        if (s.else_stmt) collect_types_stmt(*s.else_stmt);
         break;
     case StmtKind::While:
     case StmtKind::DoWhile:
-        if (s.expr) expr(*s.expr);
-        scan_stmt(*s.body);
+        if (s.expr) collect_types(*s.expr);
+        if (s.body) collect_types_stmt(*s.body);
         break;
     case StmtKind::For:
-        push_scope();
-        if (s.init_stmt) scan_stmt(*s.init_stmt);
-        for (const auto &e : s.init_exprs) expr(*e);
-        if (s.expr) expr(*s.expr);
-        for (const auto &e : s.update_exprs) expr(*e);
-        scan_stmt(*s.body);
-        pop_scope();
+        if (s.init_stmt) collect_types_stmt(*s.init_stmt);
+        for (const auto &e : s.init_exprs) collect_types(*e);
+        if (s.expr) collect_types(*s.expr);
+        for (const auto &e : s.update_exprs) collect_types(*e);
+        if (s.body) collect_types_stmt(*s.body);
         break;
     case StmtKind::Switch:
-        expr(*s.expr);
-        // Shipped: each case body is its own slot scope (Gates.osdCommand
-        // redeclares the same names in several cases, locals = max case).
+        if (s.expr) collect_types(*s.expr);
         for (const SwitchCase &c : s.cases) {
-            push_scope();
-            if (c.label) expr(*c.label);
-            for (const auto &child : c.stmts) scan_stmt(*child);
-            pop_scope();
+            if (c.label) collect_types(*c.label);
+            for (const auto &child : c.stmts) collect_types_stmt(*child);
         }
         break;
     case StmtKind::Expr:
     case StmtKind::Return:
-        if (s.expr) expr(*s.expr);
+        if (s.expr) collect_types(*s.expr);
         break;
     case StmtKind::CtorCall:
-        for (const auto &e : s.args) expr(*e);
+        for (const auto &e : s.args) collect_types(*e);
         break;
     case StmtKind::Empty:
     case StmtKind::Break:
@@ -755,9 +829,539 @@ void Emitter::scan_stmt(const Stmt &s)
     }
 }
 
-void Emitter::scan_stmts(const std::vector<std::unique_ptr<Stmt>> &stmts)
+void Emitter::scan_locals_stmt(const Stmt &s)
 {
-    for (const auto &s : stmts) scan_stmt(*s);
+    switch (s.kind) {
+    case StmtKind::Block:
+        push_scope();
+        for (const auto &child : s.stmts) scan_locals_stmt(*child);
+        pop_scope();
+        break;
+    case StmtKind::LocalDecl:
+        for (const DeclAst &d : s.decls)
+            declare_local(d.name, type_desc(s.type + std::string((size_t)d.dims * 2, '[')));
+        break;
+    case StmtKind::If:
+        if (s.then_stmt) scan_locals_stmt(*s.then_stmt);
+        if (s.else_stmt) scan_locals_stmt(*s.else_stmt);
+        break;
+    case StmtKind::While:
+    case StmtKind::DoWhile:
+        if (s.body) scan_locals_stmt(*s.body);
+        break;
+    case StmtKind::For:
+        push_scope();
+        if (s.init_stmt) scan_locals_stmt(*s.init_stmt);
+        if (s.body) scan_locals_stmt(*s.body);
+        pop_scope();
+        break;
+    case StmtKind::Switch:
+        for (const SwitchCase &c : s.cases) {
+            push_scope();
+            for (const auto &child : c.stmts) scan_locals_stmt(*child);
+            pop_scope();
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+// ---- TREE codegen ------------------------------------------------------
+
+void Emitter::ins(Body *b, uint8_t op, int line, uint32_t operand)
+{
+    Instr in;
+    in.op = op;
+    in.line = (uint16_t)line;
+    in.operand = operand;
+    in.has_operand = opcode_operand_size(op) > 0;
+    b->instrs.push_back(in);
+}
+
+void Emitter::patch_jump(Body *b, size_t at, size_t target)
+{
+    b->instrs[at].operand = (uint32_t)((int32_t)target - (int32_t)at);
+}
+
+std::vector<int> Emitter::live_slots() const
+{
+    std::vector<int> out;
+    if (!cur_static_) out.push_back(0);
+    for (const auto &scope : scopes_)
+        for (const LocalSym &s : scope) out.push_back(s.slot);
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+void Emitter::gen_live_run(Body *b, int line)
+{
+    std::vector<int> slots = live_slots();
+    for (auto it = slots.rbegin(); it != slots.rend(); ++it) ins(b, 0x03, line, (uint32_t)*it);
+}
+
+void Emitter::setup_method_scopes(const MethodDecl &m)
+{
+    scopes_.clear();
+    scope_next_.clear();
+    scopes_.push_back({});
+    size_t n = m.params.size();
+    cur_static_ = has_mod(m.modifiers, "static");
+    int base = cur_static_ ? 0 : 1; // `this` occupies slot 0
+    scope_next_.push_back(base + (int)n);
+    max_slots_ = base;
+    // FORMAT.md: parameters are numbered right-to-left, last parameter = slot 1.
+    for (size_t i = 0; i < n; i++)
+        declare_local(m.params[i].name, type_desc(m.params[i].type), base + (int)(n - 1 - i));
+}
+
+void Emitter::gen_member_path(const Expr &e, Body *b)
+{
+    if (e.kind == ExprKind::Name) {
+        gen_expr(e, b);
+        return;
+    }
+    if (e.kind != ExprKind::Member || e.kids.empty()) return;
+    gen_member_path(*e.kids[0], b);
+    const Expr &recv = *e.kids[0];
+    std::string cls;
+    int member = -1;
+    if (class_receiver(recv, &cls)) {
+        std::string owner;
+        if (const FieldSym *f = find_field(cls, e.text, &owner))
+            member = add_member(f->is_static ? owner : cls, e.text, f->desc);
+    } else {
+        std::string rd = infer(recv);
+        if (!rd.empty() && rd[0] == '[') {
+            if (e.text == "length") member = add_member(desc_ref_name(rd), "length", "I");
+        } else {
+            std::string c = desc_class(rd);
+            if (!c.empty()) {
+                std::string owner;
+                if (const FieldSym *f = find_field(c, e.text, &owner))
+                    member = add_member(f->is_static ? owner : c, e.text, f->desc);
+            }
+        }
+    }
+    if (member >= 0) ins(b, 0x1b, e.line, (uint32_t)member);
+    else ins(b, 0x1c, e.line, (uint32_t)lit_str(e.text));
+}
+
+void Emitter::gen_call(const Expr &e, Body *b, bool value)
+{
+    bool has_recv = e.flag && !e.kids.empty();
+    size_t first_arg = has_recv ? 1 : 0;
+    for (size_t i = first_arg; i < e.kids.size(); i++) gen_expr(*e.kids[i], b);
+    // 0x27 and 0x24 carry the line of the closing ')', the rest the call's
+    // first line (Baiern_CS_FL_McPherson_strut: setArm(..) over 3 lines).
+    int close = e.end_line ? e.end_line : e.line;
+    ins(b, 0x27, close, (uint32_t)(e.kids.size() - first_arg));
+
+    std::string cls;
+    bool exact = false;
+    const MethodSym *m = resolve_call(e, &cls, &exact);
+    // Calls whose argument types match a signature exactly bind to a
+    // memberref (0x1a); otherwise they are dispatched by name (0x12)
+    // (Axis_FL_door tHUF2USD(65.832) vs canister_1 tHUF2USD(66)).
+    bool by_name = !exact;
+    std::string sig = m ? m->sig : std::string();
+
+    if (!has_recv) {
+        ins(b, 0x24, close);
+        if (by_name) {
+            ins(b, 0x11, e.line, 1);
+            ins(b, 0x12, e.line, (uint32_t)lit_str(e.text));
+        } else {
+            ins(b, 0x1a, e.line, (uint32_t)add_member(fqn_, e.text, sig));
+        }
+    } else {
+        const Expr &recv = *e.kids[0];
+        if (recv.kind == ExprKind::Super) {
+            ins(b, 0x26, e.line, (uint32_t)lit_str(e.text));
+        } else if (simple_receiver(recv)) {
+            ins(b, 0x24, close);
+            {
+                ins(b, 0x11, e.line, (uint32_t)(chain_len(recv) + 1));
+                gen_member_path(recv, b);
+                // A by-name call still names the receiver's class in CONS,
+                // right after the receiver's refs (Axis_stock_exhaust_pipe:
+                // class java.util.Vector for mufflerSlotIDList.addElement).
+                if (by_name) {
+                    std::string rc;
+                    if (!class_receiver(recv, &rc)) rc = desc_class(infer(recv));
+                    if (!rc.empty()) add_class(rc);
+                }
+                if (by_name) ins(b, 0x12, e.line, (uint32_t)lit_str(e.text));
+                else ins(b, 0x1a, e.line, (uint32_t)add_member(cls, e.text, sig));
+            }
+        } else {
+            // Computed receiver: no 0x24 marker (shock_absorber_Baiern_GT_front
+            // ((Slider)e.gadget).changeVLabelText(..)).
+            gen_expr(recv, b);
+            ins(b, 0x25, e.line, (uint32_t)lit_str(e.text));
+        }
+    }
+    if (value) ins(b, 0x07, e.line, 27);
+}
+
+void Emitter::gen_expr(const Expr &e, Body *b)
+{
+    switch (e.kind) {
+    case ExprKind::This:
+    case ExprKind::Super:
+        ins(b, 0x01, e.line, 0);
+        return;
+    case ExprKind::Name: {
+        int slot = 0;
+        if (local_slot(e.text, &slot)) {
+            ins(b, 0x01, e.line, (uint32_t)slot);
+            return;
+        }
+        std::string owner;
+        if (const FieldSym *f = find_field(fqn_, e.text, &owner)) {
+            ins(b, 0x1b, e.line,
+                (uint32_t)add_member(f->is_static ? owner : fqn_, e.text, f->desc));
+            return;
+        }
+        std::string cls;
+        if (class_receiver(e, &cls)) ins(b, 0x19, e.line, (uint32_t)add_class(cls));
+        return;
+    }
+    case ExprKind::Member:
+        if (e.kids.empty()) return;
+        if (simple_receiver(e)) {
+            ins(b, 0x11, e.line, (uint32_t)chain_len(e));
+            gen_member_path(e, b);
+        } else {
+            gen_expr(*e.kids[0], b);
+            ins(b, 0x1c, e.line, (uint32_t)lit_str(e.text));
+        }
+        return;
+    case ExprKind::Index:
+        if (e.kids.size() < 2) return;
+        gen_expr(*e.kids[1], b);
+        gen_expr(*e.kids[0], b);
+        ins(b, 0x20, e.line);
+        return;
+    case ExprKind::Call:
+        gen_call(e, b, true);
+        return;
+    case ExprKind::New:
+        ins(b, 0x07, e.line, 30);
+        ins(b, 0x06, e.line, (uint32_t)add_str(type_desc(e.text)));
+        for (const auto &k : e.kids) gen_expr(*k, b);
+        ins(b, 0x27, e.line, (uint32_t)e.kids.size());
+        ins(b, 0x21, e.line);
+        return;
+    case ExprKind::NewArray: {
+        size_t dims = e.kids.size();
+        if (e.flag && dims > 0) dims--;
+        for (size_t i = 0; i < dims; i++) gen_expr(*e.kids[i], b);
+        ins(b, 0x07, e.line, 31);
+        ins(b, 0x06, e.line, (uint32_t)add_str(type_desc(e.text)));
+        return;
+    }
+    case ExprKind::Cast:
+        for (const auto &k : e.kids) gen_expr(*k, b);
+        ins(b, 0x07, e.line, 33);
+        ins(b, 0x19, e.line, (uint32_t)add_class(type_ref_name(e.text)));
+        return;
+    case ExprKind::InstanceOf:
+        for (const auto &k : e.kids) gen_expr(*k, b);
+        ins(b, 0x07, e.line, 32);
+        ins(b, 0x06, e.line, (uint32_t)add_str(type_desc(e.text)));
+        return;
+    case ExprKind::ClassLit:
+        if (!e.kids.empty()) {
+            std::string cls;
+            if (class_receiver(*e.kids[0], &cls))
+                ins(b, 0x19, e.line, (uint32_t)add_class(cls));
+        }
+        return;
+    case ExprKind::Assign:
+    case ExprKind::MulAssign:
+    case ExprKind::DivAssign:
+    case ExprKind::ModAssign:
+    case ExprKind::AddAssign:
+    case ExprKind::SubAssign:
+    case ExprKind::ShlAssign:
+    case ExprKind::ShrAssign:
+    case ExprKind::UshrAssign:
+    case ExprKind::BitAndAssign:
+    case ExprKind::BitXorAssign:
+    case ExprKind::BitOrAssign:
+        if (e.kids.size() >= 2) {
+            gen_expr(*e.kids[1], b);
+            gen_expr(*e.kids[0], b);
+            ins(b, 0x07, e.line, (uint32_t)node_kind(e));
+        }
+        return;
+    case ExprKind::LogAnd:
+    case ExprKind::LogOr: {
+        if (e.kids.size() >= 2) {
+            gen_expr(*e.kids[0], b);
+            ins(b, e.kind == ExprKind::LogAnd ? 0x04 : 0x05, e.line);
+            size_t jump = b->instrs.size();
+            ins(b, 0x14, e.line, 0);
+            gen_expr(*e.kids[1], b);
+            ins(b, 0x07, e.line, (uint32_t)node_kind(e));
+            patch_jump(b, jump, b->instrs.size());
+        }
+        return;
+    }
+    case ExprKind::BitOr:
+    case ExprKind::BitXor:
+    case ExprKind::BitAnd:
+    case ExprKind::Ne:
+    case ExprKind::Eq:
+    case ExprKind::Ge:
+    case ExprKind::Le:
+    case ExprKind::Gt:
+    case ExprKind::Lt:
+    case ExprKind::Ushr:
+    case ExprKind::Shr:
+    case ExprKind::Shl:
+    case ExprKind::Sub:
+    case ExprKind::Add:
+    case ExprKind::Mod:
+    case ExprKind::Div:
+    case ExprKind::Mul:
+    case ExprKind::BitNot:
+    case ExprKind::Not:
+    case ExprKind::Neg:
+    case ExprKind::PostInc:
+    case ExprKind::PostDec:
+    case ExprKind::PreInc:
+    case ExprKind::PreDec:
+        for (const auto &k : e.kids) gen_expr(*k, b);
+        ins(b, 0x07, e.line, (uint32_t)node_kind(e));
+        return;
+    case ExprKind::UnaryPlus:
+        for (const auto &k : e.kids) gen_expr(*k, b);
+        return;
+    case ExprKind::Ternary:
+    case ExprKind::ArrayInit:
+    case ExprKind::CtorChain:
+        return;
+    case ExprKind::Null:
+        ins(b, 0x07, e.line, 28);
+        ins(b, 0x0c, e.line);
+        return;
+    case ExprKind::BoolLit:
+        ins(b, 0x07, e.line, 28);
+        ins(b, 0x0d, e.line, e.flag ? 1u : 0u);
+        return;
+    case ExprKind::IntLit:
+        ins(b, 0x07, e.line, 28);
+        ins(b, 0x0b, e.line, (uint32_t)strtol(e.text.c_str(), nullptr, 0));
+        return;
+    case ExprKind::CharLit: {
+        unsigned v = 0;
+        if (e.text.size() >= 3) v = (unsigned char)e.text[1];
+        ins(b, 0x07, e.line, 28);
+        ins(b, 0x0b, e.line, v);
+        return;
+    }
+    case ExprKind::FloatLit: {
+        // Lexer 0x5523f0 token 0x14c: sscanf("%f") via 0x5693c0. Observed
+        // results are the decimal value chopped toward zero, not rounded
+        // (57.31 -> 0x4265 3D70; Axis_FL_butterfly_door).
+        float f = parse_float(e.text);
+        uint32_t bits = 0;
+        memcpy(&bits, &f, sizeof bits);
+        ins(b, 0x07, e.line, 28);
+        ins(b, 0x0a, e.line, bits);
+        return;
+    }
+    case ExprKind::StringLit:
+        ins(b, 0x07, e.line, 28);
+        ins(b, 0x09, e.line, (uint32_t)lit_str(unquote(e.text)));
+        return;
+    case ExprKind::ResourceLit: {
+        ResourceLit r = parse_resource(e.text);
+        ins(b, 0x07, e.line, 28);
+        ins(b, 0x0e, e.line, (uint32_t)(dry_ ? 0 : add_resource(r.name, r.id)));
+        return;
+    }
+    default:
+        for (const auto &k : e.kids) gen_expr(*k, b);
+        return;
+    }
+}
+
+// Lexer line when the parser reduces statement `s`: an else-less if needs
+// the lookahead token (to rule out `else`), everything else reduces on its
+// last token; nesting passes the lookahead on (Baiern_88er_crankshaft:
+// `else if (..) {..}` closes on the next line's `}`).
+// INVENTED: loops/switch are assumed to reduce like their last statement.
+int Emitter::reduce_line(const Stmt &s) const
+{
+    switch (s.kind) {
+    case StmtKind::If:
+        return s.else_stmt ? reduce_line(*s.else_stmt) : s.next_line;
+    case StmtKind::While:
+    case StmtKind::For:
+        return s.body ? reduce_line(*s.body) : s.last_line;
+    default:
+        return s.last_line;
+    }
+}
+
+void Emitter::gen_stmt(const Stmt &s, Body *b)
+{
+    switch (s.kind) {
+    case StmtKind::Empty:
+    case StmtKind::Break:
+    case StmtKind::Continue:
+        return;
+    case StmtKind::Block: {
+        push_scope();
+        for (const auto &child : s.stmts) gen_stmt(*child, b);
+        std::vector<int> slots;
+        for (const LocalSym &sym : scopes_.back()) slots.push_back(sym.slot);
+        std::sort(slots.begin(), slots.end());
+        for (auto it = slots.rbegin(); it != slots.rend(); ++it)
+            ins(b, 0x03, s.end_line, (uint32_t)*it);
+        pop_scope();
+        return;
+    }
+    case StmtKind::LocalDecl:
+        for (const DeclAst &d : s.decls) {
+            std::string desc = type_desc(s.type + std::string((size_t)d.dims * 2, '['));
+            int slot = declare_local(d.name, desc);
+            ins(b, 0x02, s.line, (uint32_t)slot);
+            ins(b, 0x06, s.line, (uint32_t)add_str(desc));
+            if (d.init) {
+                ins(b, 0x2c, s.line);
+                gen_expr(*d.init, b);
+                ins(b, 0x2d, s.line);
+            }
+        }
+        return;
+    case StmtKind::Expr: {
+        if (!s.expr) return;
+        switch (s.expr->kind) {
+        case ExprKind::Assign:
+        case ExprKind::MulAssign:
+        case ExprKind::DivAssign:
+        case ExprKind::ModAssign:
+        case ExprKind::AddAssign:
+        case ExprKind::SubAssign:
+        case ExprKind::ShlAssign:
+        case ExprKind::ShrAssign:
+        case ExprKind::UshrAssign:
+        case ExprKind::BitAndAssign:
+        case ExprKind::BitXorAssign:
+        case ExprKind::BitOrAssign:
+            if (s.expr->kids.size() >= 2) {
+                gen_expr(*s.expr->kids[1], b);
+                gen_expr(*s.expr->kids[0], b);
+                ins(b, 0x08, s.last_line, (uint32_t)node_kind(*s.expr));
+            }
+            return;
+        case ExprKind::Call:
+            gen_call(*s.expr, b, false);
+            ins(b, 0x08, s.last_line, 27);
+            return;
+        case ExprKind::PostInc:
+        case ExprKind::PostDec:
+        case ExprKind::PreInc:
+        case ExprKind::PreDec:
+            // the statement end replaces the root node (Drifting: `x++;`)
+            for (const auto &k : s.expr->kids) gen_expr(*k, b);
+            ins(b, 0x08, s.last_line, (uint32_t)node_kind(*s.expr));
+            return;
+        default:
+            gen_expr(*s.expr, b);
+            ins(b, 0x08, s.last_line, (uint32_t)node_kind(*s.expr));
+            return;
+        }
+    }
+    case StmtKind::CtorCall:
+        for (const auto &e : s.args) gen_expr(*e, b);
+        ins(b, 0x27, s.line, (uint32_t)s.args.size());
+        ins(b, s.is_super ? 0x23 : 0x22, s.line);
+        ins(b, 0x08, s.line, 34);
+        return;
+    case StmtKind::Return: {
+        bool value = s.expr != nullptr;
+        if (s.expr) gen_expr(*s.expr, b);
+        uint8_t op = value ? 0x28 : (cur_ctor_ ? 0x2a : 0x29);
+        ins(b, op, s.line);
+        gen_live_run(b, s.line);
+        if (op != 0x2a) ins(b, 0x2b, s.line);
+        return;
+    }
+    case StmtKind::If:
+        // 0x15 and the else-skip 0x14 carry the parser's line when the if
+        // is reduced: with an else, its last token (Axis_200S: the else
+        // block's closing brace; MC_Prime_SuperDuty_104er: the `;` of an
+        // unbraced else); without, the lookahead token after it (Axis_200S
+        // line 179).
+        if (!s.expr || !s.then_stmt) return;
+        gen_expr(*s.expr, b);
+        {
+            size_t br = b->instrs.size();
+            ins(b, 0x15, reduce_line(s), 0);
+            gen_stmt(*s.then_stmt, b);
+            if (s.else_stmt) {
+                size_t skip = b->instrs.size();
+                ins(b, 0x14, reduce_line(s), 0);
+                size_t else_at = b->instrs.size();
+                gen_stmt(*s.else_stmt, b);
+                patch_jump(b, br, else_at);
+                patch_jump(b, skip, b->instrs.size());
+            } else {
+                patch_jump(b, br, b->instrs.size());
+            }
+        }
+        return;
+    case StmtKind::While:
+    case StmtKind::DoWhile:
+    case StmtKind::For:
+    case StmtKind::Switch:
+        return; // stage 4a: loops/switch are later cards
+    }
+}
+
+void Emitter::gen_stmts(const std::vector<std::unique_ptr<Stmt>> &stmts, Body *b)
+{
+    for (const auto &s : stmts) gen_stmt(*s, b);
+}
+
+void Emitter::gen_field_init(const BodyAst &ast, int line, Body *b)
+{
+    if (!ast.init) return;
+    gen_expr(*ast.init, b);
+    ins(b, 0x10, line);
+}
+
+void Emitter::gen_method(const MethodDecl &m, const BodyAst &ast, Body *b)
+{
+    cur_ctor_ = m.is_ctor;
+    setup_method_scopes(m);
+
+    if (ast.stmts.empty() && !m.is_ctor) return;
+
+    bool has_ctor_chain = !ast.stmts.empty() && ast.stmts[0]->kind == StmtKind::CtorCall;
+    if (m.is_ctor && !has_ctor_chain) {
+        int line = ast.stmts.empty() ? ast.close_line : ast.stmts[0]->line;
+        ins(b, 0x27, line, 0);
+        ins(b, 0x23, line);
+        ins(b, 0x08, line, 34);
+    }
+
+    gen_stmts(ast.stmts, b);
+    bool ended_return = !ast.stmts.empty() && ast.stmts.back()->kind == StmtKind::Return;
+    if (!ended_return) {
+        uint8_t op = m.is_ctor ? 0x2a : 0x29;
+        ins(b, op, ast.close_line);
+        gen_live_run(b, ast.close_line);
+        if (op != 0x2a) ins(b, 0x2b, ast.close_line);
+    }
+    gen_live_run(b, ast.close_line);
+
 }
 
 bool Emitter::run(ClassUnit *out, std::string *err)
@@ -793,46 +1397,89 @@ bool Emitter::run(ClassUnit *out, std::string *err)
     u_.super_class = super_.empty() ? -1 : add_class(super_);
     for (const std::string &n : ifaces_) u_.interfaces.push_back(add_class(n));
 
-    // Pass A: parse every initializer/body once, collecting its constants.
+    // Pass A: parse every initializer/body once.
     std::vector<std::vector<bool>> field_has_init(cls_.fields.size());
+    field_ast_.clear();
+    field_ast_.resize(cls_.fields.size());
     for (size_t fi = 0; fi < cls_.fields.size(); fi++) {
         field_has_init[fi].resize(cls_.fields[fi].decls.size(), false);
+        field_ast_[fi].resize(cls_.fields[fi].decls.size());
         for (size_t di = 0; di < cls_.fields[fi].decls.size(); di++) {
             const Declarator &d = cls_.fields[fi].decls[di];
             if (!d.has_init) continue;
-            BodyAst body;
             std::string perr;
-            if (!parse_field_init(tok_, d.init, &body, &perr)) {
+            if (!parse_field_init(tok_, d.init, &field_ast_[fi][di], &perr)) {
                 if (err) *err = cls_.name + "." + d.name + ": " + perr;
                 return false;
             }
-            scopes_.assign(1, {});
-            expr(*body.init);
             field_has_init[fi][di] = true;
         }
     }
-    std::vector<int> method_locals(cls_.methods.size(), 0);
+    method_ast_.clear();
+    method_ast_.resize(cls_.methods.size());
+    method_has_body_.assign(cls_.methods.size(), false);
+    method_locals_.assign(cls_.methods.size(), 0);
     for (size_t mi = 0; mi < cls_.methods.size(); mi++) {
         const MethodDecl &m = cls_.methods[mi];
         if (!m.has_body) continue;
-        BodyAst body;
         std::string perr;
-        if (!parse_method_body(tok_, m.body, &body, &perr)) {
+        if (!parse_method_body(tok_, m.body, &method_ast_[mi], &perr)) {
             if (err) *err = cls_.name + "." + m.name + ": " + perr;
             return false;
         }
-        scopes_.assign(1, {});
-        scope_next_.assign(1, has_mod(m.modifiers, "static") ? 0 : 1); // `this` slot 0
-        max_slots_ = scope_next_[0];
-        for (const ParamDecl &p : m.params) declare_local(p.name, type_desc(p.type));
-        scan_stmts(body.stmts);
+        method_has_body_[mi] = true;
+        setup_method_scopes(m);
+        for (const auto &s : method_ast_[mi].stmts) scan_locals_stmt(*s);
         // Shipped: a method with no statements gets no slots at all, not even
         // `this`/parameters (FORMAT.md MTHD locals, see Set.build). Constructors
         // are the exception: the implicit ctor chain still needs its slots.
-        method_locals[mi] =
-            (body.stmts.empty() && !m.is_ctor) ? 0 : max_slots_;
+        method_locals_[mi] =
+            (method_ast_[mi].stmts.empty() && !m.is_ctor) ? 0 : max_slots_;
         scopes_.clear();
         scope_next_.clear();
+    }
+
+    // Declaration constants, two walks in source order: first every type
+    // string (field types; parameter, return, local and `new` types per
+    // method: SMarker, canister_1, SfxTable), then field names and method
+    // signature + name (Descriptor: fields declared after the methods get
+    // their names after the signatures).
+    struct DeclSite {
+        int pos;
+        int fi, mi;
+    };
+    std::vector<DeclSite> decls;
+    for (size_t fi = 0; fi < cls_.fields.size(); fi++)
+        decls.push_back({cls_.fields[fi].pos, (int)fi, -1});
+    for (size_t mi = 0; mi < cls_.methods.size(); mi++)
+        decls.push_back({cls_.methods[mi].pos, -1, (int)mi});
+    std::stable_sort(decls.begin(), decls.end(),
+                     [](const DeclSite &a, const DeclSite &b) { return a.pos < b.pos; });
+    for (const DeclSite &d : decls) {
+        if (d.fi >= 0) {
+            const FieldDecl &f = cls_.fields[(size_t)d.fi];
+            for (const Declarator &dc : f.decls)
+                add_str(type_desc(f.type + std::string((size_t)dc.array_dims * 2, '[')));
+            continue;
+        }
+        const MethodDecl &m = cls_.methods[(size_t)d.mi];
+        for (const ParamDecl &p : m.params) add_str(type_desc(p.type));
+        if (!m.is_ctor) add_str(type_desc(m.return_type));
+        if (method_has_body_[(size_t)d.mi])
+            for (const auto &st : method_ast_[(size_t)d.mi].stmts) collect_types_stmt(*st);
+    }
+    for (const DeclSite &d : decls) {
+        if (d.fi >= 0) {
+            for (const Declarator &dc : cls_.fields[(size_t)d.fi].decls) add_str(dc.name);
+            continue;
+        }
+        const MethodDecl &m = cls_.methods[(size_t)d.mi];
+        std::string sig = "(";
+        for (const ParamDecl &p : m.params) sig += type_desc(p.type);
+        sig += ")";
+        if (!m.is_ctor) sig += type_desc(m.return_type);
+        add_str(sig);
+        add_str(m.is_ctor ? "<init>" : m.name);
     }
 
     // TREE bodies are numbered in source declaration order, with field
@@ -892,17 +1539,51 @@ bool Emitter::run(ClassUnit *out, std::string *err)
             MethodInfo info;
             info.is_static = st;
             info.flags = modifier_flags(m.modifiers);
-            info.name = add_str(m.is_ctor ? "<init>" : m.name);
+            // CONS: signature, then name (types came in pass A).
             std::string sig = "(";
             for (const ParamDecl &p : m.params) sig += type_desc(p.type);
             sig += ")";
             if (!m.is_ctor) sig += type_desc(m.return_type);
             info.sig = add_str(sig);
+            info.name = add_str(m.is_ctor ? "<init>" : m.name);
             info.body = method_body[mi];
-            info.locals = m.has_body ? method_locals[mi] : 0;
+            info.locals = m.has_body ? method_locals_[mi] : 0;
             u_.methods.push_back(info);
         }
     }
+
+    // TREE bodies: a dry walk for the refs, then the real one.
+    // Walk order: methods in MTHD order (static first: PaintCan's static
+    // createFromFile refs precede save's), then field initializers in FILD
+    // order (InventoryItem: `type = IIT_UNDEFINED` follows the ctor refs).
+    std::vector<BodySite> walk;
+    for (int st = 1; st >= 0; st--)
+        for (const BodySite &s : sites)
+            if (s.fi < 0 && has_mod(cls_.methods[(size_t)s.mi].modifiers, "static") == (st == 1))
+                walk.push_back(s);
+    for (int st = 1; st >= 0; st--)
+        for (const BodySite &s : sites)
+            if (s.fi >= 0 && has_mod(cls_.fields[(size_t)s.fi].modifiers, "static") == (st == 1))
+                walk.push_back(s);
+    for (int pass = 0; pass < 2; pass++)
+    for (const BodySite &s : walk) {
+        dry_ = pass == 0;
+        Body scratch;
+        Body *b = dry_ ? &scratch
+                       : &u_.bodies[(size_t)(s.fi >= 0 ? field_body[(size_t)s.fi][(size_t)s.di]
+                                                       : method_body[(size_t)s.mi])];
+        if (s.fi >= 0) {
+            scopes_.clear();
+            scope_next_.clear();
+            const BodyAst &ast = field_ast_[(size_t)s.fi][(size_t)s.di];
+            gen_field_init(ast, ast.init ? ast.init->line : 0, b);
+        } else if (method_has_body_[(size_t)s.mi]) {
+            gen_method(cls_.methods[(size_t)s.mi], method_ast_[(size_t)s.mi], b);
+        }
+    }
+    dry_ = false;
+    scopes_.clear();
+    scope_next_.clear();
 
     u_.has_fields = !u_.fields.empty();
     u_.has_methods = !u_.methods.empty();
@@ -994,7 +1675,15 @@ void write_clss(const ClassUnit &u, std::vector<uint8_t> *out)
 void write_tree(const ClassUnit &u, std::vector<uint8_t> *out)
 {
     put_u32(out, (uint32_t)u.bodies.size());
-    for (size_t i = 0; i < u.bodies.size(); i++) put_u32(out, 0); // TREE is stage 4
+    for (const Body &b : u.bodies) {
+        put_u32(out, (uint32_t)b.instrs.size());
+        for (const Instr &in : b.instrs) {
+            out->push_back(in.op);
+            out->push_back((uint8_t)(in.line & 0xff));
+            out->push_back((uint8_t)(in.line >> 8));
+            if (opcode_operand_size(in.op) > 0) put_u32(out, in.operand);
+        }
+    }
 }
 
 } // namespace
