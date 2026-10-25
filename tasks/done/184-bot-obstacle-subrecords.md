@@ -1,6 +1,6 @@
 ---
 id: 184
-status: implemented
+status: merged
 branch: card/184
 depends: [183]
 ---
