@@ -17,6 +17,9 @@ So that source would not even compile against the shipped classes; it is a newer
 shipped class. Doubt (not traced): if the exe recompile rule (0x5598f0, mtime differs) ever picks
 `src/Init.java`, the compile fails on `Steam.isReady`; check the fallback behaviour then.
 
+**Correction (notes/27 §5):** the Steam/runDLL loop in Init.java is inside a `/* */` comment
+(lines 149-183) and `Steam.class` does define `isReady`; a recompile cannot fail there.
+
 **Result: no remaining explicit stub is reachable from shipped scripts. No cards written.**
 Keep all three as stubs (setBuck/setActiveCollision: dead API; runDLL: Steam workshop, neutralized).
 
