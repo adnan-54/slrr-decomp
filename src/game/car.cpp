@@ -3081,8 +3081,9 @@ static void bot_build_subs(BotData::BotObstacle &rec, const BotData &b)
         s.h = h;
         subs.insert(subs.begin(), s);
     };
-    // INVENTED: a root whose own shape is not 1/5/6 (compound roots keep their
-    // hull in collision_children) uses its first collision child shape.
+    // INVENTED: the exe reads the shape at def+0x90 and builds nothing for kinds other
+    // than 1/5/6. Here car_root's own shape is SHAPE_NONE (compound hulls live in
+    // collision_children, see the Card 160 storage), so use the first child hull.
     const Shape *sh = &rec.body->def.shape;
     if (sh->type != SHAPE_SPHERE && sh->type != SHAPE_BOX && sh->type != SHAPE_MESH &&
         !rec.body->collision_children.empty())
@@ -3095,11 +3096,12 @@ static void bot_build_subs(BotData::BotObstacle &rec, const BotData &b)
     } else if (sh->type == SHAPE_BOX) {
         X = sh->half_extents.x; Y = sh->half_extents.y; Z = sh->half_extents.z;
     } else if (sh->type == SHAPE_MESH && sh->mesh) {
-        // shape+0x14..0x1c: AABB half extents incl. +0.05.
-        // INVENTED: derived as (max - min) / 2 + 0.05 from the mesh bounds.
-        X = (sh->mesh->bounds_max.x - sh->mesh->bounds_min.x) * 0.5f + 0.05f;
-        Y = (sh->mesh->bounds_max.y - sh->mesh->bounds_min.y) * 0.5f + 0.05f;
-        Z = (sh->mesh->bounds_max.z - sh->mesh->bounds_min.z) * 0.5f + 0.05f;
+        // shape+0x14..0x1c (0x480850 case 6): max(|min|,|max|) + 0.05 per axis, as in
+        // physics/world.cpp's face-cache half extents.
+        const CollisionMesh &cm = *sh->mesh;
+        X = fmaxf(fabsf(cm.bounds_min.x), fabsf(cm.bounds_max.x)) + 0.05f;
+        Y = fmaxf(fabsf(cm.bounds_min.y), fabsf(cm.bounds_max.y)) + 0.05f;
+        Z = fmaxf(fabsf(cm.bounds_min.z), fabsf(cm.bounds_max.z)) + 0.05f;
     } else {
         return;
     }
