@@ -182,6 +182,116 @@ void fill_part(Runtime &rt, const Package *pkg, PartData &p, const CfgFile &cfg)
     fill_slots(rt, pkg, p, cfg);
 }
 
+// 0x49ab20 type vf1 gauge block (0x49ab4a..0x49b27e), index i = (G - 0x1a44) /
+// 0x48. `ref` is the 0x5189e0(rpk, id, 0xe, 0) default pair; a cfg osd_* line
+// replaces it with its own id. 0x49abd2 writes "0123456R" and 0x49ae5a
+// overwrites it with the M+0x1a38 default "N123456R".
+void osd_defaults(CarData &c)
+{
+    struct Row {
+        int32_t kind;
+        float pos[3];
+        float offset, scale, min, max;
+        const char *pkg;
+        int32_t ref;
+        int32_t color;
+        const char *fmt;
+    };
+    static const Row rows[17] = {
+        {1, {-0.4f, 0.1f, -0.7f}, 2.2f, -0.0005f, -2.2f, 2.2f, nullptr, 0, 0, ""},
+        {1, {-0.3f, 0.1f, -0.7f}, 2.2f, -0.02f, -2.2f, 2.2f, nullptr, 0, 0, ""},
+        {1, {1.093f, -0.866f, 1.1001f}, 2.41f, -0.000535f, -2.414f, 2.41f,
+         "cars.rpk", 0xd227, 0, ""},
+        {1, {1.657f, -0.44f, 1.1001f}, 2.3574f, -0.01305f, -2.353f, 2.3574f,
+         "cars.rpk", 0xd226, 0, ""},
+        {2, {0.73f, -0.85f, -0.0001f}, 2.5f, -0.02f, -2.2f, 2.2f, nullptr, 0, 0, ""},
+        {0, {0.926f, 0.855f, -0.0001f}, 0.0f, 1.0f, 0.0f, 0.0f, "cars.rpk", 0x57, 0, ""},
+        {0, {1.41f, -0.53f, 1.1f}, 0.0f, 1.0f, 0.0f, 0.0f, "cars.rpk", 0xd225, 0, ""},
+        {2, {0.72f, 0.755f, 0.0f}, 0.0f, 1.0f, 0.0f, 99999.0f, nullptr, 0,
+         (int32_t)0xff000000u, "%4.0f"},
+        {2, {0.76f, 0.57f, 0.0001f}, 0.0f, 1.0f, 0.0f, 999.0f, "cars.rpk", 0x58,
+         (int32_t)0xff000000u, "%03.0f"},
+        {2, {0.512f, 0.889f, 0.0001f}, 0.0f, 1.0f, 0.0f, 0.0f, "cars.rpk", 0x58,
+         (int32_t)0xff000000u, "%c"},
+        {2, {0.73f, -0.85f, -0.0001f}, 0.0f, 8.0f, 0.0f, 8.0f, "cars.rpk", 0x5c,
+         (int32_t)0xff000000u, "%01.0f"},
+        {2, {0.73f, 0.9f, -0.0001f}, 0.0f, 8.0f, 0.0f, 8.0f, "cars.rpk", 0x5c,
+         (int32_t)0xff000000u, "%01.0f"},
+        {2, {0.73f, 0.73f, -0.0001f}, 0.0f, 1.0f, 0.0f, 999999.0f, "cars.rpk",
+         0x58, (int32_t)0xff000000u, "%07.0f"},
+        {5, {3.24f, -2.4f, -3.58f}, 0.0f, 1.0f, 0.0f, 0.0f, nullptr, 0,
+         (int32_t)0xffff0000u, ""},
+        {5, {3.24f, -2.4f, -3.58f}, 0.0f, 1.0f, 0.0f, 0.0f, nullptr, 0,
+         (int32_t)0xffff0000u, ""},
+        {5, {3.24f, -2.4f, -3.58f}, 0.0f, 1.0f, 0.0f, 0.0f, nullptr, 0,
+         (int32_t)0xffff0000u, ""},
+        {5, {3.24f, -2.4f, -3.58f}, 0.0f, 1.0f, 0.0f, 0.0f, nullptr, 0,
+         (int32_t)0xffff0000u, ""},
+    };
+    for (int i = 0; i < 17; i++) {
+        const Row &r = rows[i];
+        OsdGauge &g = c.osd[i];
+        g.kind = r.kind;
+        for (int k = 0; k < 3; k++) g.pos[k] = r.pos[k];
+        g.offset = r.offset;
+        g.scale = r.scale;
+        g.min = r.min;
+        g.max = r.max;
+        g.ref_id = 0;
+        g.ref_pkg = r.pkg;
+        g.ref_local = r.ref;
+        g.color = r.color;
+        strncpy(g.fmt, r.fmt, 8);
+        g.fmt[8] = '\0';
+    }
+}
+
+// osd_* keyword bodies (table 0x5da7b8, 0x48e770..0x48f0a0), all gated by
+// M+0x120 == 0 (taken as 0 here). form is the scanf tail after "id, pos":
+// 0 none (gauge/damage), 1 off,scale,min,max (pin/nospin), 2 color,fmt
+// (gear/speed/rpm), 3 color,fmt,off,scale,min,max (nos/turbo/mileage),
+// 4 color (abs/asr/hbrake/emergency). Missing trailing values keep the
+// previous field, as scanf stops at the first failed conversion.
+void fill_osd(CarData &c, const CfgLine &ln, int idx, int form, bool gear)
+{
+    OsdGauge &g = c.osd[idx];
+    const std::vector<std::string> &v = ln.values;
+    size_t i = 0;
+    if (i < v.size()) {
+        // INVENTED: 0x569380 integer conversion not traced; strtoul keeps 0xFF000000.
+        int32_t id = (int32_t)strtoul(v[i++].c_str(), nullptr, 0);
+        // 0x48eaa0: osd_gear sets the ref only when the scan got past the id.
+        if (!gear || v.size() > 1) {
+            g.ref_id = id;
+            g.ref_pkg = nullptr;
+            g.ref_local = 0;
+        }
+    }
+    for (int k = 0; k < 3 && i < v.size(); k++) g.pos[k] = num(v[i++]);
+    if (form == 0) return;
+    if (form == 1) {
+        if (i < v.size()) g.offset = num(v[i++]);
+        if (i < v.size()) g.scale = num(v[i++]);
+        if (i < v.size()) g.min = num(v[i++]);
+        if (i < v.size()) g.max = num(v[i++]);
+        return;
+    }
+    if (i < v.size()) g.color = (int32_t)strtoul(v[i++].c_str(), nullptr, 0);
+    if (form == 2 || form == 3) {
+        // %8s: at most 8 chars + NUL. Gear chars live at M+0x1a38.
+        char *dst = gear ? c.gear_chars : g.fmt;
+        if (i < v.size()) {
+            strncpy(dst, v[i++].c_str(), 8);
+            dst[8] = '\0';
+        }
+    }
+    if (form != 3) return;
+    if (i < v.size()) g.offset = num(v[i++]);
+    if (i < v.size()) g.scale = num(v[i++]);
+    if (i < v.size()) g.min = num(v[i++]);
+    if (i < v.size()) g.max = num(v[i++]);
+}
+
 // createCar wheel template: one record per `type` line, later lines refine the
 // current one (notes/13 §6).
 void fill_car(CarData &c, const CfgFile &cfg)
@@ -208,6 +318,31 @@ void fill_car(CarData &c, const CfgFile &cfg)
                             &c.sh_slip_gain, &c.sh_slip_max, &c.sh_yaw_gain};
             for (size_t i = 0; i < ln.values.size() && i < 6; i++)
                 *sh[i] = num(ln.values[i]);
+            continue;
+        }
+        // HUD gauge keywords (table 0x5da7b8): id, pos and the handler's tail.
+        // `osd_damage_slot` scans "%c" into a stack temp and has no effect.
+        if (ln.key.compare(0, 4, "osd_") == 0) {
+            int idx, form;
+            bool gear = false;
+            if (ln.key == "osd_gauge") { idx = 6; form = 0; }
+            else if (ln.key == "osd_rpmpin") { idx = 2; form = 1; }
+            else if (ln.key == "osd_spdpin") { idx = 3; form = 1; }
+            else if (ln.key == "osd_nospin") { idx = 4; form = 1; }
+            else if (ln.key == "osd_damage") { idx = 5; form = 0; }
+            else if (ln.key == "osd_damage_slot") continue;  // no effect
+            else if (ln.key == "osd_gear") { idx = 9; form = 2; gear = true; }
+            else if (ln.key == "osd_speed") { idx = 8; form = 2; }
+            else if (ln.key == "osd_rpm") { idx = 7; form = 2; }
+            else if (ln.key == "osd_nos") { idx = 10; form = 3; }
+            else if (ln.key == "osd_turbo") { idx = 11; form = 3; }
+            else if (ln.key == "osd_mileage") { idx = 12; form = 3; }
+            else if (ln.key == "osd_abs") { idx = 13; form = 4; }
+            else if (ln.key == "osd_asr") { idx = 14; form = 4; }
+            else if (ln.key == "osd_hbrake") { idx = 15; form = 4; }
+            else if (ln.key == "osd_emergency") { idx = 16; form = 4; }
+            else continue;
+            fill_osd(c, ln, idx, form, gear);
             continue;
         }
         if (ln.key == "type") {
@@ -984,7 +1119,7 @@ void WheelData::reset_damage()
     damage_visual = template_damage;
 }
 
-CarData::CarData() = default;
+CarData::CarData() { osd_defaults(*this); }
 
 float CarData::torque_at(float rpm) const
 {
