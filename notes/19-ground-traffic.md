@@ -716,6 +716,45 @@ output yet) · 176 planner steps 1, 3, 4 (target point) · 177 planner step 5 + 
 178 controls 0x482910/0x482da0/0x483220/0x4830a0 (bots drive, rpTotal for bot cars) · 179 sketch: mode 8 +
 bot_trigger obstacles + opponent block + reverse recovery.
 
+### 8.2 Grid revving, overtaking, bot_trigger obstacles, solver (RE 2026-10-25, cards 179-185)
+
+Corrections to 8.1: the 0x47f980 tail does not move a debug object: `+0x26f8` is the **bot_trigger** ResourceRef
+(`+0x2700` = ref+8 = its id, 0 = none) and the tail moves/resizes it every tick. ResourceRef slots are
+`{prev, next, id(+8), target(+0xc)}`: `+0x25e8` = opponent id, `+0x2318 + i*0x10` = controlled car id, `+0x25a8`
+= mode-4 target id. Obstacle list is the DoubleList at `+0x26ac` (walk via `+0x26b4`, append `+0x26d4/+0x26dc`).
+- **Mode 8 0x484ca0** (card 179): gate 0x482da0(S,0,0); if open, throttle = `max(+0x25dc, 0.1) <= rand()/32768 ?
+  0 : 127` (0x571110 CRT rand); every tick "transmission 2"; `+0x22a4 = (gear > 0 || S.bc >= 127) ? 0 : 127`;
+  clutch 127, brake/handbrake/nitro 0.
+- **Opponent block 0x486766..0x486942** (card 180): opponent within (d-20, d+5) on the spline, |plat| < w,
+  driving forward (Fo.V > 0.8) -> `+0x25f0 = 1` (overtaking; cleared by 0x483bd0 before 0x482910); within
+  (d-20, d-5) picks the side from the opponent's velocity or the room left (`k = +0x2594/w * 2.5`), then
+  `off = max(off, r + 1.3k)` (<= 0.8) or `min(off, r - 1.3k)` (>= -0.8). Full pseudocode in the card.
+- **bot_trigger** (cards 182/183): type = `DAT_005fe214` = system.rpk 0x34 (`native trigger`, set by the bot type
+  manager ctor 0x484990); created in 0x483bd0 when `+0x2700 == 0` as child "bot_trigger" with
+  `"%.2f,%.2f,%.2f,0,0,0,sphere,100"`; 0x47f980 tail: `r = clamp(|v| * 2.5 + 10, 10, mode 2/4 ? 55 : 10)`,
+  centre = pos + (r-10) * fwd rotated by `steer_axis * 0.75/127`, sent as `"fffffff"` (x,y,z,0,0,0,r) through
+  0x4eb3f0 -> typed vf+0x1c = `type_trigger` vf7 **0x4d4af0** (radius/bound/margin when sphere, place via
+  0x4eac50, zero velocities). `type_trigger` vtable 0x5a00e0: vf3 0x4d4700, vf4 0x4d4a60, vf7 0x4d4af0, vf14
+  0x4d4ab0 (only counts contacts at +0x34). How the trigger record events reach the parent bot's vf14 is untraced.
+- **vf14 0x20** (cards 183/184): record `cBodyList` (0x38, dtor 0x47f930): body = trigger record +0x50 (other root),
+  type from inverse mass (< 1e-5 static 1, < 0.01 heavy 2, else 0), own car dropped, sub-records from the shape
+  (sphere: 1 point; box/mesh half extents (mesh: shape+0x14 AABB): 1 point when |X-Z| < 0.5, else 2 end points +
+  4 corner wedges 0x481d20 (when short half > 0.5) + floor(f/(2m+2s)) fill points 0x482350); type 2 kept local,
+  else world. **vf14 0x40** deletes records of that body. **vf14 code 1** (collision with the controlled car vs a
+  heavy/static body, inverse mass <= 0.01): contact point in car frame (0x480610): z >= 0 -> `+0x25c0 = 1`, else
+  x >= 0 -> stuck state `+0x25bc = 3`, x < 0 -> 1 (not while 4..6): this is what feeds the 0x482910 reverse-out
+  states 1/3. src has no collision events (only trigger events), so states 1/3 stay unreachable: **no card yet**.
+- **Walk in 0x483bd0** (card 185): per record type 1/2, per sub-record height filter `|dy| < h + 1.5`, wedge
+  angle test, line-of-sight test (0.99), then solver `add(x, z, 0, 0, r)` (type 2 with predicted position and
+  `(r - 0.2 opp) * scale(<= 1.3)`; the opponent is skipped while overtaking).
+- **Solver** (`DAT_005fe1f4`, card 181): 0x40ab10 reset (F, V, margin +0x2594, 0), 0x409fa0 add (circle r' =
+  (margin + r) * 1.05, angular interval +-asin(r'/dist), merging overlapping clusters, enclosing circle 0x40a6f0),
+  0x40a8a0 resolve (intervals by min gap through the min-heap 0x46b5e0/0x40abe0 at 0x5e64e4, grows a free window
+  lo/hi around 0, rotates dir by the smaller of |lo|, |hi|; output len * dir; its 2nd/3rd args are unused).
+- Gaps left: src trigger pass only pairs sensors with dynamic roots (the exe sensor is not flag-4 static, so it
+  could also see static map bodies: type-1 records); 0x468b00 owner flag 0x8000 test and 0x501da0 deferred touch
+  untraced; trigger event delivery to the parent bot INVENTED in card 183.
+
 ## 9. Career circuit race: laps, finish and exit (script side, CircuitRacing.java; RE 2026-10-24, cards 171/172)
 Exe provides only triggers/timers/OSD/controls; the rules are script (memory: exe is a shell).
 - Norisring career event (vmboot): `laps = gmcEvent.specialSlots[0]` = 2, `cpTrigger.length` 4, `fines` null (no

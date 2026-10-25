@@ -1991,5 +1991,18 @@
   "0x4ee460": "IntervalMgr__collidePass",
   "0x4ee1a0": "IntervalMgr__addNode",
   "0x5205e0": "PhysType__loadRsd",
-  "0x4f6240": "Cfg__parseKeyTable"
+  "0x4f6240": "Cfg__parseKeyTable",
+  "0x484ca0": "BotAI__gridRev",
+  "0x409fa0": "BotAvoid__add",
+  "0x40ab10": "BotAvoid__reset",
+  "0x40a8a0": "BotAvoid__resolve",
+  "0x40a6f0": "BotAvoid__enclose",
+  "0x40a7d0": "Vec2__signedAngle",
+  "0x46b5e0": "MinHeap__push",
+  "0x40abe0": "MinHeap__pop",
+  "0x482350": "cBodyList__addPoint",
+  "0x481d20": "cBodyList__addEdge",
+  "0x484990": "type_BOT__managerCtor",
+  "0x483bd0": "BotAI__steerAvoid",
+  "0x486020": "BotAI__plan"
 }
