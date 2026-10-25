@@ -3,6 +3,7 @@
 // native summaries in §12. Wheels are built from the car cfg `type`/`spring`/
 // `wheel`/`friction`/`wheelpars` lines (createCar), slots from the part cfg.
 #include "game/car.h"
+#include "game/bot_avoid.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -2587,12 +2588,18 @@ static void bot_controls(BotData &b, const BotSnapshot &s, const CarData &car,
 // 0x483bd0 no-obstacle path (card 177): V from the car front to T, the angle
 // to S.fwd, and the steer/speed pair 0x482910 receives. shortcut: the
 // bot_trigger create (+0x2700) and the obstacle walk (+0x26b4, 0x409fa0) are
-// card 179; with no intervals 0x40a8a0 keeps V unchanged.
+// cards 182/184; with no intervals 0x40a8a0 returns len * dir.
 static void bot_steer(BotData &b, const BotSnapshot &s, const CarData &car,
                       float vmax)
 {
     float fx = s.pos[0] + s.fwd[0], fz = s.pos[2] + s.fwd[2];
     float vx = b.plan_T[0] - fx, vz = b.plan_T[2] - fz;
+    BotAvoid &av = BotAvoid::shared();
+    av.reset(fx, fz, vx, vz, b.half_width, 0.0f);  // 0x40ab10
+    // obstacle adds (0x409fa0): cards 182/184
+    float rv[2];
+    av.resolve(rv);  // 0x40a8a0
+    vx = rv[0]; vz = rv[1];
     b.plan_aim[0] = vx;  // +0x269c
     b.plan_aim[1] = vz;  // +0x26a0
     float len = sqrtf(vx * vx + vz * vz);
