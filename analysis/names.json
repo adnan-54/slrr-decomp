@@ -2049,5 +2049,15 @@
   "0x40f5e0": "TrafficCar__setLive",
   "0x40ca40": "TrafficCar__unlinkLane",
   "0x461980": "Camera__instanceLod",
-  "0x45f180": "Render__collectInstance"
+  "0x45f180": "Render__collectInstance",
+  "0x518e90": "ResourceEngine__touch",
+  "0x518f80": "ResourceEngine__updateTouched",
+  "0x517f60": "ResourceEngine__processLoads",
+  "0x51a5f0": "GameInstData__typedUpdate",
+  "0x45f880": "Camera__prepareFrame",
+  "0x45d260": "cObjectDummy__ctor",
+  "0x4608e0": "ResourceNode__loadTyped",
+  "0x468b00": "ResRef__getTyped",
+  "0x45f030": "Render__releaseInstance",
+  "0x4ebdd0": "GameRef__setNodeFlags"
 }
