@@ -1,7 +1,7 @@
 ---
 id: 180
-status: todo
-branch:
+status: implemented
+branch: card/180
 depends: [178]
 ---
 # `native bot` planner step 2: opponent overtake offset (0x486020 block 0x486766..0x486942)

@@ -298,7 +298,8 @@ struct BotData {
     int active = 0;           // +0x2424 last vehicle ref (0x47c640 getInfo 7 == 5)
     int mode = 0;             // +0x259c
     float begin_race = 0.0f;  // +0x25dc
-    uint32_t opponent = 0;    // +0x25e0
+    uint32_t opponent = 0;    // +0x25e0, resolved target +0x25e8
+    uint8_t overtaking = 0;   // +0x25f0 (0x486020 sets, 0x483bd0 clears)
     std::string spline_file;  // command arg, for diagnostics only
     float spline_width = 0.0f;  // command arg of 0x482630
     std::vector<SplinePoint> spline_points;  // +0x2604

@@ -2610,13 +2610,15 @@ static void bot_steer(BotData &b, const BotSnapshot &s, const CarData &car,
         ang = g > 1.0f ? 0.0f : g < -1.0f ? 3.14159265f : acosf(g);
     b.plan_steer = -ang;                 // 0x482910(S, steer = -ang, ...)
     b.plan_speed = std::max(0.0f, vmax);  // ... speed = max(0, v2)
+    b.overtaking = 0;                    // +0x25f0 = 0 right before 0x482910
     bot_controls(b, s, car, b.plan_steer, b.plan_speed);
 }
 
-// 0x486020 steps 1, 3, 4 and 5 (cards 176-177): lateral offset from the
-// curvature ahead, pull to the car's current lateral position, target search
-// from d - 10 back to +0x268c, the straight-line extension of T, then the
-// braking-distance speed limit and 0x483bd0. look is already in +0x268c.
+// 0x486020 steps 1-5 (cards 176-180): lateral offset from the curvature
+// ahead, opponent pass offset, pull to the car's current lateral position,
+// target search from d - 10 back to +0x268c, the straight-line extension of T,
+// then the braking-distance speed limit and 0x483bd0. look is already in
+// +0x268c.
 static void bot_plan(BotData &b, BotSnapshot &s, const CarData &car, float look,
                      float vmax0)
 {
@@ -2652,8 +2654,85 @@ static void bot_plan(BotData &b, BotSnapshot &s, const CarData &car, float look,
     }
     off = std::clamp(off, -0.8f, 0.8f);
 
-    // shortcut: step 2 (opponent +0x25e8, 0x486766..0x486942) is card 179; the
-    // traffic-bin block (+0x2724 < 0 && DAT_005e652c) has no manager in src.
+    // 0x486766: step 2 — pass the tracked opponent (+0x25e8) when it is close
+    // ahead on the spline. Its car getInfo 2/3/4 is root body pos/vel/-Rcol2.
+    if ((b.mode == 2 || b.mode == 3) && b.opponent != 0) {
+        const CarData *opp = nullptr;
+        for (const auto &e : g_cars)
+            if (e.first->id == b.opponent) {
+                opp = e.second.get();
+                break;
+            }
+        // INVENTED: the exe's ref resolves to any car instance; src only has a
+        // payload for cars car_data() has seen, matched here by resource id.
+        const RigidBody *ob = opp ? opp->root_body : nullptr;
+        if (ob) {
+            float pd = 0.0f, plat = 0.0f;
+            if (traffic::path_project_strict(p, ob->pos.x, ob->pos.z, &pd,
+                                             &plat)) {
+                float wpd = traffic::path_width_at(p, pd);
+                if (std::fabs(plat) < wpd) {
+                    float r = plat / wpd;
+                    Vec3 V = ob->vel;
+                    Mat34 orot = ob->rotation();
+                    Vec3 Fo{-orot.m[2], -orot.m[6], -orot.m[10]};
+                    float vl = vec_length(V), fl = vec_length(Fo);
+                    if (vl != 0.0f) {
+                        V.x /= vl;
+                        V.y /= vl;
+                        V.z /= vl;
+                    }
+                    if (fl != 0.0f) {
+                        Fo.x /= fl;
+                        Fo.y /= fl;
+                        Fo.z /= fl;
+                    }
+                    if (vec_dot(Fo, V) > 0.8f) {
+                        if (d + 5.0f > pd) {
+                            b.overtaking = 1;  // +0x25f0
+                            if (pd > d - 20.0f) {
+                                float k =
+                                    b.half_width * (1.0f / wpd) * 2.5f;
+                                bool side = lat < plat;
+                                bool minus;
+                                if (d - 5.0f <= pd) {
+                                    minus = side;
+                                } else {
+                                    float Dp[3];
+                                    traffic::path_dir_at(p, pd, Dp);
+                                    if (vec_dot(Vec3{Dp[0], Dp[1], Dp[2]}, V) >
+                                        -0.8f) {
+                                        float Sd[3];
+                                        traffic::path_side_at(p, pd, Sd);
+                                        minus = vec_dot(
+                                                    Vec3{Sd[0], Sd[1], Sd[2]},
+                                                    V) < 0.0f;
+                                    } else if (!side) {
+                                        minus = 1.0f - k < r;
+                                    } else {
+                                        minus = !(r < k - 1.0f);
+                                    }
+                                }
+                                if (!minus) {
+                                    float v = k * 1.3f + r;
+                                    if (off <= v)
+                                        off = 0.8f <= v ? 0.8f : v;
+                                } else {
+                                    float v = r - k * 1.3f;
+                                    if (v < -0.8f)
+                                        off = -0.8f;
+                                    else if (v < off)
+                                        off = v;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // shortcut: the traffic-bin block (+0x2724 < 0 && DAT_005e652c) has no
+    // manager in src.
 
     // Step 3: pull toward the car's current lateral position.
     if (b.mode == 3 || b.curvature_enable > 0.0f) {
