@@ -58,7 +58,7 @@ if !left and L.down:                            // release
               (cursor, L.ref id, L.local xyz, picked xyz))
     elif L.dragged:
         queue(cursor, "10 %d %d" (cursor, L.body id)); if L.ref: queue(L.ref, same)   // drag end
-        if L.ref and hit: (drop) queue(hit.ref, "11 %d %d %d %d %d" (cursor, hit.ref id, L.ref id, L.body id))
+        if L.ref and hit: (drop) queue(hit.ref, "11 %d %d %d %d %d" (cursor, hit.body id, L.ref id, L.body id))
                           queue(cursor, sender=hit.ref, "11 %d %d %d %d %.3f %.3f %.3f %d"
                                 (cursor, hit.ref id, L.ref id, picked xyz, L.body id))
     clear L.ref/L.body
