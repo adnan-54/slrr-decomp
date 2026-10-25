@@ -1,7 +1,7 @@
 ---
 id: 214
-status: todo
-branch:
+status: implemented
+branch: card/214
 depends: [213]
 ---
 # Traffic: lane attach (ctLane vf3) + time-to-lane-end + lane event heap push

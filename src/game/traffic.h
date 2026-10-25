@@ -50,6 +50,12 @@ struct Lane {
     uint32_t node88[4] = {}; float k98 = 0; uint32_t k9c = 0, ka0 = 0;  // +0x98 speed factor
     Path path;                                            // +0x3c
     std::vector<uint32_t> cars;                           // +0x08/+0x0c list; INVENTED: exe intrusive prev/next replaced by car indices, ascending pos
+    bool live = false;                                    // +0xa8
+    uint32_t pending_events = 0;                          // +0xac (0 = no timed event scheduled)
+    // +0xb0 weak ref to the car blocking this lane. INVENTED: 1-based car index,
+    // 0 = null (a pointer in the exe).
+    struct Blocker { uint32_t serial = 0, car = 0; uint8_t k = 0; };
+    Blocker blocker;
     bool halted = false;                                  // +0xc4, INVENTED initial value
     float kc0 = 0, kc8 = 0, kcc = 0;                      // +0xc0 sim time, +0xc8, +0xcc path length
 };
@@ -98,6 +104,15 @@ struct Graph {
     std::vector<uint8_t> road_enabled;          // +0xc4: enable flag per road group
     float max_road_width = 0;                   // +0x312c
     float cross_stop_offset = 0;                // +0x3140 (ctor 0x416000: 0)
+    // +0x3148 lane event min-heap (schedule 0x417050, push 0x41a950). INVENTED:
+    // std::vector grows geometrically where the exe's array grows by 0x400 entries;
+    // lanes are indices (pointers in the exe).
+    struct HeapEntry { float time; uint32_t lane; };
+    std::vector<HeapEntry> heap;
+    // +0x88 head of the live-car list (link car+0x44). INVENTED: 1-based car index,
+    // 0 = null (a pointer in the exe).
+    uint32_t live_cars = 0;
+    int32_t live_count = 0;                     // global 0x5e6514; INVENTED: per graph
     // +0x70 car pool. INVENTED: deque gives stable addresses, the free list keeps
     // indices, and the serial counter is per graph (the exe's is process-wide).
     std::deque<Car> cars;

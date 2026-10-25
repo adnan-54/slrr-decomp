@@ -815,6 +815,101 @@ void car_release(Graph &g, uint32_t i)
     // INVENTED: the +0x130 instance and +0x144 type link unlinks are not modelled.
 }
 
+// 0x40dc00 TrafficCar__targetSpeed: lane speed limit and next-lane/cross objects.
+float car_target_speed(const Graph &g, const Car &car)
+{
+    float s = car.max_speed;
+    // INVENTED: bounds check; car.lane is an index (a pointer in the exe).
+    if (car.lane < g.lanes.size() && g.lanes[car.lane].k98 < s)
+        s = g.lanes[car.lane].k98;   // ctLane vf6 0x40dd50
+    float f = 0.0f;
+    if (!car.next_lane_b) {          // +0xbc, next lane
+        if (car.k124) {
+            // shortcut: vf6 of next-lane/cross objects not traced; 0 for spawned cars
+            s = (0.0f + s) * 0.5f;
+        }
+    } else {
+        f = car.max_speed;
+        if (car.next_lane_a) {       // +0xb8, cross object (kb8 in the exe)
+            // shortcut: vf6 of next-lane/cross objects not traced; 0 for spawned cars
+            f = 0.0f;
+            return f <= s ? s : f;
+        }
+    }
+    return f <= s ? s : f;
+}
+
+// 0x40d990 TrafficCar__timeToLaneEnd: 0 on a lane change, else the 2v braking
+// time to the stop offset (min speed 10).
+float car_time_to_lane_end(const Graph &g, const Car &car)
+{
+    // shortcut: 0x4107c0 not ported; it returns at once here because a fresh car
+    // has e0 == sim_time (notes/29 §6)
+    float stop = car.next_lane_b ? 0.0f : g.cross_stop_offset;
+    float v = car_target_speed(g, car);
+    if (v <= 10.0f) v = 10.0f;
+    float t = ((car.pos - car.k14) - stop) * (2.0f / v);
+    return t < 0.0f ? 0.0f : t;
+}
+
+// 0x417050 Traffic__scheduleLane -> 0x41a950 TrafficHeap__push: min-heap by time.
+void schedule_lane(Graph &g, float dt, uint32_t lane)
+{
+    const Graph::HeapEntry e = {g.sim_time + dt, lane};
+    size_t i = g.heap.size();
+    g.heap.push_back(e);
+    while (i) {
+        size_t p = (i - 1) / 2;
+        if (g.heap[p].time <= e.time) break;
+        g.heap[i] = g.heap[p];
+        i = p;
+    }
+    g.heap[i] = e;
+}
+
+// 0x40cbd0 ctLane__vf3: live/not-live bookkeeping, first-event scheduling and
+// occupancy. The exe's tail-append branch is a no-op: insert already set car.lane.
+void lane_attach(Graph &g, size_t li, uint32_t ci)
+{
+    Lane &lane = g.lanes[li];
+    Car &car = g.cars[ci];
+
+    if (lane.blocker.car == ci + 1 && lane.blocker.serial == car.serial)
+        lane.blocker = Lane::Blocker();
+
+    if (!lane.live) {
+        if (car.live) {
+            g.live_count--;
+            if (!car.type_id && car.inst_id && car.notify) {
+                // shortcut: the notify sink (T+0x3130) is not modelled (notes/29 §5)
+            }
+            car.live = 0;
+            car.k128 = 0;
+        }
+        if (!lane.cars.empty() && lane.cars.front() == ci) {
+            float t = car_time_to_lane_end(g, car);
+            if (lane.pending_events == 0) {
+                schedule_lane(g, t, (uint32_t)li);
+                lane.pending_events++;
+            }
+        }
+    } else if (car.live != 1) {
+        g.live_count++;
+        if (!car.type_id && car.inst_id && car.notify) {
+            // shortcut: the notify sink (T+0x3130) is not modelled (notes/29 §5)
+        }
+        car.live = 1;
+        if (car.live_next == 0) {   // head insert into the live list
+            car.live_next = g.live_cars;
+            g.live_cars = ci + 1;
+        }
+    }
+    // shortcut: TrafficCar__syncInstance 0x410680 needs the instance side (notes/29 §5)
+    if (lane.k34 == 0xffffffffu)
+        car.k124 = lane.node88[2] ? lane.node88[2] : lane.node88[3];
+    lane.kc8 += car.k24 + car.k14 + car.k20;
+}
+
 // 0x40d1e0 ctLane__insertCar: insert before the first car with a larger pos,
 // else append (list order = ascending pos).
 void lane_insert(Graph &g, size_t li, uint32_t ci)
@@ -824,7 +919,7 @@ void lane_insert(Graph &g, size_t li, uint32_t ci)
     size_t at = 0;
     while (at < list.size() && !(pos < g.cars[list[at]].pos)) at++;
     list.insert(list.begin() + at, ci);
-    // shortcut: lane vf3 0x40cbd0 attach is card 214
+    lane_attach(g, li, ci);
 }
 
 }  // namespace
