@@ -16,7 +16,7 @@ Read a note with `Read offset/limit` using the line numbers below; do not open t
 | 15-toolchain | mingw-w64 i686 decision, ASI proof, ABI risks |
 | 16-package-registry | resource ids, classpath registry |
 | 17-scx-mesh | SCX mesh format, loaders v1-v6, materials |
-| 18-events-frame-input | event dispatch 0x47c760, main-loop input 0x566160, s7 (line 223) mouse cursor events 0x4b8430 + screen pick 0x4eb000 + raycast 0x4fe1a0 |
+| 18-events-frame-input | event dispatch 0x47c760, main-loop input 0x566160, s7 (line 223) mouse cursor events 0x4b8430 + screen pick 0x4eb000 + raycast 0x4fe1a0, s8 (line 265) cursor leftovers (dead RCLICK hand-off, write-only fields, Osd click targets), s9 (line 287) car/bot/part native dtors 0x49beb0/0x4805a0/0x4c3a50 + setParent 0x4ec210 + second-race probe |
 | 20-script-compiler | .java -> TUFA compiler plan |
 | classes | RTTI class table |
 

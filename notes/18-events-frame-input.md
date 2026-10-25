@@ -261,3 +261,52 @@ calls `findGadget(physicsId)` and `g.click()` -> `osdCommand`. vmboot's "click" 
 - Raycast 0x4fe1a0 -> 0x4fddf0 (node walk) -> 0x4fc140 (body), t normalized over the segment,
   smallest t wins; box 0x500580 slab test in body-local space (0x4af9a0), sphere 0x5007c0.
   Kind-1 mesh triangles (0x4fd110) and poly hulls (0x4fd6d0) not ported (card 189 INVENTED skip).
+
+## 8. Cursor leftovers closed (RE 2026-10-25, card 192)
+- Right RCLICK "hand-off" in 0x4b8430 (0x4b98c4..0x4b9950) is a **dead computation**: it builds a
+  GameRef tmp, `0x47c640(Game 0x5fde90, ref_link +0xfc, 1, &tmp)`, `body = 0x4eabc0(&tmp)` (GameRef
+  getPhysBody: may run `vf+0x14(0)` load when state != 1 and drops the ref when the instance has no
+  body), and if `body->+0xb4 != right_body(+0x114)` calls `0x4a2b40` (local->world with frame
+  `body+0x64+0xd4*body[0x20c]`: p' = R*p + o, rows at +0x40/+0x50/+0x60) then `0x4af9a0`
+  (world->local, R^T*(p-o)) on the stack temp at ebp-0x28, which is uninitialised and never read.
+  The RCLICK strings use the +0x128 copy (ebp-0x18..-0x10). Port: nothing (only the getInfo/
+  getPhysBody side effects, none observable headless).
+- Write-only fields (objdump 0x4b7000-0x4ba200, getInfo 0x4b7c60 cases 2/0x1c/0x2a/0x2c/0x3b only):
+  +0x138 = `getInfo(pick ref link +0x74, 7, 0)` at right press; +0x154/+0x158/+0x15c = pick local
+  point (+0x4c..), +0x160 = pick +0x64 (every tick after the hover block); cleared by `disable`/
+  `standby` (0x4b80f3..). Nothing reads them: no port needed.
+- `standby` (and `disable`, same tail) with SysCursor mode (DAT_005e9398 != 0) and pick enabled calls
+  0x425a20 = `ShowCursor(FALSE)` (import 0x593248): OS-only.
+- Osd click targets for the vmboot driver (script side): Dialog buttons are `osd.createButton(style,
+  x, y, text, i)` (Dialog.java:149-155, cmd = button index, 0 = OK/YES), a fullscreen shield button
+  cmd 9999999 sits behind them; Garage menu items `m.addItem(res, CMD_*, ...)` (Garage.java:538,669,
+  CMD_BUYCARSUSED 122, CMD_EVENTLIST 133); CarMarket buttons use the Input axis ids as cmd
+  (CarMarket.java:421-437: AXIS_CANCEL 35, AXIS_MENU_RIGHT 58, AXIS_SELECT 34); Gadget fields
+  `cmd`/`handler` (Gadget.java:25-26); handler defaults to `osd.globalHandler`.
+
+## 9. After the race: destroyed cars stay in the world (RE + probe 2026-10-25, cards 193-194)
+Probe (scratch vmboot patch, reverted): after the finish key (actualState EventList) the process
+world still holds 5 active roots + 9 sleeping: the player car (falling, y -3600 after map.unload)
+and the 4 bot cars (destroyed by Gamemode.destroyBots -> Bot.deleteCar -> car.destroy(),
+Gamemode.java:678-708, Bot.java:192-204), plus 9 sleeping Vehicles from Garage/CarMarket whose
+resources were destroyed (parent null). A second `Generator.osdCommand(0x10E)` from that EventList
+enters java.game.Track again with 0 failed threads over 4000 frames (bodies 54+10 vs race 1 51+9).
+Cause: src `Runtime::unload` has no type_car / type_BOT native dtor (only ground/trigger).
+- type_car vf4 0x49beb0 (car typed T, record R): if `R.flags+0x2ec0 & 2` (traffic type) and the
+  instance id>>16 != 0xffff and it has a parent: `car_rem <id> <T+0x2054>` command (0x10) to the
+  parent (ctLane traffic, 0x40c...). Releases wheel/part handles, then the physics part:
+  `b = T+0x13ec` (part_comp); `while (b->+0x58 & 4) b = b->+0x20` (child -> parent); `0x4fadf0(b)`
+  = world remove of the root, which recursively deletes its children (+0x24 child list, +0x28 next)
+  and the body's contacts (0x4f6850); then deletes the callback lists +0x20f8/+0x2144/+0x2190 and
+  frees T (0x2284 bytes, 0x491bd0 base dtor).
+- type_part vf4 0x4c3a50: `body = 0x4eabc0(handle)` (GameRef getPhysBody); `0x4fadf0(body+0xb4)`.
+  src parts own no root body (installed parts are compound children of the car), so nothing to port.
+- type_BOT vf4 0x4805a0: releases 9 handles (0x4e9450: +0x2460.. x8 + one), 0x47f280 base dtor,
+  frees the 0x2730 typed: the bot leaves the per-tick list with it (0x47f280 not traced further).
+- GameRef.setParent 0x4dbbe0 -> 0x4ec210: when the new parent has another tree root (+0xf8):
+  0x51f880 (recursive render-cache reset 0x51f810 over the subtree); loaded (state 1) instance:
+  typed vf8 (type_car vf8 0x4ad6e0 = base 0x47ec20 relink of the typed node + its wheels/
+  +0x2080/+0x2090 children); if the new parent is a render scene (typed kind 0x35):
+  0x4ee1a0 render instance. **No physics removal**: Track.releaseCar's `setParent(player)`
+  (Track.java:1701-1707) keeps the player car body; whether it falls in the exe too is open
+  (then `command "reset"`, Garage setMatrix sleeps it again).
