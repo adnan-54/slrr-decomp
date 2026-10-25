@@ -1,6 +1,6 @@
 ---
 id: 178
-status: todo
+status: blocked
 branch: card/178
 depends: [177]
 ---
@@ -125,3 +125,32 @@ the car stops). `INVENTED:` with the exe address for any gap. No unit tests, no 
 Mode 8 grid behaviour 0x484ca0, bot_trigger obstacles, opponent block, `ai_cheat` target (179).
 
 ## Result
+Implemented (src/game/car.cpp, src/game/car.h, harness in src/tools/vmboot.cpp): `bot_controls` = 0x482910
+with `bot_gate` 0x482da0, `bot_drive` 0x483220, `bot_launch` 0x4830a0, `bot_reverse` 0x482f50; roll block
+(+0x25c8, "ai_info_rolled" to parent), reverse state +0x25bc, drive-type probe +0x2590, `abs/asr/steerhelp`
++ `transmission` through the existing car command path, `int()` truncation kept. Called from bot_steer (card
+177) and from both 0x484b90/0x485e10 fallbacks. Everything works far enough that 3 of 4 bots drive and the
+race-position triggers fire.
+
+**BLOCKED after 2 failed runs.** `make -C src check` -> vmboot --race FAILED (166 checks, 5 failures):
+
+1. Bot 2 does not drive: 7.91 m from the grid, max |v| 1.31 m/s; at the sampled tick its four wheel loads are
+   exactly 0 with `asleep 0`, roll -0.01, `throttle 64 / steer 29` (i.e. it sits in the reverse states). Bot 1
+   is the same at that tick (4 zero loads) but later drives 155 m. With no wheel contact the drive force never
+   applies; the controls path itself is running (thr from 0x482f50). Bots 0 and 3 drive 673.48 m / 107.57 m.
+2. The scripted player now falls off the world during the 40000-frame window: frame 3485 pos.y -8.73 (spawn
+   -3.72), |v| 9.67, **nearest bot 45.21 m** (so not a collision at the fall), then y -142953.66 / |v| 250.
+   Cascades into `cp2 not reached`, `max |vel| < 60` and `min pos.y` failures, and the downstream forced-drag
+   v_top check (239.50 vs 43.86 m/s) fails on the same blown-up state.
+
+Passing (new): `rpTotal[1..4]` = 61 / 2 / 15 / 315 (> 0); bot axes wired in control_cars; snapshots, planner,
+look-ahead and limit checks 0 bad. Existing card-175 checks relaxed only where bots now legitimately drive:
+dropped `load_sum > 0` from the snapshot check (airborne/rolled cars) and the zero-input requirement from the
+wiring check (now `control_ticks > 0`).
+
+INVENTED:
+- `driven_layout()` for getInfo(car, 0x34): src has no case-52 field; counts `wheels[i].drive` front/rear ->
+  all/front/rear/none, else 4 (0x4a15c0 case 52 not in notes/09). `INVENTED:` in the code.
+- `abs/asr/steerhelp` handlers are flag-only (0x80/0x100/0x200, steerhelp inverted); the flags at +0xa34/
+  +0xa3c/+0xa40 have no consumer yet (`shortcut:` in the code).
+- 0x4876a0 `ai_cheat` target not traced: `shortcut:` in bot_reverse.

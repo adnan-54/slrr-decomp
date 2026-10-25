@@ -1117,6 +1117,7 @@ void game_init_check(Boot &boot, Checker &c)
     // Card 175: native-bot brains and their controlled cars (filled by the
     // card-173 block below, consumed after the 300 settle frames).
     std::vector<Runtime::Resource *> bot_brains, bot_cars;
+    std::vector<Vec3> bot_grid;  // card 178: bot poses before the controls run
     int sensor_contact_frames = 0;
     if (car_res && car_payload && car_payload->root_body) {
         RigidBody *root = car_payload->root_body;
@@ -1588,9 +1589,16 @@ void game_init_check(Boot &boot, Checker &c)
         unsigned rejects_before = gate_rejects(car_payload->sim.get());
         boot.runtime()->queue_event(car_res, nullptr, 0x10,
                                     Value::make_str("wakeup"));
+        // Card 178: the grid pose of every bot (0x482910 now writes the axes
+        // that wake the car via 0x498599, so it moves from here on).
+        for (Runtime::Resource *bcr : bot_cars) {
+            game::CarData *bcp = game::car_data(*rt, bcr);
+            bot_grid.push_back(bcp && bcp->root_body ? bcp->root_body->pos
+                                                     : Vec3{});
+        }
         // INVENTED harness fixture, as for the player: in normal play a bot car
-        // wakes on the first control input (0x498599); this card keeps the bot
-        // axes 0, so wake the bot cars here to let the springs load them.
+        // wakes on the first control input (0x498599); wake the bot cars here to
+        // let the springs load them for the card-175 snapshot.
         for (Runtime::Resource *bcr : bot_cars)
             boot.runtime()->queue_event(bcr, nullptr, 0x10,
                                         Value::make_str("wakeup"));
@@ -1630,13 +1638,12 @@ void game_init_check(Boot &boot, Checker &c)
                 }
                 const game::BotSnapshot &s = bd->snap;
                 const RigidBody *rb = cp->root_body;
-                float load_sum = 0.0f;
-                for (int w = 0; w < s.wheels; w++) load_sum += s.wheel[w][1];
+                // Card 178: a bot may now be airborne at the sample, so the
+                // wheel loads are not required to be positive.
                 bool snap_ok = bd->snap_valid && s.wheels == 4 &&
                                s.pos[0] == rb->pos.x && s.pos[2] == rb->pos.z &&
                                s.speed == vec_length(rb->vel) &&
-                               s.dt == kTickDt && load_sum > 0.0f &&
-                               s.gear == cp->gear;
+                               s.dt == kTickDt && s.gear == cp->gear;
                 if (!snap_ok) bad_snap++;
                 float d = 0.0f, lat = 0.0f;
                 bool proj = traffic::path_project(bd->spline, s.pos[0],
@@ -1685,17 +1692,19 @@ void game_init_check(Boot &boot, Checker &c)
                               std::isfinite(bd->plan_aim[1]) &&
                               bd->max_grip > 0.0f;
                 if (!lim_ok) bad_lim++;
-                bool ctrl_ok = bd->control_ticks > 0 &&
-                               cp->throttle == 0.0f &&
-                               cp->brake_input == 0.0f &&
-                               cp->steer_input == 0.0f;
+                // Card 178 writes the axes, so the car inputs are no longer 0;
+                // the counter proves the car's control pass read the table.
+                bool ctrl_ok = bd->control_ticks > 0;
                 if (!ctrl_ok) bad_ctrl++;
                 std::printf("    bot %zu tick (0x47f980): pos %.3f %.3f, speed "
-                            "%.4f, d %.2f, look %.2f, loads %.3f/%.3f/%.3f/%.3f\n",
+                            "%.4f, d %.2f, look %.2f, loads %.3f/%.3f/%.3f/%.3f, "
+                            "roll %.2f, asleep %d, thr %.0f, steer %.0f\n",
                             i, (double)s.pos[0], (double)s.pos[2],
                             (double)s.speed, (double)d, (double)look,
                             (double)s.wheel[0][1], (double)s.wheel[1][1],
-                            (double)s.wheel[2][1], (double)s.wheel[3][1]);
+                            (double)s.wheel[2][1], (double)s.wheel[3][1],
+                            (double)s.euler[2], rb->asleep ? 1 : 0,
+                            (double)bd->axis[28], (double)bd->axis[1]);
                 std::printf("    bot %zu plan (0x486020): d %.2f, lat %.3f, "
                             "off %.3f, T %.2f %.2f %.2f, d_T %.2f\n",
                             i, (double)bd->plan_d, (double)bd->plan_lat,
@@ -1720,8 +1729,8 @@ void game_init_check(Boot &boot, Checker &c)
                         std::to_string(bad_plan) + " bad)");
             c.check(!bot_brains.empty() && bad_ctrl == 0,
                     "every bot car reads the bot axes in control_cars (counter "
-                    "> 0, throttle/brake/steer 0; 0x480720/0x498300, " +
-                        std::to_string(bad_ctrl) + " bad)");
+                    "> 0; 0x480720/0x498300, " + std::to_string(bad_ctrl) +
+                        " bad)");
             c.check(!bot_brains.empty() && bad_tgt == 0,
                     "every bot target T projects strictly onto its spline "
                     "inside the width and lies 0 < wrap(d - d_T) < length/2 "
@@ -2812,13 +2821,43 @@ void game_init_check(Boot &boot, Checker &c)
                 int used = 0, next_trigger = -1, nt_cp0 = -1, cp0_frame = 0;
                 int nt_cp2 = -1, cur_lap = -1;
                 bool have_fwindow = false;
+                // Card 178: per-bot progress over the race window.
+                std::vector<game::CarData *> bot_cp;
+                for (Runtime::Resource *bcr : bot_cars)
+                    bot_cp.push_back(game::car_data(*rt, bcr));
+                std::vector<float> bot_max_speed(bot_cp.size(), 0.0f);
+                std::vector<int> bot_gear(bot_cp.size(), -1);
                 // Card 171: keep running past cp0. Card 172 (--race): run on
                 // (INVENTED cap 40000 frames, 2 laps take ~26000) until
                 // handleCheckpoint executed gmThread method 7 and the script's
                 // finish window (fWindow) exists.
+                bool reported_drop = false;
                 for (int i = 0; i < 40000; i++) {
                     frames(1);
                     used = i + 1;
+                    for (size_t k = 0; k < bot_cp.size(); k++) {
+                        if (!bot_cp[k] || !bot_cp[k]->root_body) continue;
+                        bot_max_speed[k] = std::max(
+                            bot_max_speed[k],
+                            vec_length(bot_cp[k]->root_body->vel));
+                        bot_gear[k] = bot_cp[k]->gear;
+                    }
+                    if (!reported_drop && root->pos.y < spawn_y - 5.0f) {
+                        reported_drop = true;
+                        float best = 1e30f;
+                        int near = -1;
+                        for (size_t k = 0; k < bot_cp.size(); k++)
+                            if (bot_cp[k] && bot_cp[k]->root_body) {
+                                float dd = vec_length(bot_cp[k]->root_body->pos -
+                                                      root->pos);
+                                if (dd < best) { best = dd; near = (int)k; }
+                            }
+                        std::printf("  spline driver frame %d: pos.y %.2f (spawn "
+                                    "%.2f), |v| %.2f, nearest bot %d at %.2f "
+                                    "m\n", used, (double)root->pos.y,
+                                    (double)spawn_y, (double)vec_length(root->vel),
+                                    near, (double)best);
+                    }
                     float off = 0.0f;
                     float s = project(root->pos.x, root->pos.z, &off);
                     // Print only: where the car left the spline and how fast it
@@ -2958,6 +2997,45 @@ void game_init_check(Boot &boot, Checker &c)
                         "INVENTED bound: pos.y stays above spawn y - 20 m (min " +
                             std::to_string((double)min_y) + " m, spawn " +
                             std::to_string((double)spawn_y) + " m)");
+                // Card 178: every bot leaves the grid and scores a race position
+                // (CircuitRacing.handleRacePos writes rpTotal[i + dlt], dlt 1).
+                Value rpv;
+                std::string rpe;
+                bool rp_ok = game_object &&
+                             boot.vm()->get_instance_field(game_object, "rpTotal",
+                                                           &rpv, &rpe) &&
+                             rpv.kind == Value::Array && rpv.arr;
+                size_t rp_n = rp_ok ? rpv.arr->elems.size() : 0;
+                auto rp_at = [&](size_t k) {
+                    return k < rp_n && rpv.arr->elems[k].kind == Value::Int
+                               ? rpv.arr->elems[k].i
+                               : -1;
+                };
+                int bot_short = 0, rp_bad = 0;
+                for (size_t k = 0; k < bot_cp.size(); k++) {
+                    float dist = 0.0f;
+                    if (bot_cp[k] && bot_cp[k]->root_body && k < bot_grid.size())
+                        dist = vec_length(bot_cp[k]->root_body->pos - bot_grid[k]);
+                    int rp = rp_at(k + 1);
+                    if (!(dist > 50.0f)) bot_short++;
+                    if (rp <= 0) rp_bad++;
+                    std::printf("  bot %zu controls (0x482910): drove %.2f m from "
+                                "the grid, max |v| %.2f m/s, gear %d, rpTotal[%zu] "
+                                "%d\n",
+                                k, (double)dist, (double)bot_max_speed[k],
+                                bot_gear[k], k + 1, rp);
+                }
+                c.check(!bot_cars.empty() && bot_short == 0,
+                        "every bot car drives > 50 m from its grid pose "
+                        "(0x482910/0x498300, " + std::to_string(bot_short) +
+                            " short)");
+                c.check(!bot_cars.empty() && rp_ok && rp_n > bot_cars.size() &&
+                            rp_bad == 0,
+                        "the script's handleRacePos fires for every bot car "
+                        "(rpTotal[1.." +
+                            std::to_string(bot_cars.size()) +
+                            "] > 0; CircuitRacing.java:757-773, " +
+                            std::to_string(rp_bad) + " unset)");
             }
         }
         // Card 161 check 4. INVENTED harness: force the largest shipped C_drag /

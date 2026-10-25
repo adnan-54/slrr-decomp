@@ -68,6 +68,11 @@ void bot_reset(BotData &b)
     b.max_grip = 0.0f;           // +0x25d8
     b.param_floor = -1.0f;       // +0x2608
     b.curvature_enable = -1.0f;  // +0x2724
+    b.reverse_state = 0;         // +0x25bc
+    b.roll_time = 0.0f;          // +0x25c8
+    b.launch = 0;                // +0x26a4
+    b.dec_dt = 0.1f;             // +0x25f4
+    b.dec_prev = b.dec_cur = 0.0f;  // +0x25f8/+0x25fc
     b.snap_valid = false;
 }
 
@@ -1128,6 +1133,7 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
         sscanf(params.c_str(), "%d,%f", &flag, &f);
         b.flag = flag != 0;
         b.skill = (clamp01(f) - 0.5f + 1.0f) * 0.5f;
+        b.self = inst;
         g_bots[inst] = std::move(b);
     }
     CfgFile cfg;
@@ -1486,6 +1492,18 @@ int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
     }
     // 0x4a35xx: the multiplier is stored on the player (unused here).
     if (cmd.compare(0, 18, "damage_multiplier ") == 0) return 1;
+    // 0x4a2e60 cfg/command keys (notes/09:80/100/200 flags). steerhelp is
+    // inverted. shortcut: only the flags are kept; e+0xa34/+0xa3c/+0xa40 have
+    // no consumer in src.
+    if (cmd.compare(0, 4, "abs ") == 0 || cmd.compare(0, 4, "asr ") == 0 ||
+        cmd.compare(0, 10, "steerhelp ") == 0) {
+        float f = 0.0f;
+        sscanf(cmd.c_str() + cmd.find(' ') + 1, "%f", &f);
+        bool on = cmd[0] == 's' ? f <= 0.0f : f > 0.0f;
+        uint32_t bit = cmd[0] == 'a' ? (cmd[1] == 'b' ? 0x80u : 0x100u) : 0x200u;
+        c->flags = on ? c->flags | bit : c->flags & ~bit;
+        return 1;
+    }
     // INVENTED: the rest of the 0x4a2e60 chain (cfg keys such as abs, filter,
     // render, reload) is not ported; returning 0 lets the script see it.
     return 0;
@@ -1661,6 +1679,7 @@ int bot_command(Runtime &rt, Runtime::Resource *bot, uint32_t code,
         b.mode = 3;
         b.opponent = (uint32_t)opp;
         b.spline_file = file;
+        b.launch = 1;  // +0x26a4: one 0x4830a0 launch pass after AI_spline
         if (b.segments == 0) bot_reset(b);
         if (b.active >= 0 && b.active < (int)b.controlled.size() &&
             b.controlled[b.active])
@@ -2233,11 +2252,315 @@ static Vec3 plan_pof(const traffic::Path &p, float q, float off)
     return Vec3{out[0], out[1], out[2]};
 }
 
+// Axis slots of the bot's vf15 table (0x480720, bot+0x21dc + v*4; raw
+// -127..127, the car scales by 1/127 in 0x498300).
+enum {
+    kBotSteer = 1,      // +0x21e0
+    kBotThrottle = 28,  // +0x224c
+    kBotBrake = 29,     // +0x2250
+    kBotNitro = 31,     // +0x2258
+    kBotHandbrake = 48, // +0x229c
+    kBotClutch = 49,    // +0x22a0
+    kBotGear = 50,      // +0x22a4 +127 up / -127 down
+};
+
+// send(x) = queue EVENT_COMMAND x to controlled[active] (0x47d550).
+static void bot_send(BotData &b, const char *cmd)
+{
+    if (!g_rt || b.active < 0 || b.active >= (int)b.controlled.size()) return;
+    if (Runtime::Resource *car = b.controlled[(size_t)b.active])
+        g_rt->queue_event(car, nullptr, 0x10, Value::make_str(cmd));
+}
+
+// getInfo(car, 0x34) = 0x4a15c0 case 52: driven-wheel layout 0 none / 1 front /
+// 2 rear / 3 all / 4 cross. INVENTED: src has no layout field, so it counts the
+// contiguous front/rear pairs carrying a cfg `wheel` drive value (0x4a15c0
+// case 52 is not in notes/09).
+static int driven_layout(const CarData &c)
+{
+    int n = std::min((int)c.wheels.size(), 4);
+    int front = 0, rear = 0;
+    for (int i = 0; i < n; i++)
+        if (c.wheels[(size_t)i].drive != 0.0f) (i < 2 ? front : rear)++;
+    if (front == 2 && rear == 2) return 3;
+    if (front == 2 && rear == 0) return 1;
+    if (front == 0 && rear == 2) return 2;
+    return front + rear == 0 ? 0 : 4;
+}
+
+// 0x482da0 gate(S, steer, speed) -> true when 0x483220 may drive. Resets the
+// output axes, pulses the gear axis toward the requested gear and waits for
+// the engine latch +0x25d4 (+0x25c1/+0x25cc timestamps on a pass).
+static bool bot_gate(BotData &b, const BotSnapshot &s, float steer, float speed)
+{
+    (void)steer;
+    b.axis[kBotClutch] = 0.0f;
+    b.axis[kBotThrottle] = 127.0f;
+    b.axis[kBotBrake] = 0.0f;
+    b.axis[kBotSteer] = 0.0f;
+    b.axis[kBotNitro] = 0.0f;
+    int g = s.gear;
+    if ((g > 0 && g != 7) || speed <= 1e-4f) {
+        if (g > 6 || speed >= -1e-4f) {
+            if (g == 0 || std::fabs(speed) > 1e-4f || std::fabs(s.speed) > 1.0f) {
+                b.axis[kBotGear] = 0.0f;
+                if (b.engine_running) {  // +0x25d4
+                    float now = process_world().time;
+                    if (b.shift_wait) { b.shift_wait = 0; b.last_move = now; }
+                    if (b.reverse_req) { b.reverse_req = 0; b.last_reverse = now; }
+                    return true;
+                }
+                b.axis[kBotThrottle] = 127.0f;
+                b.axis[kBotBrake] = 127.0f;
+                b.axis[kBotClutch] = 127.0f;
+                return false;
+            }
+            if (b.axis[kBotGear] != 0.0f) { b.axis[kBotGear] = 0.0f; return false; }
+            b.axis[kBotGear] = g != 7 ? -127.0f : 127.0f;
+            return false;
+        }
+        if (b.axis[kBotGear] > -127.0f) { b.axis[kBotGear] = -127.0f; return false; }
+    } else if (b.axis[kBotGear] < 127.0f) {
+        b.axis[kBotGear] = 127.0f;
+        return false;
+    }
+    b.axis[kBotGear] = 0.0f;
+    return false;
+}
+
+// 0x483220 drive(S, steer, speed): steer/brake/throttle/nitro axes from the
+// wheel loads/slips, then the "transmission 5/0" gearbox command.
+static void bot_drive(BotData &b, const BotSnapshot &s, float steer, float speed)
+{
+    if (!bot_gate(b, s, steer, speed)) return;
+    float sk = std::min(2.0f * b.skill, 1.0f);  // +0x26a8
+    float load = s.wheel[0][1] + s.wheel[1][1] + s.wheel[2][1] + s.wheel[3][1];
+    float cap = 1.0f, ws;
+    switch (b.drive_type) {
+        case 2:
+            ws = (s.wheel[1][3] + s.wheel[0][3]) * 5.0f + s.wheel[3][3] +
+                 s.wheel[2][3];
+            break;
+        case 3:
+            ws = s.wheel[0][3] + s.wheel[1][3] + s.wheel[2][3] + s.wheel[3][3];
+            cap = 10.0f;
+            break;
+        case 4:
+            ws = (s.wheel[1][3] + s.wheel[0][3]) * 3.0f + s.wheel[3][3] +
+                 s.wheel[2][3];
+            cap = 5.0f;
+            break;
+        default:
+            ws = steer;
+            break;
+    }
+    ws /= s.speed + 1.0f;
+    float grip = (s.wheel[0][2] + s.wheel[1][2] + s.wheel[2][2] +
+                  s.wheel[3][2]) * 0.25f;
+    if (b.max_grip < grip) b.max_grip = grip;  // +0x25d8
+    float y = s.speed * 0.4f * 0.036f;
+    y = (y * y + 0.2f) * s.ang_vel[1];  // S+0x2c yaw rate
+    y = y >= 0.0f ? std::max(y - 0.05f, 0.0f) : std::min(y + 0.05f, 0.0f);
+    float st = steer;
+    if (y * steer <= 0.0f && std::fabs(steer) < std::fabs(y)) {
+        st = 2.0f * steer + y;
+        st = steer >= 0.0f ? std::max(st, -0.1f) : std::min(st, 0.1f);
+    }
+    float fd = std::max((s.speed - 10.0f) * 0.0005f, 0.0f);
+    st = st >= 0.0f ? std::max(st - fd, 0.0f) : std::min(st + fd, 0.0f);
+    float s3 = st / std::max(s.dt * s.speed * 2.0f, 1e-6f) * s.wheelbase;
+    if (std::fabs(s3) > std::fabs(st) * 1.2f)
+        s3 = st * 1.2f;
+    else if (std::fabs(s3) < std::fabs(st) * 0.2f)
+        s3 = st * 0.2f;
+    float stc = std::clamp(s3, -0.75f, 0.75f);
+    float u = s.wheelbase /
+              (s.speed * s.speed /
+                   (((s.wheel[0][2] * s.wheel[0][1] +
+                      s.wheel[1][2] * s.wheel[1][1]) * 9.81f + 1e-4f) /
+                        (s.wheel[0][1] + s.wheel[1][1] + 1e-4f)) +
+               1e-4f);
+    u = std::clamp(u, 0.0f, 0.75f);
+    if (s.c0)                        // S+0xc0
+        u *= 4.0f;
+    else if (b.mode == 3)
+        u *= 2.0f;
+    float a = acosf(s.fwd[2] * s.vel_dir[0] - s.fwd[0] * s.vel_dir[2]) -
+              1.5707964f;
+    float hR = (std::max(a, 0.0f) + u) * 169.33333f;
+    hR = hR < cap ? cap : std::min(hR, 127.0f);
+    float hL = (u - std::min(a, 0.0f)) * 169.33333f;
+    hL = hL < cap ? cap : std::min(hL, 127.0f);
+    b.axis[kBotSteer] = std::clamp(stc * -169.33333f, -hR, hL);
+    float sp = std::min(s.speed, speed);
+    float o = b.dec_cur;                               // +0x25fc
+    float dc = std::max((b.dec_prev - sp) / b.dec_dt, 0.0f);
+    b.dec_cur = dc;
+    float sp2 = speed - (o + dc) * 0.5f * s.dt;
+    b.dec_prev = sp;                                   // +0x25f8
+    float ps = b.prev_stc;                             // +0x2600
+    b.prev_stc = stc;
+    b.dec_dt = s.dt;                                   // +0x25f4
+    float v = sp2;
+    float as = std::fabs(stc);
+    if (as > 0.375f && (std::fabs(ps) - as) / b.dec_dt < 0.2f) {
+        float vc = sqrtf(b.max_grip * 9.81f * s.wheelbase / (2.0f * (as - 0.375f)));
+        if (s.c0) vc = std::max(s.speed, vc);
+        v = std::min(sp2, vc);
+    }
+    float e = std::clamp((0.100000024f - (s.speed - v) / ((v + 1.0f) * 0.1f)) -
+                             std::clamp(2.0f - v, 0.0f, 2.0f),
+                         -1.0f, 1.1f);
+    if (s.c0)
+        ws *= s.c4 + 2.0f;
+    else if (b.mode == 3 && s.nitro > 0.0f)
+        ws *= 0.3f;
+    float c0 = std::clamp((float)(int)(b.mode == 3 ? load * 500.0f + 40.0f
+                                                   : load * 400.0f - 50.0f),
+                          0.0f, 128.0f);
+    float c1 = std::clamp(127.0f - (float)(int)(std::fabs(ws) * 150.0f - 20.0f),
+                          0.0f, c0);
+    float c2 = std::clamp(128.0f - (float)(int)((sk - 1.0f) * -28.0f), 0.0f, c1);
+    float ct = std::min(c2, 127.0f);
+    float thr = std::clamp((float)(int)(e * 127.0f), 0.0f, ct);
+    b.axis[kBotThrottle] = thr;
+    b.axis[kBotClutch] = std::clamp(127.0f - thr * 10.0f, 0.0f, 127.0f);
+    if (s.nitro > 0.0f && e > 1.05f && c2 == 128.0f &&
+        s.redline * 0.33f < s.rpm && s.gear > 1)
+        b.axis[kBotNitro] = 127.0f;
+    float br = std::clamp((float)(int)(e * -127.0f), 0.0f, 127.0f);
+    float sf = std::max(s.speed, 10.0f);
+    float m = s.c0 ? 2.0f : 1.0f;
+    float cF = std::clamp(
+        127.0f - (float)(int)((std::fabs((s.wheel[1][3] + s.wheel[0][3]) * 0.5f /
+                                          sf) -
+                                0.05f) * 423.3333f * m),
+        0.0f, 127.0f);
+    float cR = std::min(
+        std::max(127.0f - (float)(int)(((s.wheel[0][5] + s.wheel[1][5]) *
+                                            211.66666f / sf -
+                                        21.166666f) * m),
+                 0.0f),
+        cF);
+    float cL = std::clamp((float)(int)(load * 400.0f - 50.0f), 0.0f, 127.0f);
+    float p1 = std::clamp(127.0f - (float)(int)(std::fabs(s.ang_vel[1] + stc) *
+                                               300.0f),
+                          0.0f, cR);
+    float p2 = std::clamp(127.0f - (float)(int)(std::fabs(s.ang_vel[1] + stc) *
+                                               200.0f),
+                          0.0f, cL);
+    float brake = std::min(br, std::min(p2, p1));
+    b.axis[kBotBrake] = brake;
+    b.axis[kBotHandbrake] = std::clamp(br - brake, 0.0f, p2 - brake);
+    if ((std::fabs(b.axis[kBotSteer]) <= 5.0f || s.rpm >= s.redline * 0.9f ||
+         s.rpm <= s.redline * 0.2f) &&
+        load >= 0.001f)
+        bot_send(b, "transmission 5");
+    else
+        bot_send(b, "transmission 0");
+}
+
+// 0x4830a0 launch(S): one pass after AI_spline; shifts into 1st and holds full
+// throttle/nitro until the car moves, else hands back to the semi-auto box.
+static void bot_launch(BotData &b, const BotSnapshot &s)
+{
+    float slip = std::fabs(s.wheel[0][5] + s.wheel[1][5] + s.wheel[2][5] +
+                           s.wheel[3][5]) / (s.speed + 1.0f);
+    if (b.axis[kBotBrake] <= 0.0f && b.axis[kBotHandbrake] <= 0.0f &&
+        (s.rpm <= s.redline * 0.8f || slip >= 0.3f || s.speed <= 5.0f)) {
+        bot_send(b, "transmission 2");
+        b.axis[kBotGear] = (s.gear > 0 || s.gear_axis >= 127.0f) ? 0.0f : 127.0f;
+        b.axis[kBotThrottle] = 127.0f;
+        b.axis[kBotBrake] = 0.0f;
+        b.axis[kBotHandbrake] = 0.0f;
+        b.axis[kBotNitro] = 127.0f;
+        b.axis[kBotClutch] = std::max(80.0f - s.speed * 20.0f, 0.0f);
+        return;
+    }
+    bot_send(b, "transmission 5");
+    b.launch = 0;
+}
+
+// 0x482f50 reverse(S, steer): throttle backwards out of the stuck state.
+static void bot_reverse(BotData &b, const BotSnapshot &s, float steer)
+{
+    if (!bot_gate(b, s, -steer, -1.0f)) return;
+    for (int i = 0; i < 4; i++) b.wheel_grip[i] = 1.0f;  // +0x2710..+0x271c
+    // shortcut: 0x4876a0 sends "ai_cheat %.5f x5" from +0x270c..+0x271c; its
+    // target was not traced (card 178), so the message is not sent.
+    b.axis[kBotThrottle] = 64.0f;
+    b.axis[kBotBrake] = 0.0f;
+    b.axis[kBotSteer] = std::clamp(steer * 169.33333f, -127.0f, 127.0f);
+    float now = process_world().time;
+    if ((s.speed < 1.0f && now - b.last_move > 2.0f) ||
+        (std::fabs(steer) < 0.5f && now - b.last_move > 0.3f)) {
+        b.reverse_state = 7;  // +0x25bc
+        b.axis[kBotThrottle] = 0.0f;
+        b.axis[kBotBrake] = 127.0f;
+    }
+    b.axis[kBotClutch] = 0.0f;
+}
+
+// 0x482910 controls(S, steer, speed): rolled reset, reverse-out state machine,
+// first-use drive-type detection, then 0x483220 and the launch/stuck tail.
+static void bot_controls(BotData &b, const BotSnapshot &s, const CarData &car,
+                         float steer, float speed)
+{
+    if (std::fabs(s.euler[2]) > 1.0f) {  // S+0x3c: rolled
+        float old = b.roll_time;
+        b.roll_time += s.dt;
+        if (old < 5.0f && b.roll_time >= 5.0f && b.self && b.self->parent)
+            g_rt->queue_event(b.self->parent, nullptr, 0x10,
+                              Value::make_str("ai_info_rolled"));
+        b.axis[kBotClutch] = b.axis[kBotThrottle] = b.axis[kBotBrake] =
+            b.axis[kBotHandbrake] = b.axis[kBotSteer] = b.axis[kBotNitro] = 0.0f;
+        return;
+    }
+    b.roll_time = 0.0f;
+    switch (b.reverse_state) {
+        case 1: if (s.speed < 0.5f) { b.reverse_state = 4; b.shift_wait = 1; } break;
+        case 2: if (s.speed < 0.5f) { b.reverse_state = 5; b.shift_wait = 1; } break;
+        case 3: if (s.speed < 0.5f) { b.reverse_state = 6; b.shift_wait = 1; } break;
+        case 7: b.reverse_state = 0; break;
+        default: break;
+    }
+    if (b.reverse_state >= 4 && b.reverse_state <= 6) {
+        bot_reverse(b, s, steer);
+        return;
+    }
+    switch (b.drive_type) {  // +0x2590
+        case 0: {
+            bot_send(b, "abs 0");
+            bot_send(b, "asr 0");
+            bot_send(b, "steerhelp 0");
+            int t = driven_layout(car);
+            b.drive_type = t == 1 ? 4 : t == 2 ? 2 : t == 3 ? 3 : 1;
+            if (b.drive_type == 1) b.drive_type = 4;  // exe logs the fallback
+            bot_controls(b, s, car, steer, speed);
+            return;
+        }
+        case 2: case 3: case 4: case 5:
+            bot_drive(b, s, steer, speed);
+            break;
+        default:
+            break;
+    }
+    if (b.launch) bot_launch(b, s);  // +0x26a4
+    if (s.speed < 1.0f && b.axis[kBotThrottle] > 16.0f && s.gear < 7) {
+        if (b.last_reverse < -0.5f) { b.reverse_req = 1; return; }
+        if (process_world().time - b.last_reverse <= 3.0f) return;
+        b.shift_wait = 1;
+        b.reverse_state = 5;
+    }
+    b.last_reverse = -1.0f;
+}
+
 // 0x483bd0 no-obstacle path (card 177): V from the car front to T, the angle
 // to S.fwd, and the steer/speed pair 0x482910 receives. shortcut: the
 // bot_trigger create (+0x2700) and the obstacle walk (+0x26b4, 0x409fa0) are
 // card 179; with no intervals 0x40a8a0 keeps V unchanged.
-static void bot_steer(BotData &b, const BotSnapshot &s, float vmax)
+static void bot_steer(BotData &b, const BotSnapshot &s, const CarData &car,
+                      float vmax)
 {
     float fx = s.pos[0] + s.fwd[0], fz = s.pos[2] + s.fwd[2];
     float vx = b.plan_T[0] - fx, vz = b.plan_T[2] - fz;
@@ -2258,13 +2581,15 @@ static void bot_steer(BotData &b, const BotSnapshot &s, float vmax)
         ang = g > 1.0f ? 0.0f : g < -1.0f ? 3.14159265f : acosf(g);
     b.plan_steer = -ang;                 // 0x482910(S, steer = -ang, ...)
     b.plan_speed = std::max(0.0f, vmax);  // ... speed = max(0, v2)
+    bot_controls(b, s, car, b.plan_steer, b.plan_speed);
 }
 
 // 0x486020 steps 1, 3, 4 and 5 (cards 176-177): lateral offset from the
 // curvature ahead, pull to the car's current lateral position, target search
 // from d - 10 back to +0x268c, the straight-line extension of T, then the
 // braking-distance speed limit and 0x483bd0. look is already in +0x268c.
-static void bot_plan(BotData &b, BotSnapshot &s, float look, float vmax0)
+static void bot_plan(BotData &b, BotSnapshot &s, const CarData &car, float look,
+                     float vmax0)
 {
     (void)look;
     const traffic::Path &p = b.spline;
@@ -2441,24 +2766,29 @@ static void bot_plan(BotData &b, BotSnapshot &s, float look, float vmax0)
     }
     b.plan_vmax = vmax;
     b.plan_reach = reach;
-    bot_steer(b, s, vmax);  // 0x483bd0
+    bot_steer(b, s, car, vmax);  // 0x483bd0
 }
 
 // 0x485e10 (mode 3): look-ahead on the spline; 0x482910 (card 178) is the
 // fallback.
-static void bot_mode3(BotData &b, BotSnapshot &s)
+static void bot_mode3(BotData &b, BotSnapshot &s, const CarData &car)
 {
     b.max_lat_accel = b.brake_mul * 1.2f;               // +0x2580 = +0x2588*1.2
     b.grip_base = std::min(b.grip_speed * 2.0f, 1.0f);  // +0x2584
-    if (b.spline.segs.empty()) return;                  // 0x482910 no-op
+    if (b.spline.segs.empty()) {
+        bot_controls(b, s, car, 0.0f, 0.0f);  // 0x482910 fallback
+        return;
+    }
     float look = std::min(std::fabs(s.speed) * b.look_speed + b.look_base,
                           b.look_dist);
     float d = 0.0f, lat = 0.0f;
-    if (!traffic::path_project(b.spline, s.pos[0], s.pos[2], &d, &lat))
-        return;  // 0x482910 no-op
+    if (!traffic::path_project(b.spline, s.pos[0], s.pos[2], &d, &lat)) {
+        bot_controls(b, s, car, 0.0f, 0.0f);  // 0x482910 fallback
+        return;
+    }
     b.target_d = d - look;  // +0x268c
     b.plan_look = look;
-    bot_plan(b, s, look, 1000.0f);  // 0x486020
+    bot_plan(b, s, car, look, 1000.0f);  // 0x486020
 }
 
 // 0x47f980's snapshot S: getInfo cases 0x36/2/3/4/0x33/0x32/0x35/0x40 on the
@@ -2591,9 +2921,11 @@ void control_bots(float dt)
             b.engine_running = 0;
         // 0x484b90 mode switch, then the steer slew +0x21e0.
         float old = b.axis[1];
-        if (b.mode == 3) bot_mode3(b, b.snap);
-        // shortcut: modes 2/4..8 (race/grid/traffic) and the default 0x482910
-        // controls are cards 176-179; they leave the new steer unchanged.
+        if (b.mode == 3) bot_mode3(b, b.snap, c);
+        else if (b.mode < 1 || b.mode > 8)
+            bot_controls(b, b.snap, c, 0.0f, 0.0f);  // 0x484b90 default
+        // shortcut: modes 2/4..8 (race/grid/traffic) are cards 176-179; they
+        // leave the new steer unchanged.
         float r = b.steer_rate * b.snap.dt;
         b.axis[1] = std::clamp(b.axis[1], old - r, old + r);
     }

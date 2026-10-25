@@ -326,6 +326,19 @@ struct BotData {
     float target_d = 0.0f;       // +0x268c (0x485e10: d - look)
     float wheel_grip[4] = {1.0f, 1.0f, 1.0f, 1.0f};  // +0x2710 + i*4
     float curvature_enable = -1.0f;  // +0x2724
+    // Card 178 controls state (0x482910 -> 0x482da0/0x483220/0x4830a0).
+    float roll_time = 0.0f;       // +0x25c8 rolled-for time
+    int32_t reverse_state = 0;    // +0x25bc 1..3 stuck, 4..6/7 reverse out
+    int32_t shift_wait = 0;       // +0x25c1 requested a gear pulse
+    float last_move = -1.0f;      // +0x25c4 world time of the last gate pass
+    int32_t reverse_req = 0;      // +0x25cc reverse-out requested
+    float last_reverse = -1.0f;   // +0x25d0 world time of the last reverse-out
+    int32_t launch = 0;           // +0x26a4 0x4830a0 launch after AI_spline
+    float dec_prev = 0.0f;        // +0x25f8 previous speed target
+    float dec_cur = 0.0f;         // +0x25fc deceleration estimate
+    float dec_dt = 0.1f;          // +0x25f4 dt of the estimate (reset 0.1)
+    float prev_stc = 0.0f;        // +0x2600 previous clamped steer
+    Runtime::Resource *self = nullptr;  // bot instance (+0xc parent, controlled list)
     // 0x486020 last plan (card 176): projection d/lat, lateral offset, target
     // point T and the spline direction D there (card 177 input).
     float plan_d = 0.0f;
