@@ -27,3 +27,15 @@ getArgs order: self, dest node, slot (ignored, overwritten), xpart node (out), s
 `r = Part__installSearch 0x4c96c0(P, &tref, &slot2, pos ? &(pos.x,y,z) : null)`; `if (xpart)
 bind(xpart, tref.RI)` (the target actually used); r != 0 -> new int[2]{r, slot2}, else null.
 src already has the search: `install_search` (src/game/car.cpp:672, used by part_command).
+
+## 4. Exe review of merged cards 203-206 (2026-10-25)
+Decompiled 0x4debd0, 0x4b4f40 (+asm), 0x4b5130, 0x4cd3a0, 0x4c1f90, 0x4b3220, 0x4b2680, 0x5032d0.
+- 203 PASS: last index first, newest-first ring walk with p+15 wrap, signed `c-1` compare, clear ring[cursor-1].
+- 204 PASS: defaults index 1/sfx 0/pitch 1.0, `index > 3` unsigned reject, bind e+0x838+i*0x10 only if sfx,
+  pitch e+0x878+i*4 always; nitro binds only, pitch not stored.
+- 205 FIXED: 0x5032d0(part_comp), run at the end of 0x4c1f90 and after installs, subtracts the children's COM C
+  from every child offset X.t when |C|^2 > 1e-5. So X.t = rec.pos + rec.R*com - C for every car (not only the
+  5 non-origin cfgs). src now uses `bbone_pos - car->com` (src flat compound COM; INVENTED: threshold residual and
+  nested compounds). Walk/0.1/field order x,y,z (0x59c170/188/198) confirmed.
+- 206 FIXED (edge): only a null dest *object* returns null early (dest ref without target runs the search and
+  unbinds xpart). Gate failure returns {slot arg, slot2} in the exe (callers pass slot 0): left INVENTED.

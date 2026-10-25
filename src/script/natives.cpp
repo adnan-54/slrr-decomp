@@ -3662,9 +3662,19 @@ bool ch_get_angvel(Vm &vm, const Args &a, Value *out, std::string *err)
 }
 
 // car+0x2c: first body line child frame X (notes/22 §4), p = X.t + X.R*center.
+// X.t = rec.pos + rec.R*com - C: 0x5032d0(part_comp) subtracts the children's
+// COM C from every child offset (+4..+0xc).
+// INVENTED: C = src's flat compound COM (car->com); the exe's 1e-5 skip
+// threshold (residual < 3 mm) and nested part compounds are not modelled.
+static Vec3 bbone_xt(const game::CarData &c)
+{
+    return Vec3{c.bbone_pos[0] - c.com[0], c.bbone_pos[1] - c.com[1],
+                c.bbone_pos[2] - c.com[2]};
+}
+
 static Vec3 bbone_point(const game::CarData &c)
 {
-    return Vec3{c.bbone_pos[0], c.bbone_pos[1], c.bbone_pos[2]} +
+    return bbone_xt(c) +
            mat_vec(c.bbone_rot, Vec3{c.center[0], c.center[1], c.center[2]});
 }
 
@@ -3739,9 +3749,10 @@ bool ch_get_cm(Vm &vm, const Args &a, Value *out, std::string *err)
     if (c && c->chassis_body) {
         Vec3 r = mat_vec(c->bbone_rot,
                          Vec3{c->center[0], c->center[1], c->center[2]});
-        v[0] = r.x - c->bbone_pos[0] - c->bbone_com[0];
-        v[1] = r.y - c->bbone_pos[1] - c->bbone_com[1];
-        v[2] = r.z - c->bbone_pos[2] - c->bbone_com[2];
+        Vec3 t = bbone_xt(*c);
+        v[0] = r.x - t.x - c->bbone_com[0];
+        v[1] = r.y - t.y - c->bbone_com[1];
+        v[2] = r.z - t.z - c->bbone_com[2];
     }
     Object *o = new_point(vm, "java.lang.Vector3", v, false, err);
     if (!o) return false;
@@ -4948,8 +4959,12 @@ bool pt_install_ok(Vm &vm, const Args &a, Value *out, std::string *err)
         !get_i("Part.install_OK", a[4], &slot2, err))
         return false;
     Runtime *rt = game_rt();
+    // 0x4cd3a0: only a null dest object returns early; a dest ref without a
+    // target still runs the (failing) search and unbinds xpart.
+    // INVENTED: when the P type gates fail the exe returns {slot, slot2} with
+    // the script's slot arg (0 in both shipped callers); src returns null.
     Runtime::Resource *dest = value_resource(a[1]);
-    if (!rt || !dest) {
+    if (!rt || a[1].kind != Value::Obj || !a[1].obj) {
         *out = Value::make_null();
         return true;
     }
