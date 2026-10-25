@@ -570,6 +570,37 @@ Career-map drive failures after the placement port (card 164 finish, 2026-10-24)
   wheel rays at max length) or caught a wall top's down-facing face and was pushed 0.5 m through the road
   by the 0x4fc7e0 deep branch (player fell out of the world). Deep-branch contacts per race: ~30000 -> 4.
   Part cfgs use another table (0x5dab10, `nocollision` 0x4bc940: def+0xb4 |= 8 only), not ported.
+- **def+0xb4 bit 8 (RE 2026-10-25, card 187).** 0x4bc940(line, state): `i = state+0x868` (current body record);
+  `if (i > 0 && (def = *(state + i*0x74 + 0xf4))) def+0xb4 |= 8`. Every body is initialised by 0x501f30(body,
+  def, pos, rot) (callers PhysicsWorld__addBody 0x4f7830 and addChildBody 0x4f78d0): `def&4 == 0 -> body+0x58 |= 1`;
+  **`def&8 -> body+0x58 |= 0x20`**; `def&0x40 -> |= 0x100`; `def&2 -> |= 2`. Body flag 0x20 is skipped by both
+  Collide__bodyPair 0x4fb370 (pair and compound-child descent, notes/11 s4) and the 0x4feb20 child recursion. So a
+  part cfg `nocollision` disables that part body exactly like the car type modifier (0x4bfba0 also sets def|=8).
+  Shipped: 679 cfgs carry `nocollision`; all non-`_main` ones checked (first 400) are `sphere 0.1` part bodies.
+- **Steer help (RE 2026-10-25, card 188), 0x498300 asm 0x498a6e..0x498d44.** Type cfg key `steerhelp` (table
+  0x5da878 -> 0x48fa30): only while `M+0x120 == 0` (M+0x120 is the type's load counter, `INC` at the end of the
+  type ctor 0x49ab20 @0x49be8d, so only the first parse writes; same guard as driver/controller/slottype):
+  `sscanf(rest, "%f %f %f %f %f %f", M+0x132c lo, +0x1330 hi, +0x1334 keep, +0x1338 slipGain, +0x133c slipMax,
+  +0x1340 yawGain)`. Ctor defaults (0x49b41b..): 0, 0, 1.0, 0, 3.15, 0.01. Shipped lines: `1.0 30.0 0.5 0.0 1.57
+  1.0` (Duhen/SunStrip), `1.0 30.0 0.5 1.2 1.57 [1.2]` (Axis 200S). Global `DAT_005fe320` = config
+  `steerhelp_turn` (0x47c4e3, read only when the key exists; not in the shipped files, so 0).
+  Runs after the axes read, the 0x40000 block, horn, look axis, wheel average and FF, before the shift block:
+  ```
+  old = steer at function entry (+0x1ddc before the axes read)
+  if (!(car+0x70 & 0x200) && e+0xa34 > 0 && hi > 0):          // h = e+0xa34
+    v = root active vel (+0x70), R rows (+0xa4/+0xb4/+0xc4), w = omega (+0xd4)
+    lat = (R10*vy + R00*vx) + R20*vz;  fwd = (R02*vx + R12*vy) + R22*vz
+    q = (fwd*fwd) * (h*h)
+    if (q > lo*lo):
+      f = ((hi/h)^2 > q) ? (sqrtf(q) - lo) / (hi - lo) : 1
+      a = (float)atan2(-lat, -fwd)                              // x87 FPATAN
+      s = |a| > 1.5707964 ? 0 : (a > slipMax ? slipMax : max(-slipMax, a))
+      t = (steer / e+0xa20) * DAT_005fe320
+      yr = (R11*wy + R01*wx) + R21*wz;  d = (yr - car+0x1fbc) + yr;  car+0x1fbc = yr
+      steer = (1 - (1 - keep) * f) * steer + (yawGain * (t - d) + slipGain * s) * f;  clamp [-1, 1]
+      steer = (steer - old) * min(dt * 10, 1) + old
+      if (steer * old < 0): r = (|old| * 0.5) / |steer|; if (r < 1) steer *= r
+  ```
 
 ## Wheel steer frame: 0x4aa830 -> sensor body matrix -> tyre/spring pass (2026-10-24, card 170 RE)
 `0x4aa830(car)` (ECX = manager, called from updateControls 0x498300 when `|steer − steer_copy| > 0.001`, and from

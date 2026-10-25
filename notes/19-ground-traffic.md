@@ -755,6 +755,22 @@ Corrections to 8.1: the 0x47f980 tail does not move a debug object: `+0x26f8` is
   could also see static map bodies: type-1 records); 0x468b00 owner flag 0x8000 test and 0x501da0 deferred touch
   untraced; trigger event delivery to the parent bot INVENTED in card 183.
 
+### 8.3 0x483bd0 tail rounding (RE 2026-10-25, card 186)
+All SSE single precision (no x87 except the 0x40a7d0 float return through ST0):
+- 0x40ab10 reset: `len = sqrtss(V.z^2 + V.x^2)`; `range = max(len, minRange)`; if `len > 0.0f`: `k = 1.0f/len`,
+  `dir = V * k` (reciprocal multiply, as src).
+- 0x40a8a0 tail (asm 0x40aa50..0x40ab06): `ang = |hi| > |lo| ? lo : hi`; `c = cosf(ang)`, `s = sinf(ang)` (SSE
+  CRT 0x570e7e/0x570fcb, arg/result in XMM0); `x' = c*dx - dz*s`, `z' = s*dx + dz*c`; stores dir; output
+  `(len * x', z' * len)`. With no intervals ang = 0, c = 1, s = 0 exactly, so the exe returns `len * (V * (1/len))`
+  per component: **the exe has the ulp noise too**. The INVENTED guard in src `bot_steer` (keep V when no
+  intervals) diverges from the exe and must go.
+- 0x483bd0 after resolve (asm 0x4848b5..0x48496f): `+0x269c/+0x26a0 = out`; `len = sqrtss(z*z + x*x)`;
+  `(double)len > 1e-5` (double constant 0x593588) -> `k = 1.0f/len`, `c = out * k` (src divides: mismatch),
+  else `c = 0`. `ang = 0x40a7d0(c, S.fwd.xz)`; `g = p.x*e.x + e.z*p.z`, `cr = e.x*p.z - p.x*e.z`; `cr <= 0`:
+  `g > 1 -> -0.0f` (XORPS sign of 0), `g < -1 -> -pi`, else `-acosf(g)`; `cr > 0`: `g > 1 -> +0`, `g < -1 -> pi`,
+  else `acosf(g)` (0x5706e4). `+0x25f0 = 0`; `0x482910(S, -ang, 0 > v2 ? 0 : v2)`.
+- Residual doubt: MS CRT acosf/cosf/sinf vs glibc may differ by an ulp for non-trivial args.
+
 ## 9. Career circuit race: laps, finish and exit (script side, CircuitRacing.java; RE 2026-10-24, cards 171/172)
 Exe provides only triggers/timers/OSD/controls; the rules are script (memory: exe is a shell).
 - Norisring career event (vmboot): `laps = gmcEvent.specialSlots[0]` = 2, `cpTrigger.length` 4, `fines` null (no

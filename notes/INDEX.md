@@ -21,11 +21,11 @@ Read a note with `Read offset/limit` using the line numbers below; do not open t
 | classes | RTTI class table |
 
 ## Big notes: section -> start line
-**09-vehicle** (95 KB): script-field accessors 3 · refresh params 0x4aebf0 17 · wheel record 41 · Vehicle::update 61 · car fields 195 · engine block 214 · suspension S 283 · Pacejka 319 · open questions 335 · drive path 343 · control path (player input) 389 · 103 m/s fall 487 · setMatrix placement 496 · steer frame 0x4aa830 574
+**09-vehicle** (98 KB): script-field accessors 3 · refresh params 0x4aebf0 17 · wheel record 41 · Vehicle::update 61 · car fields 195 · engine block 214 · suspension S 283 · Pacejka 319 · open questions 335 · drive path 343 · control path (player input) 389 · 103 m/s fall 487 · setMatrix placement 496 · part nocollision def|=8 573 · steer help 0x498300 580 · steer frame 0x4aa830 605
 **12-render** (90 KB): globals 9 · video init 23 · frame sched 83 · viewports/cameras 111 · render groups 210 · transforms/fog/lights 295 · materials 307 · meshes 370 · textures 378 · script natives 387 · video 446 · open 449
 **13-car-structs** (57 KB): native payload paths 14 · struct sizes 37 · car/part P 59 · manager M 114 · OSD 180 · wheel template 197 · wheel record 212 · slot record 320 · engine block 355 · SfxTable 372 · DynoData 386 · native summaries 420 · java confirmations 577 · open 597 · part install 617
 **14-audio-input** (50 KB): input 19 · audio 326 · open 922
-**19-ground-traffic** (63 KB): ground handle 10 · traffic 77 · pedestrians 161 · water 205 · no-service 226 · cards 246 · map collision 259 · race bots 446 · bot obstacles/solver 719 · circuit race 758
+**19-ground-traffic** (64 KB): ground handle 10 · traffic 77 · pedestrians 161 · water 205 · no-service 226 · cards 246 · map collision 259 · race bots 446 · bot obstacles/solver 719 · bot steer rounding 758 · circuit race 774
 **11-collision-shapes** (44 KB): shape 6 · V-Clip 44 · distance 65 · contact gen 100 · c_collision 108 · other 238 · Voronoi error 244 · script triggers 277 · hull contact refresh 334
 
 ## Where to grep (no semantic index; exact names win)
