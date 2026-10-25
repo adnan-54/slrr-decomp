@@ -256,6 +256,29 @@ struct CarData {
     CarData();
 };
 
+// `native bot` payload (0x4803a0 create, 0x480850 vf14 EVENT_COMMAND). Offsets
+// are the bot object's; a spline record is the 0x54-byte one of 0x4122b0.
+struct BotData {
+    struct SplinePoint {
+        Vec3 pos = {}, dir = {};
+        float w = 0.0f, f1 = 0.0f;
+        int32_t i1 = 0;
+        float f2 = 0.0f, f3 = 0.0f;
+        int32_t i2 = 0;
+    };
+    int flag = 0;             // +0x2690 create "%d"
+    float skill = 0.5f;       // +0x26a8 = ((clamp01(f) - 0.5) + 1) * 0.5
+    std::vector<Runtime::Resource *> controlled;  // +0x2310 + n*0x10
+    int active = 0;           // +0x2424 last vehicle ref (0x47c640 getInfo 7 == 5)
+    int mode = 0;             // +0x259c
+    float begin_race = 0.0f;  // +0x25dc
+    uint32_t opponent = 0;    // +0x25e0
+    std::string spline_file;  // command arg, for diagnostics only
+    float spline_width = 0.0f;  // command arg of 0x482630
+    std::vector<SplinePoint> spline_points;  // +0x2604
+    int segments = 0;
+};
+
 // Lazy per-resource payloads, created on first native access.
 PartData *part_data(Runtime &rt, Runtime::Resource *r);
 CarData *car_data(Runtime &rt, Runtime::Resource *r);
@@ -294,6 +317,12 @@ int part_command(Runtime &rt, Runtime::Resource *part, uint32_t code,
 // (the Controller script never gets commands), 0 otherwise.
 int player_command(Runtime &rt, Runtime::Resource *player, uint32_t code,
                    const Value &param);
+// 0x480850 type_bot__vf14 EVENT_COMMAND: controllable/control/AI_suspend/
+// AI_BeginRace/AI_level/AI_spline. Returns 1 for every code on a native bot.
+int bot_command(Runtime &rt, Runtime::Resource *bot, uint32_t code,
+                const Value &param);
+// `native bot` payload of a created bot resource, or null (vmboot).
+const BotData *bot_data(Runtime::Resource *bot);
 // 0x47be30 Game__runDriveCallbacks: Vehicle__update 0x49c8e0 for every awake
 // car, once per physics sub-step.
 void drive_cars(float dt);

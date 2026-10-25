@@ -1,6 +1,6 @@
 ---
 id: 173
-status: todo
+status: implemented
 branch: card/173
 depends: [172]
 ---
@@ -91,3 +91,19 @@ Planner/update (0x47f980, 0x484b90, 0x486020), controls (0x482910), bot_trigger 
 osd/leave/AI_NightRace/AI_race/AI_follow/AI_GoTo*/AI_params/AI_throttle..AI_nitro (cards 174-176 or later).
 
 ## Result
+- `BotData` payload + create hook (`has_native_ref(rt, type, "bot")`: mask 0x10, flag/skill from "%d,%f")
+  and `bot_command` 0x480850 (controllable -> activate/damage_multiplier/control, control, AI_suspend,
+  AI_BeginRace, AI_level, AI_spline) in src/game/car.*; `bot_command` added to the native chain in
+  Runtime::queue_event; `bot_data` exported for vmboot.
+- AI_spline 0x482630: rows scanned with the exe's 12-field format, points stored, segments = rows-1,
+  mode 3, opponent, spline path resolved through `ResourceManager::resolve_path` + `fs::read_file`.
+  No Hermite build, no per-frame planner (card 174).
+- vmboot drive-start block: both hard checks pass. 4 racers, brain 0x80000871, cars 0x80000822/…, each
+  brain controls exactly its car (slot_player), mode 3, beginRace 1.0, 38 points / 37 segments, point
+  width 2.0, opponent = player car for bot 0 and the previous bot's car after; per-bot skill 0.750,
+  cmd widths 1.515 / 4.855 / 0.507 / 1.030, route_1/2/3/route_1.
+- `make -C src -j4 check` green; `--selfcheck` 155 checks / 0 failed, `--race` 145 / 0 failed. No other
+  check changed (the bots' transmission 0 leaves the player checks untouched).
+- INVENTED: "damage_multiplier 0.000" text (car stores nothing), spline `base = this+0x2594 + width`
+  uses 0 for the untraced +0x2594, controllable duplicate test uses the control list (+0x2310), and
+  getInfo(7)==5 is g_cars membership.

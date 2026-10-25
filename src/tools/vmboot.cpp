@@ -1302,6 +1302,130 @@ void game_init_check(Boot &boot, Checker &c)
                 "body flags 0x15040 and its resource id as owner (0x4d4700, " +
                     std::to_string(trig_bad) + " bad of " +
                     std::to_string(trig_bodies.size() + (size_t)trig_bad) + ")");
+        // Card 173: native bots. Bot.enterCar (Bot.java:217) creates `brain`
+        // (GameRef sl:0x6E "BOTBRAIN") and sends AI_level/controllable/
+        // AI_suspend; Gamemode.prepareBots sends AI_BeginRace 1.0;
+        // CircuitRacing.applySplines sends AI_spline (0x4803a0/0x480850/0x482630).
+        {
+            Value ev, bv;
+            std::string e;
+            Object *event_obj = nullptr;
+            int racers = -1;
+            if (game_object &&
+                boot.vm()->get_instance_field(game_object, "gmcEvent", &ev, &e) &&
+                ev.kind == Value::Obj)
+                event_obj = ev.obj;
+            if (event_obj &&
+                boot.vm()->get_instance_field(event_obj, "racers", &ev, &e) &&
+                ev.kind == Value::Int)
+                racers = ev.i;
+            bool have_list = game_object && racers > 0 &&
+                             boot.vm()->get_instance_field(game_object, "gBot", &bv,
+                                                           &e) &&
+                             bv.kind == Value::Array && bv.arr &&
+                             (int)bv.arr->elems.size() >= racers;
+            int n_spl = 0;
+            Value spv;
+            if (track_data &&
+                boot.vm()->get_instance_field(track_data, "splinesAI", &spv, &e) &&
+                spv.kind == Value::Obj && spv.obj) {
+                Value sz;
+                if (rt->call_method(spv.obj, "size", {}, &sz, &e) &&
+                    sz.kind == Value::Int)
+                    n_spl = sz.i;
+            }
+            int bad_state = 0, bad_spline = 0, printed = 0;
+            Runtime::Resource *prev_car = nullptr;
+            for (int i = 0; have_list && i < racers; i++) {
+                const Value &biv = bv.arr->elems[(size_t)i];
+                if (biv.kind != Value::Obj || !biv.obj) {
+                    bad_state++;
+                    bad_spline++;
+                    prev_car = nullptr;
+                    continue;
+                }
+                auto field_obj = [&](const char *f) -> Object * {
+                    Value v;
+                    std::string fe;
+                    if (!boot.vm()->get_instance_field(biv.obj, f, &v, &fe) ||
+                        v.kind != Value::Obj)
+                        return nullptr;
+                    return v.obj;
+                };
+                auto res_of = [&](Object *o) -> Runtime::Resource * {
+                    Runtime::Handle *h = o ? rt->handle(o) : nullptr;
+                    return h ? h->target : nullptr;
+                };
+                Runtime::Resource *brain = res_of(field_obj("brain"));
+                // Bot.car is a Vehicle; its `chassis` object carries the car
+                // resource bind (same path as the player car above).
+                Runtime::Resource *car = nullptr;
+                if (Object *car_obj = field_obj("car")) {
+                    Value chv;
+                    std::string ce;
+                    if (boot.vm()->get_instance_field(car_obj, "chassis", &chv, &ce) &&
+                        chv.kind == Value::Obj)
+                        car = res_of(chv.obj);
+                }
+                const game::BotData *bd = game::bot_data(brain);
+                game::CarData *cp = car ? game::car_data(*rt, car) : nullptr;
+                bool controlled_ok = bd && bd->controlled.size() == 1 &&
+                                     bd->controlled[0] == car && bd->active == 0;
+                bool slot_ok = false;
+                if (cp && brain)
+                    for (int s = 0; s < cp->control_slots && s < 4; s++)
+                        if (cp->slot_player[s] &&
+                            cp->slot_player[s]->id == brain->id)
+                            slot_ok = true;
+                if (!bd || !brain || !car || !controlled_ok || !slot_ok)
+                    bad_state++;
+                std::string expected;
+                if (n_spl > 0 && spv.kind == Value::Obj && spv.obj) {
+                    int k = i < n_spl ? i : 0;
+                    Value el;
+                    if (rt->call_method(spv.obj, "elementAt",
+                                        {Value::make_int(k)}, &el, &e) &&
+                        el.kind == Value::Str)
+                        expected = el.s;
+                }
+                uint32_t opp = i == 0 ? (car_res ? car_res->id : 0u)
+                                      : (prev_car ? prev_car->id : 0u);
+                bool width_ok = true;
+                if (bd)
+                    for (const game::BotData::SplinePoint &p : bd->spline_points)
+                        if (std::fabs(p.w - 2.0f) > 1e-4f) width_ok = false;
+                bool spl_ok = bd && bd->mode == 3 &&
+                              std::fabs(bd->begin_race - 1.0f) < 1e-6f &&
+                              !expected.empty() && bd->spline_file == expected &&
+                              bd->spline_points.size() == 38 && bd->segments == 37 &&
+                              width_ok && bd->opponent == opp;
+                if (!spl_ok) bad_spline++;
+                if (!printed && bd) {
+                    std::printf("  native bots: %d racer(s), splinesAI %d, "
+                                "brain 0x%x, car 0x%x\n",
+                                racers, n_spl, bd && brain ? brain->id : 0u,
+                                car ? car->id : 0u);
+                    printed = 1;
+                }
+                if (bd)
+                    std::printf("    bot %d: skill %.3f, cmd width %.3f, %s, "
+                                "%zu point(s), %d segment(s), mode %d, "
+                                "opponent 0x%x\n",
+                                i, (double)bd->skill, (double)bd->spline_width,
+                                bd->spline_file.empty() ? "(none)"
+                                                        : bd->spline_file.c_str(),
+                                bd->spline_points.size(), bd->segments, bd->mode,
+                                bd->opponent);
+                prev_car = car;
+            }
+            c.check(have_list && bad_state == 0,
+                    "every gBot brain is a native bot bound to its car "
+                    "(0x4803a0/0x4d2ab0, " + std::to_string(bad_state) + " bad)");
+            c.check(have_list && bad_spline == 0,
+                    "every gBot brain holds the AI_spline state (mode 3, "
+                    "beginRace 1.0, 38 points/37 segments, width 2.0, opponent "
+                    "id; 0x482630, " + std::to_string(bad_spline) + " bad)");
+        }
         // Floor = highest soup surface under the car's start (x,z): a downward
         // ray against the merged map collider (card 144).
         float floor_y = 0.0f;

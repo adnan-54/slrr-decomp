@@ -19,6 +19,7 @@
 #include "parts/cfg.h"
 #include "physics/mesh.h"
 #include "physics/vclip.h"
+#include "platform/fs.h"
 #include "resource/manager.h"
 #include "script/natives.h"
 #include "script/vm.h"
@@ -49,6 +50,19 @@ float num(const std::string &s)
     return (float)strtod(s.c_str(), nullptr);
 }
 
+// 0x4828e0/0x4803a0 clamp01.
+float clamp01(float v)
+{
+    return v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v;
+}
+
+// 0x484a40: drop the spline (0x2604) the last AI_spline built.
+void bot_reset(BotData &b)
+{
+    b.spline_points.clear();
+    b.segments = 0;
+}
+
 // Point-mass parallel-axis term of 0x5032d0: m * (|r|^2 E - r r^T).
 void add_point_inertia(Mat34 *inertia, float m, Vec3 r)
 {
@@ -74,6 +88,9 @@ std::map<Object *, std::unique_ptr<EngineModel>> g_dynos;
 // swallows every command; the instance's type is not reachable from the node,
 // so the flag is recorded when the type manager runs (instantiate).
 std::set<Runtime::Resource *> g_players;
+// Native-bot instances (`native bot`, record sl:0x6E). Commands are stored; the
+// planner/driver (0x47f980/0x486020) is card 174.
+std::map<Runtime::Resource *, BotData> g_bots;
 
 // The cfg ref sits on the record's native line, possibly on a super record.
 bool load_native_cfg(Runtime &rt, Runtime::Resource *r, const char *native,
@@ -1092,6 +1109,19 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
         if (g_rt != &rt) reset(&rt);  // else the first car_data() wipes g_players
         g_players.insert(inst);
     }
+    // 0x4803a0 type_bot vf create: flag/skill from "%d,%f" (GameRef passes ""),
+    // then the vf14 command mask (0x4ebd90(inst, 0x10, 0)).
+    if (type && has_native_ref(rt, type, "bot")) {
+        inst->event_mask |= 0x10u;
+        if (g_rt != &rt) reset(&rt);
+        BotData b;
+        int flag = 0;
+        float f = 0.5f;
+        sscanf(params.c_str(), "%d,%f", &flag, &f);
+        b.flag = flag != 0;
+        b.skill = (clamp01(f) - 0.5f + 1.0f) * 0.5f;
+        g_bots[inst] = std::move(b);
+    }
     CfgFile cfg;
     if (!type || !load_native_cfg(rt, type, "car", &cfg) || cfg.bodies.empty()) return;
     CarData *car = car_data(rt, inst);
@@ -1507,6 +1537,131 @@ int player_command(Runtime &rt, Runtime::Resource *player, uint32_t code,
         // control): no-op.
     }
     return 1;
+}
+
+// 0x480850 type_bot__vf14 EVENT_COMMAND (0x10). The native bot has no script,
+// so every code returns 1.
+int bot_command(Runtime &rt, Runtime::Resource *bot, uint32_t code,
+                const Value &param)
+{
+    if (!bot || g_rt != &rt) return 0;
+    auto it = g_bots.find(bot);
+    if (it == g_bots.end()) return 0;
+    BotData &b = it->second;
+    if (code != 0x10 || param.kind != Value::Str) return 1;
+    const std::string &cmd = param.s;
+    auto word = [&cmd](const char *w) {
+        size_t n = strlen(w);
+        return cmd.compare(0, n, w) == 0 &&
+               (cmd.size() == n || cmd[n] == ' ' || cmd[n] == '\t');
+    };
+    uint32_t id = 0;
+    if (scan_id(cmd, "controllable", &id)) {
+        for (Runtime::Resource *c : b.controlled)
+            if (c && c->id == id) return 1;
+        Runtime::Resource *car = rt.resolve(id);
+        if (!car) return 1;
+        char buf[64];
+        // 0x4d2ab0: the bot's camera/render ids (+0x218c/+0x219c) are ctor 0.
+        snprintf(buf, sizeof buf, "activate 0x%x 0x0 0x0", bot->id);
+        rt.queue_event(car, nullptr, 0x10, Value::make_str(std::string(buf)));
+        // INVENTED text: 0x4d2ab0 formats the ctor-0 multiplier +0x21c4 with
+        // "damage_multiplier %.3f"; src's car_command drops the value.
+        rt.queue_event(car, nullptr, 0x10,
+                       Value::make_str("damage_multiplier 0.000"));
+        snprintf(buf, sizeof buf, "control 0x%x", id);
+        rt.queue_event(bot, nullptr, 0x10, Value::make_str(std::string(buf)));
+        return 1;
+    }
+    if (scan_id(cmd, "control", &id)) {
+        for (Runtime::Resource *c : b.controlled)
+            if (c && c->id == id) return 1;
+        Runtime::Resource *car = rt.resolve(id);
+        if (!car) return 1;
+        b.controlled.push_back(car);  // +0x2310 + n*0x10
+        // shortcut: 0x47c640 getInfo(7) == 5 (vehicle) is g_cars membership,
+        // as in install_search above.
+        if (g_cars.count(car)) b.active = (int)b.controlled.size() - 1;
+        return 1;
+    }
+    if (word("AI_suspend")) {  // 0x4877a0
+        bot_reset(b);
+        b.mode = 1;  // +0x259c
+        return 1;
+    }
+    if (word("AI_BeginRace")) {  // 0x4828e0
+        float f = 1.0f;
+        sscanf(cmd.c_str() + 12, "%f", &f);
+        bot_reset(b);
+        b.mode = 8;
+        b.begin_race = clamp01(f);
+        return 1;
+    }
+    if (word("AI_level")) {
+        float f = b.skill;
+        sscanf(cmd.c_str() + 8, "%f", &f);
+        b.skill = (clamp01(f) - 0.5f + 1.0f) * 0.5f;
+        return 1;
+    }
+    if (word("AI_spline")) {  // 0x482630
+        float width = 0.0f;
+        char file[512] = {};
+        int opp = 0;
+        sscanf(cmd.c_str() + 9, "%f %511s %d", &width, file, &opp);
+        b.spline_width = width;
+        bot_reset(b);
+        // 0x565610 File__readAll through the resource search path.
+        std::string path = rt.resources().resolve_path(file);
+        std::vector<uint8_t> buf;
+        std::string err;
+        if (!path.empty() && fs::read_file(path, &buf, &err)) {
+            std::string text(buf.begin(), buf.end());
+            size_t at = 0;
+            bool first = true;
+            while (at < text.size()) {
+                size_t nl = text.find('\n', at);
+                std::string line = text.substr(
+                    at, nl == std::string::npos ? std::string::npos : nl - at);
+                at = nl == std::string::npos ? text.size() : nl + 1;
+                double x, y, z, dx, dy, dz;
+                BotData::SplinePoint p;
+                int n = sscanf(
+                    line.c_str(), "%lf %lf %lf %lf %lf %lf %f %f %d %f %f %d", &x,
+                    &y, &z, &dx, &dy, &dz, &p.w, &p.f1, &p.i1, &p.f2, &p.f3,
+                    &p.i2);
+                if (n <= 5) continue;
+                p.pos = Vec3{(float)x, (float)y, (float)z};
+                p.dir = Vec3{(float)dx, (float)dy, (float)dz};
+                // The exe starts the field at `base = this+0x2594 + width` and
+                // keeps it when the row has no 7th field; +0x2594 is not traced,
+                // so the base is treated as 0 (INVENTED, shipped rows have 7).
+                if (p.w < 0.0f) p.w = width;
+                if (first)
+                    first = false;
+                else
+                    b.segments += 1;
+                b.spline_points.push_back(p);
+            }
+        }
+        b.mode = 3;
+        b.opponent = (uint32_t)opp;
+        b.spline_file = file;
+        if (b.segments == 0) bot_reset(b);
+        if (b.active >= 0 && b.active < (int)b.controlled.size() &&
+            b.controlled[b.active])
+            rt.queue_event(b.controlled[b.active], nullptr, 0x10,
+                           Value::make_str("transmission 0"));
+        return 1;
+    }
+    // Other words (device, viewport, osd, renderinstance, camera, leave,
+    // AI_NightRace, AI_race, ...) are accepted with no state in this card.
+    return 1;
+}
+
+const BotData *bot_data(Runtime::Resource *bot)
+{
+    auto it = g_bots.find(bot);
+    return it == g_bots.end() ? nullptr : &it->second;
 }
 
 // 0x47be30 Game__runDriveCallbacks -> 0x47be90 -> type_car vf12
@@ -2114,6 +2269,7 @@ void reset(Runtime *rt)
     g_sfx_tables.clear();
     g_dynos.clear();
     g_players.clear();
+    g_bots.clear();
     g_cars.clear();
     g_parts.clear();
     g_rt = rt;
