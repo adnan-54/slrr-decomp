@@ -1,0 +1,7 @@
+- [Generic naming](feedback_generic_naming.md) — no slrr_ prefix/suffix in src/, engine code is generic Invictus
+- [Checkpoint](reference_checkpoint.md) — CHECKPOINT.md + tools/checkpoint.sh hold resume state; update at each stop
+- [No self-written tests](feedback_no_selfwritten_tests.md) — RE: only corpus checks on shipped data, verify against exe instead
+- [Runtime inputs](project_runtime_inputs.md) — .rpk + .class only; .rdb never read; .java = exe load-time compile fallback (0x5598f0)
+- [Cap vmboot](feedback_cap_vmboot.md) — always ulimit -v + timeout on vmboot; uncapped run froze the CT
+- [Fresh agents](feedback_fresh_agents.md) — one fresh sub-agent per task; orchestrator only cards/reviews/merges
+- [Exe is a shell](feedback_exe_is_shell.md) — game rules live in .java scripts; maps are mods, never hardcode them

@@ -16,5 +16,13 @@ obj/
 # local claude config (holds api keys)
 .claude/*
 !.claude/skills/
+!.claude/agents/
+!.claude/memory/
+!.claude/settings-deepseek.example.json
 
 __pycache__/
+
+# local-only Claude Code state (settings-deepseek.json holds an API key)
+.claude/settings-deepseek.json
+.claude/worktrees/
+.claude/scheduled_tasks.lock

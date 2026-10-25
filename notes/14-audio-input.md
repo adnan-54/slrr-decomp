@@ -914,7 +914,7 @@ first entry whose +8 is 0.
 | pool 0x7a5b98 / 0x568b60 | `VoicePool` ctor |
 | 0x5690a0 per frame | `VoicePool::service` (not called by `FrameLoop` yet) |
 
-Cards: tasks/081 (resource parser + WAV), 082 (bus allocation), 083 (service +
+Cards: tasks/done/081 (resource parser + WAV), 082 (bus allocation), 083 (service +
 SfxRef natives), 084 (frame hook + owner fix).
 
 ---
