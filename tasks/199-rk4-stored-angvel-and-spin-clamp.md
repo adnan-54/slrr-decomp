@@ -1,7 +1,7 @@
 ---
 id: 199
-status: todo
-branch:
+status: implemented
+branch: card/199
 depends: []
 ---
 # physics: RK4 uses the step-start angular velocity; exe spin clamp and damping order

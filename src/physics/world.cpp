@@ -140,9 +140,13 @@ Mat34 RigidBody::rotation() const
     return pose_rotation(Pose{pos, rot});
 }
 
-Mat34 RigidBody::world_inv_inertia() const
+// World inverse inertia R I^-1 R^T from an arbitrary rotation. q is normalised
+// first, as the exe does before matrix(q) 0x5665c0.
+static Mat34 world_inv_inertia_from(const BodyDef &def, Quat q)
 {
-    Mat34 r = rotation();
+    quat_normalize(&q);
+    Mat34 r;
+    quat_to_mat(&r, &q);
     Mat34 rt;
     mat_transpose(&rt, &r);
     Mat34 tmp;
@@ -150,6 +154,11 @@ Mat34 RigidBody::world_inv_inertia() const
     Mat34 out;
     mat_mul(&out, &tmp, &rt);
     return out;
+}
+
+Mat34 RigidBody::world_inv_inertia() const
+{
+    return world_inv_inertia_from(def, rot);
 }
 
 Vec3 RigidBody::angular_velocity() const
@@ -334,18 +343,11 @@ struct StepState {
     BodyState start;
 };
 
-static BodyState evaluate(const RigidBody &b, const BodyState &s, Vec3 force, Vec3 torque)
+// 0x505c40 derivative(y, h, k): the quaternion term uses the step-start omega
+// (k.omega is never written by the exe, so every stage keeps y.omega).
+static BodyState evaluate(const RigidBody &b, const BodyState &s, Vec3 force, Vec3 torque,
+                          Vec3 omega)
 {
-    Quat q = s.rot;
-    quat_normalize(&q);
-    Mat34 r;
-    quat_to_mat(&r, &q);
-    Mat34 rt;
-    mat_transpose(&rt, &r);
-    Mat34 tmp, iw;
-    mat_mul(&tmp, &r, &b.def.inv_inertia);
-    mat_mul(&iw, &tmp, &rt);
-    Vec3 omega = mat_vec(iw, s.momentum);
     BodyState d;
     d.pos = s.vel;
     d.vel = force * b.def.inv_mass;
@@ -379,10 +381,12 @@ static void integrate_body(RigidBody &b, const BodyState &start, float h)
     Vec3 torque = b.ext_torque + b.torque;
 
     // Classic RK4; stage weights 0.5/0.5/1 and final 1/6,1/3,1/3,1/6.
-    BodyState k1 = evaluate(b, start, force, torque);
-    BodyState k2 = evaluate(b, stepped(start, k1, h * 0.5f), force, torque);
-    BodyState k3 = evaluate(b, stepped(start, k2, h * 0.5f), force, torque);
-    BodyState k4 = evaluate(b, stepped(start, k3, h), force, torque);
+    // 0x505c40: k.omega is never written, every stage uses the step-start omega.
+    Vec3 omega0 = mat_vec(world_inv_inertia_from(b.def, start.rot), start.momentum);
+    BodyState k1 = evaluate(b, start, force, torque, omega0);
+    BodyState k2 = evaluate(b, stepped(start, k1, h * 0.5f), force, torque, omega0);
+    BodyState k3 = evaluate(b, stepped(start, k2, h * 0.5f), force, torque, omega0);
+    BodyState k4 = evaluate(b, stepped(start, k3, h), force, torque, omega0);
 
     // 0x506530 adds the active state's position offset s[6..8] after the RK4
     // sum, so contact queries on the integrated state see the correction.
@@ -403,24 +407,23 @@ static void integrate_body(RigidBody &b, const BodyState &start, float h)
                      k3.rot.w * (h / 3.0f) + k4.rot.w * (h / 6.0f)};
     quat_normalize(&b.rot);
 
-    // Safety clamps (must be reproduced): |omega| <= 20, |v| <= 250.
-    Vec3 omega = b.angular_velocity();
-    float w2 = vec_dot(omega, omega);
-    if (w2 > 0.0f && w2 * 0.0025f > 1.0f)
-        b.angular_momentum = b.angular_momentum * (20.0f / sqrtf(w2));
-    float v2 = vec_dot(b.vel, b.vel);
-    if (v2 > 62500.0f)
-        b.vel = b.vel * (250.0f / sqrtf(v2));
-
+    // 0x506530: angular damping runs before the spin clamp, and its factor is
+    // not clamped at 0.
     // notes/08: optional angular damping `1 + mass*coef*dt*100` when +0x9c < 0.
     // "mass" is read as inverse mass: the default -0.01*m then gives a
     // mass-independent 0.98 per 0.02 s step (the literal product is unbounded).
     if (b.def.angular_drag < 0.0f) {
         float factor = 1.0f + b.def.inv_mass * b.def.angular_drag * h * 100.0f;
-        if (factor < 0.0f)
-            factor = 0.0f;
         b.angular_momentum = b.angular_momentum * factor;
     }
+    // 0x506530: L *= 1/(|w|^2*0.0025) when that exceeds 1 (|w| > 20); |v| <= 250.
+    Vec3 omega = b.angular_velocity();
+    float e = vec_dot(omega, omega) * 0.0025f;
+    if (1.0f < e)
+        b.angular_momentum = b.angular_momentum * (1.0f / e);
+    float v2 = vec_dot(b.vel, b.vel);
+    if (v2 > 62500.0f)
+        b.vel = b.vel * (250.0f / sqrtf(v2));
 
     // Solver forces stay in the active state for the whole step and are
     // re-applied by every sub-iteration's integration (0x5051e0 accumulates).
