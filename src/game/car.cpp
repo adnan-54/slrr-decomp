@@ -41,6 +41,9 @@ const float kPacejkaDefaults[kPacejkaSlots] = {
     0.0f, 0.0f, 8000.0f, 1.0f, 0.015f, 0.4f, 0.0f, 0.0f,
 };
 
+// DAT_005fe320 = gameplay config `steerhelp_turn`; not in the shipped files -> 0.
+static const float kSteerHelpTurn = 0.0f;
+
 // 0x4b0ff0 health->factor: 1 - w^2*0.6, floored at 0.100000024 when w >= 1.
 float wear_factor(float w)
 {
@@ -195,6 +198,15 @@ void fill_car(CarData &c, const CfgFile &cfg)
         }
         if (ln.key == "nodriver") {
             c.driver_slot = -1;
+            continue;
+        }
+        // 0x48fa30 type cfg `steerhelp` (table 0x5da878): M+0x132c..+0x1340,
+        // missing values keep the ctor defaults.
+        if (ln.key == "steerhelp") {
+            float *sh[6] = {&c.sh_lo, &c.sh_hi, &c.sh_keep,
+                            &c.sh_slip_gain, &c.sh_slip_max, &c.sh_yaw_gain};
+            for (size_t i = 0; i < ln.values.size() && i < 6; i++)
+                *sh[i] = num(ln.values[i]);
             continue;
         }
         if (ln.key == "type") {
@@ -1501,8 +1513,7 @@ int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
     // 0x4a35xx: the multiplier is stored on the player (unused here).
     if (cmd.compare(0, 18, "damage_multiplier ") == 0) return 1;
     // 0x4a2e60 cfg/command keys (notes/09:80/100/200 flags). steerhelp is
-    // inverted. shortcut: only the flags are kept; e+0xa34/+0xa3c/+0xa40 have
-    // no consumer in src.
+    // inverted: v > 0 enables it, v <= 0 clears +0xa34 and sets flag 0x200.
     if (cmd.compare(0, 4, "abs ") == 0 || cmd.compare(0, 4, "asr ") == 0 ||
         cmd.compare(0, 10, "steerhelp ") == 0) {
         float f = 0.0f;
@@ -1510,6 +1521,7 @@ int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
         bool on = cmd[0] == 's' ? f <= 0.0f : f > 0.0f;
         uint32_t bit = cmd[0] == 'a' ? (cmd[1] == 'b' ? 0x80u : 0x100u) : 0x200u;
         c->flags = on ? c->flags | bit : c->flags & ~bit;
+        if (cmd[0] == 's') c->steer_help = on ? 0.0f : f;
         return 1;
     }
     // INVENTED: the rest of the 0x4a2e60 chain (cfg keys such as abs, filter,
@@ -2058,6 +2070,7 @@ void control_cars(float dt)
         float old_thr = c->throttle;
         float old_brk = c->brake_input;
         float old_clu = c->clutch_input;
+        float old_steer = c->steer_input;  // +0x1ddc read at function entry
         // The exe's tear is the car part payload's +0xb4 (PartData::tear).
         auto pi = g_parts.find(kv.first);
         float tear = pi != g_parts.end() ? pi->second->tear : 1.0f;
@@ -2115,6 +2128,44 @@ void control_cars(float dt)
             if ((horn_ax > 0.1f) != (c->horn_axis > 0.1f))
                 c->horn_id = (c->horn_id + 1) & 3;
             c->horn_axis = horn_ax;
+            // 0x498a6e..0x498d44 steer help: yaw-rate damper + slip-angle term,
+            // only above lo m/s, then rate-limited towards the previous tick.
+            if (!(c->flags & 0x200u) && c->steer_help > 0.0f && c->sh_hi > 0.0f) {
+                // INVENTED: no root body, no help.
+                if (RigidBody *rb = c->root_body) {
+                    Mat34 R = rb->rotation();
+                    Vec3 v = rb->vel;
+                    Vec3 w = rb->angular_velocity();
+                    float h = c->steer_help;
+                    float lat = (R.m[4] * v.y + R.m[0] * v.x) + R.m[8] * v.z;
+                    float fwd = (R.m[2] * v.x + R.m[6] * v.y) + R.m[10] * v.z;
+                    float q = (fwd * fwd) * (h * h);
+                    float lo = c->sh_lo, hi = c->sh_hi;
+                    if (q > lo * lo) {
+                        float f = ((hi / h) * (hi / h) > q)
+                                      ? (sqrtf(q) - lo) / (hi - lo)
+                                      : 1.0f;
+                        float a = (float)atan2((double)-lat, (double)-fwd);
+                        float sm = c->sh_slip_max;
+                        float s = fabsf(a) > 1.5707964f
+                                      ? 0.0f
+                                      : (a > sm ? sm : std::max(-sm, a));
+                        float t = (c->steer_input / c->max_steer) * kSteerHelpTurn;
+                        float yr = (R.m[5] * w.y + R.m[1] * w.x) + R.m[9] * w.z;
+                        float d = (yr - c->yaw_prev) + yr;
+                        c->yaw_prev = yr;
+                        float steer = (1.0f - (1.0f - c->sh_keep) * f) * c->steer_input +
+                                      (c->sh_yaw_gain * (t - d) + c->sh_slip_gain * s) * f;
+                        steer = std::min(std::max(steer, -1.0f), 1.0f);
+                        steer = (steer - old_steer) * std::min(dt * 10.0f, 1.0f) + old_steer;
+                        if (steer * old_steer < 0.0f) {
+                            float r = (fabsf(old_steer) * 0.5f) / fabsf(steer);
+                            if (r < 1.0f) steer *= r;
+                        }
+                        c->steer_input = steer;
+                    }
+                }
+            }
             // Gear shift: the 0x400000 latch clears while |shift| <= 0.1.
             if (shift > 0.1f) {
                 if (!(c->flags & 0x400000u)) {

@@ -182,6 +182,7 @@ struct CarData {
     float gearset_last = 0.0f;   // +0x2280 last ai(51) gearset
     float prev_clutch = 0.0f;    // +0x1fa8 last clutch written by updateControls
     float prev_rpm = 0.0f;       // +0x1fac 0x4977a0 previous smoothed rpm
+    float yaw_prev = 0.0f;       // +0x1fbc steer help yaw rate of the last tick
     float gear_ratio = 0.0f;     // +0x1e0c ratio[gear] (Vehicle__update 0x498b40)
     float shaft_speed = 0.0f;    // +0x1e78 driveshaft / wheel-average speed
     float rpm_raw = 0.0f;        // +0x1e7c
@@ -210,6 +211,14 @@ struct CarData {
     float steer_wheel_radius = 0.0f; // +0xa28
     float steer_wheel_angle = 0.0f;  // +0xa2c
     float ackermann = 0.0f;      // +0xa30
+    float steer_help = 1.0f;     // +0xa34 template default; 0 = off
+    // Type cfg `steerhelp` block M+0x132c..+0x1340 (0x48fa30).
+    float sh_lo = 0.0f;          // +0x132c
+    float sh_hi = 0.0f;          // +0x1330
+    float sh_keep = 1.0f;        // +0x1334
+    float sh_slip_gain = 0.0f;   // +0x1338
+    float sh_slip_max = 3.15f;   // +0x133c
+    float sh_yaw_gain = 0.01f;   // +0x1340
     float torque_base = 1.0f;    // +0xd4
     float nitro_torque_base = 1.0f;  // +0xd8
     float max_rpm = 6500.0f;     // +0x18   INVENTED default (template not traced)

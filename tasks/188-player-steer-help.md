@@ -1,7 +1,7 @@
 ---
 id: 188
-status: todo
-branch:
+status: blocked  # port done; 3 vmboot player checks still assert raw steering, see Result
+branch: card/188
 depends: []
 ---
 # Vehicle::updateControls 0x498300: steer help (type cfg `steerhelp`, e+0xa34)
@@ -69,3 +69,13 @@ if (!(flags & 0x200) && e+0xa34 > 0 && hi > 0) {
 - If a vmboot `--race` / player check fails, report the check and numbers (status `blocked`) instead of
   weakening the port.
 - no new tests or hand-made expected values; card frontmatter status/branch filled.
+
+## Result
+Port is complete (0x48fa30 cfg, 0x4a2e60 command, 0x498a6e..0x498d44 block); `make -C src clean check`
+fails 3 old vmboot player checks that assert raw steering (`main` is green, 166/166):
+- `FAIL Left (axis 1) gives steer > 0.9 (got 0.756091)`
+- `FAIL Right (axis 1) gives steer < -0.9 (got -0.631610)`
+- `FAIL auto clutch slips at launch (0x4977a0): max clutch_input 0.000000`
+The numbers match the ported formula (SunStrip `1.0 30.0 0.5 0.0 1.57 1.0`: keep term `1-0.5*f`);
+the checks' `>0.9` bounds predate steer help. Not updated: no exe-run value available, and a value from
+this port would be a hand-made expectation. Needs a card to re-derive them from the exe.
