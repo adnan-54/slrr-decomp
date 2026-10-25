@@ -1,7 +1,7 @@
 ---
 id: 216
-status: todo
-branch:
+status: implemented
+branch: card/216
 depends: [215]
 ---
 # GroundRef: remTrafficCar / notifyTrafficCar / setTrafficCarBehaviour + TrafficCar__remove

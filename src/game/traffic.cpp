@@ -1,5 +1,6 @@
 #include "game/traffic.h"
 
+#include <algorithm>
 #include <math.h>
 #include <string.h>
 
@@ -916,6 +917,39 @@ void lane_attach(Graph &g, size_t li, uint32_t ci)
     lane.kc8 += car.k24 + car.k14 + car.k20;
 }
 
+// 0x40ca40 TrafficCar__unlinkLane: unlink from the lane's car list.
+// INVENTED: the vector erase replaces the exe's intrusive prev/next pointers, and
+// the exe has no lane bounds check (it trusts the lane pointer).
+void lane_unlink(Graph &g, uint32_t ci)
+{
+    Car &car = g.cars[ci];
+    if (car.lane < g.lanes.size()) {
+        std::vector<uint32_t> &list = g.lanes[car.lane].cars;
+        std::vector<uint32_t>::iterator it = std::find(list.begin(), list.end(), ci);
+        if (it != list.end()) list.erase(it);
+    }
+    car.prev = car.next = car.lane = 0;
+}
+
+// 0x40e710 ctLane__vf4: detach a removed car from its lane (dir unused).
+void lane_detach(Graph &g, size_t li, uint32_t ci)
+{
+    Lane &lane = g.lanes[li];
+    Car &car = g.cars[ci];
+    lane.kc8 -= car.k24 + car.k14 + car.k20;
+    if (lane.kc8 < 0.0f) lane.kc8 = 0.0f;
+    if (!lane.cars.empty()) {   // f = the new first car (car is already unlinked)
+        // shortcut: TrafficCar__step 0x4107c0 is not ported (same shortcut as
+        // car_time_to_lane_end).
+        float t = car_time_to_lane_end(g, g.cars[lane.cars.front()]);
+        if (lane.pending_events == 0) {
+            schedule_lane(g, t, (uint32_t)li);
+            lane.pending_events++;
+        }
+    }
+    if (lane.k34 == 0xffffffffu) car.k124 = 0;
+}
+
 // 0x40d1e0 ctLane__insertCar: insert before the first car with a larger pos,
 // else append (list order = ascending pos).
 void lane_insert(Graph &g, size_t li, uint32_t ci)
@@ -1031,6 +1065,39 @@ uint32_t Graph::spawn_on_road(size_t road, float p1, float p2, float p3, float p
     car.front_z = p[2] + car.k18 * v[2];
     lane_insert(*this, li, ci);
     return ci + 1;
+}
+
+// 0x40f290 TrafficCar__remove: unlink the car (GroundRef.remTrafficCar 0x4de520).
+void Graph::remove_car(uint32_t handle)
+{
+    // INVENTED: bounds and freed-slot checks; the exe dereferences the car pointer.
+    if (handle == 0 || handle > cars.size()) return;
+    const uint32_t ci = handle - 1;
+    Car &car = cars[ci];
+    if (car.serial == 0) return;   // INVENTED: "not on a lane" (car+0xc == 0); every
+                                   // spawned src car is on a lane until released
+    lane_unlink(*this, ci);
+    // INVENTED: path_lane is an index where 0 is a valid lane; the exe tests the pointer.
+    if (car.path_lane < lanes.size()) lane_detach(*this, car.path_lane, ci);
+    car.next_lane_a = car.next_lane_b = 0;
+    car.path_lane = 0;
+    car.path = nullptr;
+    car.kd0 = car.kd4 = 0;
+    car.lane = 0;
+    if (car.live_next != 0) {   // in the live list
+        if (live_cars == ci + 1) {
+            live_cars = car.live_next;
+        } else {
+            // INVENTED: the walk stops at kLiveEnd (the exe walks into its sentinel
+            // and relies on the car being listed).
+            uint32_t p = live_cars;
+            while (p != kLiveEnd && p != ci + 1) p = cars[p - 1].live_next;
+            if (p != kLiveEnd) cars[p - 1].live_next = car.live_next;
+        }
+        car.live_next = 0;
+    }
+    car_release(*this, ci);
+    free_cars.push_back(ci);
 }
 
 // 0x416800 Traffic__spawnCarNear: a link lane of the nearest cross picks the

@@ -7356,22 +7356,42 @@ bool gr_add_traffic_car(Vm &vm, const Args &a, Value *out, std::string *err)
     return true;
 }
 
-// 0x4de520 GroundRef.remTrafficCar(I)V: if (car) TrafficCar__remove(car); ids are raw
-// car pointers, none exist.
-// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+// 0x4de520 GroundRef.remTrafficCar(I)V: if (car) { if (car+0x138) getInfo(
+// &car+0x130, 0x38, &zero); TrafficCar__remove(car); }.
 bool gr_rem_traffic_car(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!want("GroundRef.remTrafficCar", a, 2, err)) return false;
     *out = Value::make_null();
+    int32_t handle;
+    if (!get_i("GroundRef.remTrafficCar", a[1], &handle, err)) return false;
+    Runtime *rt = game_rt();
+    traffic::Graph *t = rt ? rt->ground_traffic(value_handle(a[0])) : nullptr;
+    // INVENTED: handle bounds check; the exe takes a raw car pointer.
+    if (!t || handle <= 0) return true;
+    // shortcut: the getInfo(instance link +0x130, 0x38) type_car take-over release
+    // is not ported (take-over itself is not ported, notes/27 §3).
+    t->remove_car((uint32_t)handle);
     return true;
 }
 
-// 0x4de5f0 GroundRef.notifyTrafficCar(II)I: if (car == 0) return 0.
-// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+// 0x4de5f0 GroundRef.notifyTrafficCar(II)I: if (!car) return 0; if (flag >= 0)
+// car+0xdd = flag != 0; return car+0xdd.
 bool gr_notify_traffic_car(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!want("GroundRef.notifyTrafficCar", a, 3, err)) return false;
     *out = Value::make_int(0);
+    int32_t handle, flag;
+    if (!get_i("GroundRef.notifyTrafficCar", a[1], &handle, err) ||
+        !get_i("GroundRef.notifyTrafficCar", a[2], &flag, err))
+        return false;
+    Runtime *rt = game_rt();
+    traffic::Graph *t = rt ? rt->ground_traffic(value_handle(a[0])) : nullptr;
+    // INVENTED: bounds and freed-slot checks; the exe dereferences the pointer.
+    if (!t || handle <= 0 || (size_t)handle > t->cars.size()) return true;
+    traffic::Car &car = t->cars[(uint32_t)handle - 1];
+    if (car.serial == 0) return true;
+    if (flag >= 0) car.notify = flag != 0;
+    *out = Value::make_int(car.notify);
     return true;
 }
 
@@ -7476,12 +7496,23 @@ bool gr_del_traffic(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
-// 0x4e6280 GroundRef.setTrafficCarBehaviour(II)V: if (car && car+0x138) car+0x160 = mode.
-// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+// 0x4e6280 GroundRef.setTrafficCarBehaviour(II)V: if (car && car+0x138)
+// car+0x160 = mode.
 bool gr_set_traffic_car_behaviour(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!want("GroundRef.setTrafficCarBehaviour", a, 3, err)) return false;
     *out = Value::make_null();
+    int32_t handle, mode;
+    if (!get_i("GroundRef.setTrafficCarBehaviour", a[1], &handle, err) ||
+        !get_i("GroundRef.setTrafficCarBehaviour", a[2], &mode, err))
+        return false;
+    Runtime *rt = game_rt();
+    traffic::Graph *t = rt ? rt->ground_traffic(value_handle(a[0])) : nullptr;
+    // INVENTED: bounds and freed-slot checks; the exe dereferences the pointer.
+    if (!t || handle <= 0 || (size_t)handle > t->cars.size()) return true;
+    traffic::Car &car = t->cars[(uint32_t)handle - 1];
+    if (car.serial == 0) return true;
+    if (car.inst_id) car.behaviour = (uint32_t)mode;
     return true;
 }
 

@@ -9,6 +9,10 @@
 
 namespace traffic {
 
+// End of the live-car list. INVENTED encoding: the exe's sentinel is the Traffic
+// object itself (T+0x88 = T, 0x416000), src uses a reserved car handle.
+constexpr uint32_t kLiveEnd = 0xffffffffu;
+
 struct Segment {                // 0x414d50, 0x54 bytes in the exe
     float p0[3], p1[3], m0[3], m1[3];
     float len = 0, flat_len = 0;  // +0x30, +0x34
@@ -69,7 +73,7 @@ struct Car {                    // 0x164 bytes in the exe
     float accel = 0;            // +0x30
     float k34 = 0, k38 = 0, k3c = 0;  // +0x34..+0x3c
     int32_t k40 = 0;            // +0x40 (ctor 0x40c400 stores the int -1)
-    uint32_t live_next = 0;     // +0x44
+    uint32_t live_next = 0;     // +0x44 (0 = not listed, kLiveEnd = list end)
     float pos = 0;              // +0x88 (distance on the lane path; counts down to the lane end)
     float world[3] = {};        // +0x8c
     float front_x = 0, front_z = 0;  // +0x98, +0x9c
@@ -111,8 +115,8 @@ struct Graph {
     struct HeapEntry { float time; uint32_t lane; };
     std::vector<HeapEntry> heap;
     // +0x88 head of the live-car list (link car+0x44). INVENTED: 1-based car index,
-    // 0 = null (a pointer in the exe).
-    uint32_t live_cars = 0;
+    // kLiveEnd = end (a pointer in the exe).
+    uint32_t live_cars = kLiveEnd;
     int32_t live_count = 0;                     // global 0x5e6514; INVENTED: per graph
     // +0x70 car pool. INVENTED: deque gives stable addresses, the free list keeps
     // indices, and the serial counter is per graph (the exe's is process-wide).
@@ -126,6 +130,8 @@ struct Graph {
     void step(float t);   // 0x41b290: sim_time = t (+0x84); car pool not ported
     // 0x40ce00: spawn an abstract car on a free lane of road; returns index + 1 (0 = none).
     uint32_t spawn_on_road(size_t road, float p1, float p2, float p3, float p4);
+    // 0x40f290 TrafficCar__remove: unlink from lane and live list, release the slot.
+    void remove_car(uint32_t handle);
     // 0x416800: spawn on a lane of the nearest cross; the cross picks the road.
     uint32_t spawn_near(float x, float y, float z, float dist, float p1, float p2,
                         float p3, float p4);
