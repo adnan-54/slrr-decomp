@@ -1,7 +1,7 @@
 ---
 id: 211
-status: todo
-branch:
+status: implemented
+branch: card/211
 depends: []
 ---
 # vmboot: `--city` mode, Garage "Go driving in the city" -> Valocity

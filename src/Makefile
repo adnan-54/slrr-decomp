@@ -74,6 +74,7 @@ check: all
 	# VM runaway once ate all RAM+swap and froze the CT: cap at 1.5 GB / 5 min
 	cd .. && ulimit -v 1500000 && timeout 300 src/$(BUILD)/vmboot --selfcheck
 	cd .. && ulimit -v 1500000 && timeout 300 src/$(BUILD)/vmboot --race
+	cd .. && ulimit -v 1500000 && timeout 300 src/$(BUILD)/vmboot --city
 	cd .. && src/$(BUILD)/scxcheck --selfcheck
 
 clean:

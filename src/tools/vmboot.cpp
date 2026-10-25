@@ -1,5 +1,5 @@
 // vmboot: end-to-end script boot over the shipped system package.
-//   vmboot --selfcheck | --race
+//   vmboot --selfcheck | --race | --city
 // Asserts the package pair opens, game.Init resolves, its static initializer
 // returns 100 (the value from the earlier classdump VM check), the native
 // registry holds 422 entries, a fresh runtime re-run matches, missing classes
@@ -642,6 +642,77 @@ void answer_dialogs(Boot &boot, std::vector<Object *> &answered, int frame,
 // instead of the card-162/161 drag and semi-auto blocks (each mode fits the
 // 300 s check budget alone).
 bool g_race_mode = false;
+// INVENTED harness switch: --city clicks the Garage's "Go driving in the city"
+// (cmd 109 -> java.game.Valocity) and stops at the city checks.
+bool g_city_mode = false;
+
+// Card 211: the Garage handler changed the section to Valocity (Garage.java
+// :1693-1700); Valocity.java:30 builds map = new GroundRef(maps.city:1r) and
+// :41 sets Integrator.isCity. The ground's .trc went through Traffic__load
+// 0x41a000 -> Traffic__init 0x419da0 at the first ground_traffic lookup.
+void city_checks(Boot &boot, Checker &c, Object *state)
+{
+    std::string e;
+    const std::string cls = state ? object_class(boot, state) : "(none)";
+    c.check(state && cls == "java.game.Valocity",
+            "city: actualState is java.game.Valocity (got " + cls + ")");
+
+    Object *map_object = nullptr;
+    Value mv;
+    if (state && boot.vm()->get_instance_field(state, "map", &mv, &e) &&
+        mv.kind == Value::Obj)
+        map_object = mv.obj;
+    const std::string map_cls =
+        map_object ? object_class(boot, map_object) : "(none)";
+    c.check(map_cls == "java.util.resource.GroundRef",
+            "city: Valocity.map is a non-null GroundRef (got " + map_cls + ")");
+
+    Runtime::Handle *mh = map_object ? boot.runtime()->handle(map_object) : nullptr;
+    traffic::Graph *graph = mh ? boot.runtime()->ground_traffic(mh) : nullptr;
+    c.check(graph != nullptr, "city: the map's handle resolves a traffic graph "
+                              "(0x47c640 -> 0x41a000)");
+    if (!graph) return;
+
+    // The live graph must be the shipped file (Traffic__load 0x41a000).
+    std::vector<uint8_t> trc;
+    std::string ferr;
+    traffic::Graph fresh;
+    size_t consumed = 0;
+    const bool read = fs::read_file("maps/city/ai/city.trc", &trc, &ferr);
+    const bool loaded = read && fresh.load(trc.data(), trc.size(), &consumed, &ferr);
+    c.check(loaded, "city: maps/city/ai/city.trc loads" +
+                        (loaded ? std::string() : ": " + ferr));
+    if (loaded)
+        c.check(graph->cross_eq.size() == fresh.cross_eq.size() &&
+                    graph->cross_light.size() == fresh.cross_light.size() &&
+                    graph->roads.size() == fresh.roads.size() &&
+                    graph->lanes.size() == fresh.lanes.size(),
+                "city: the map's graph is city.trc (" +
+                    std::to_string(graph->cross_eq.size()) + " eq, " +
+                    std::to_string(graph->cross_light.size()) + " light, " +
+                    std::to_string(graph->roads.size()) + " roads, " +
+                    std::to_string(graph->lanes.size()) + " lanes)");
+
+    // 0x419da0 Traffic__init: road_enabled[0] = 0, then one 1 per road group.
+    int m = 0;
+    for (const traffic::Road &r : graph->roads)
+        if ((int32_t)r.k64 > m) m = (int32_t)r.k64;
+    bool enabled_ok =
+        graph->road_enabled.size() == (size_t)m + 1 && graph->road_enabled[0] == 0;
+    for (int i = 1; enabled_ok && i <= m; i++)
+        if (graph->road_enabled[(size_t)i] != 1) enabled_ok = false;
+    c.check(enabled_ok, "city: Traffic__init sized road_enabled for the road groups "
+                        "(0x419da0, got " + std::to_string(graph->road_enabled.size()) +
+                        " for max k64 " + std::to_string(m) + ")");
+    c.check(graph->max_road_width > 0.0f,
+            "city: Traffic__init set max_road_width (0x419da0, got " +
+                std::to_string((double)graph->max_road_width) + ")");
+
+    int failed = 0;
+    for (const natives::ThreadInfo &t : natives::thread_report(*boot.vm()))
+        if (!t.error.empty()) failed++;
+    c.check(failed == 0, "city: no failed thread (got " + std::to_string(failed) + ")");
+}
 
 void game_init_check(Boot &boot, Checker &c)
 {
@@ -821,12 +892,17 @@ void game_init_check(Boot &boot, Checker &c)
                 eventlist_at_garage = is_a(boot, st.obj->cls, "java.game.Garage");
                 if (eventlist_at_garage) {
                     // INVENTED: stands in for clicking the Garage "Browse racing
-                    // events" button.
-                    clicks.push_back({st.obj, 133, "garage cmd 133",
-                                      "THRD-GARAGE-EVENTLIST", 0, 0});
+                    // events" button; city mode clicks "Go driving in the city"
+                    // (Garage.java:536, CMD_HITTHESTREET 109) instead.
+                    const int garage_cmd = g_city_mode ? 109 : 133;
+                    clicks.push_back({st.obj, garage_cmd,
+                                      g_city_mode ? "garage cmd 109" : "garage cmd 133",
+                                      g_city_mode ? "THRD-GARAGE-CITY"
+                                                  : "THRD-GARAGE-EVENTLIST",
+                                      0, 0});
                 } else {
-                    std::printf("  garage cmd 133 skipped: actualState is %s\n",
-                                eventlist_from.c_str());
+                    std::printf("  garage cmd %d skipped: actualState is %s\n",
+                                g_city_mode ? 109 : 133, eventlist_from.c_str());
                 }
             }
         }
@@ -930,6 +1006,13 @@ void game_init_check(Boot &boot, Checker &c)
             "back from the used dealer: actualState is java.game.Garage at the eventlist "
             "cmd (got " + eventlist_from + ")");
     c.check(player_car != nullptr, "buying the shown used car sets GameLogic.player.car");
+
+    // Card 211: city mode stops after the city checks; the Track/race checks
+    // below are for the EventList path only.
+    if (g_city_mode) {
+        city_checks(boot, c, have_state_after ? state_after.obj : nullptr);
+        return;
+    }
 
     // Vehicle.java:49 holds the Chassis script object; its handle target is the
     // instance create_car_bodies bound the payload to (0x4c1f90/0x4992e0).
@@ -4142,8 +4225,10 @@ int selfcheck()
 
 int main(int argc, char **argv)
 {
-    if (argc == 2 && (strcmp(argv[1], "--selfcheck") == 0 || strcmp(argv[1], "--race") == 0)) {
+    if (argc == 2 && (strcmp(argv[1], "--selfcheck") == 0 || strcmp(argv[1], "--race") == 0 ||
+                      strcmp(argv[1], "--city") == 0)) {
         g_race_mode = strcmp(argv[1], "--race") == 0;
+        g_city_mode = strcmp(argv[1], "--city") == 0;
         // INVENTED: harness switch (not in the exe): seed Math.randomize
         // (0x4dee90) and System.currentTime (0x4e5500) from the frame clock
         // instead of wall time, so runs pick the same dealer car.
@@ -4151,6 +4236,6 @@ int main(int argc, char **argv)
         int rc = selfcheck();
         return rc;
     }
-    std::fprintf(stderr, "usage: vmboot --selfcheck | --race\n");
+    std::fprintf(stderr, "usage: vmboot --selfcheck | --race | --city\n");
     return 2;
 }
