@@ -1,7 +1,7 @@
 ---
 id: 185
-status: todo
-branch:
+status: implemented
+branch: card/185
 depends: [180, 181, 184]
 ---
 # `native bot` 0x483bd0 obstacle walk: records -> solver circles (types 1 static / 2 dynamic)

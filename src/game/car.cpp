@@ -2585,10 +2585,85 @@ static void bot_controls(BotData &b, const BotSnapshot &s, const CarData &car,
     b.last_reverse = -1.0f;
 }
 
-// 0x483bd0 no-obstacle path (card 177): V from the car front to T, the angle
-// to S.fwd, and the steer/speed pair 0x482910 receives. shortcut: the
-// bot_trigger create (+0x2700) and the obstacle walk (+0x26b4, 0x409fa0) are
-// cards 182/184; with no intervals 0x40a8a0 returns len * dir.
+// 0x483bd0 obstacle walk (card 185): one solver circle per accepted
+// sub-record, between the reset and the resolve. Solver add call sites
+// 0x484864 (type 1, world coordinates) and 0x4845d1 (type 2, body-local);
+// with no intervals 0x40a8a0 returns len * dir.
+static void bot_avoid_obstacles(BotData &b, const BotSnapshot &s, BotAvoid &av,
+                                float fx, float fz)
+{
+    // nxz: normalise (x, z), zero when the length <= 1e-5.
+    auto nxz = [](Vec3 v) {
+        float l = sqrtf(v.x * v.x + v.z * v.z);
+        return l > 1e-5f ? Vec3{v.x / l, 0.0f, v.z / l} : Vec3{0.0f, 0.0f, 0.0f};
+    };
+    // 0x40a7d0: |a| of the signed angle between two xz directions.
+    auto angle = [](Vec3 e, Vec3 p) {
+        float g = e.x * p.x + e.z * p.z;
+        return g > 1.0f ? 0.0f : g < -1.0f ? 3.14159265f : acosf(g);
+    };
+    // Sub-record gates shared by both branches (globals 0x5da4c4/c5 are 1).
+    auto accept = [&](Vec3 P, Vec3 A, Vec3 B, Vec3 n, float ang, float h) {
+        if (fabsf(P.y - s.pos[1]) >= h + 1.5f) return false;
+        if (ang > -0.5f) {
+            float a = angle(n, nxz(Vec3{fx - A.x, 0.0f, fz - A.z}));
+            if (a < ang || a > 3.14159265f - ang) return false;
+            if (vec_dot(nxz(Vec3{B.x - fx, 0.0f, B.z - fz}),
+                        nxz(Vec3{A.x - fx, 0.0f, A.z - fz})) > 0.99f)
+                return false;
+        }
+        return true;
+    };
+    for (size_t i = 0; i < b.obstacles.size();) {
+        BotData::BotObstacle &rec = b.obstacles[i];
+        if (!rec.body) {  // the exe deletes a record whose body went away
+            b.obstacles.erase(b.obstacles.begin() + (long)i);
+            continue;
+        }
+        ++i;
+        RigidBody *body = rec.body;
+        RigidBody *root = body;
+        while ((root->body_flags & 4) && root->parent) root = root->parent;
+        // The mode-4 skip on the +0x25a8 follow target is moot: mode 4 is not ported.
+        if (rec.type == 1) {
+            for (const auto &sub : rec.subs)
+                if (accept(sub.P, sub.A, sub.B, sub.n, sub.ang, sub.h))
+                    av.add(sub.P.x, sub.P.z, 0.0f, 0.0f, sub.r);
+            continue;
+        }
+        if (rec.type != 2) continue;
+        bool isOpp = root->owner_id == b.opponent;
+        if (isOpp && b.overtaking) continue;
+        float shrink = isOpp ? 0.2f : 0.0f, scale = 1.0f;
+        Vec3 O = body->pos;
+        if (!isOpp) {
+            Vec3 sf{s.fwd[0], s.fwd[1], s.fwd[2]};
+            Vec3 rel = body->pos - Vec3{s.pos[0], s.pos[1], s.pos[2]};
+            if (vec_dot(sf, rel) > 0.0f) {
+                Vec3 w = body->vel - Vec3{s.vel_dir[0], s.vel_dir[1], s.vel_dir[2]} * s.speed;
+                float q = vec_dot(w, w);
+                if (q > 1.0f) {
+                    scale = (q - 1.0f) * 0.4f + 1.0f;
+                    if (scale >= 1.3f) scale = 1.3f;
+                    if (vec_dot(sf, w) > 1.0f && vec_dot(sf, rel) > 5.0f) continue;
+                    float t = -vec_dot(w, rel) / q;  // closest-approach time
+                    if (t > 0.0f) O = body->pos + body->vel * t;
+                }
+            }
+        }
+        Mat34 R = body->rotation();
+        for (const auto &sub : rec.subs) {
+            Vec3 P = O + mat_vec(R, sub.P);
+            Vec3 A = O + mat_vec(R, sub.A), B = O + mat_vec(R, sub.B);
+            if (!accept(P, A, B, mat_vec(R, sub.n), sub.ang, sub.h)) continue;
+            float rr = (sub.r - shrink) * scale;
+            if (rr > 0.0f) av.add(P.x, P.z, 0.0f, 0.0f, rr);
+        }
+    }
+}
+
+// 0x483bd0 (cards 177/185): V from the car front to T, the obstacle walk, the
+// angle to S.fwd, and the steer/speed pair 0x482910 receives.
 static void bot_steer(BotData &b, const BotSnapshot &s, const CarData &car,
                       float vmax)
 {
@@ -2606,7 +2681,7 @@ static void bot_steer(BotData &b, const BotSnapshot &s, const CarData &car,
     }
     BotAvoid &av = BotAvoid::shared();
     av.reset(fx, fz, vx, vz, b.half_width, 0.0f);  // 0x40ab10
-    // obstacle adds (0x409fa0): cards 182/184
+    bot_avoid_obstacles(b, s, av, fx, fz);          // 0x483bd0 walk
     float rv[2];
     av.resolve(rv);  // 0x40a8a0
     // INVENTED: with no intervals resolve() is the identity rotation and len*dir only adds float
