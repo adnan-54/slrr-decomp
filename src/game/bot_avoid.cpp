@@ -72,7 +72,7 @@ void BotAvoid::add(float x, float z, float vx, float vz, float r)
         c.dist = sqrtf((F[0] - x) * (F[0] - x) + (F[1] - z) * (F[1] - z));
         float ux = x - F[0], uz = z - F[1];
         float l = sqrtf(ux * ux + uz * uz);
-        if ((double)l > 1e-5) { float il = 1.0f / l; ux *= il; uz *= il; } else { ux = 0; uz = 0; }  // 0x593588
+        if ((double)l > 1e-5) { ux /= l; uz /= l; } else { ux = 0; uz = 0; }  // 0x593588
         c.ang = angle2(dir, ux, uz);
     }
     float gap = circles[ci].dist - circles[ci].r;
@@ -94,11 +94,10 @@ void BotAvoid::add(float x, float z, float vx, float vz, float r)
         for (int j = I.head; j != -1; j = circles[j].link) {
             const Circle m = circles[j];
             float s = m.r + cr;
-            float is = 1.0f / s;  // 0x409fa0 multiplies by a precomputed reciprocal
-            float Px = m.x * (cr * is) + x * (m.r * is) - F[0];
-            float Pz = m.z * (cr * is) + z * (m.r * is) - F[1];
+            float Px = m.x * (cr / s) + x * (m.r / s) - F[0];
+            float Pz = m.z * (cr / s) + z * (m.r / s) - F[1];
             float L = sqrtf(Px * Px + Pz * Pz);
-            if (L > 0.0f) { float iL = 1.0f / L; Px *= iL; Pz *= iL; }
+            if (L > 0.0f) { Px /= L; Pz /= L; }
             float Dx = x - m.x, Dz = z - m.z, d = sqrtf(Dx * Dx + Dz * Dz);
             float thr;
             if (2.0f * L > 3.0f * s && d > s) {

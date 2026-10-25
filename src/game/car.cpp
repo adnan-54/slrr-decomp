@@ -2599,7 +2599,9 @@ static void bot_steer(BotData &b, const BotSnapshot &s, const CarData &car,
     // obstacle adds (0x409fa0): cards 182/184
     float rv[2];
     av.resolve(rv);  // 0x40a8a0
-    vx = rv[0]; vz = rv[1];
+    // INVENTED: with no intervals resolve() is the identity rotation and len*dir only adds float
+    // ulp noise to V (acosf below amplifies it into a different race); keep V exactly then.
+    if (!av.intervals.empty()) { vx = rv[0]; vz = rv[1]; }
     b.plan_aim[0] = vx;  // +0x269c
     b.plan_aim[1] = vz;  // +0x26a0
     float len = sqrtf(vx * vx + vz * vz);
