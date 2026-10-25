@@ -1,7 +1,7 @@
 ---
 id: 206
-status: todo
-branch:
+status: implemented
+branch: card/206
 depends: []
 ---
 # Part.install_OK on the existing install search (supersedes card 051)
