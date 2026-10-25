@@ -110,7 +110,7 @@ class Source : public input::CursorSource {
 };
 
 // 0x4b8430 one button. Codes: down/up/click/drag begin/drag end/drop.
-// shortcut: right-click's camera/car hand-off (0x4a2b40/0x4af9a0) is not ported.
+// 0x4b98c4..0x4b9950: RCLICK getPhysBody + 0x4a2b40/0x4af9a0 transform a dead temp; no port.
 void button(Runtime &rt, uint32_t cur, Cursor &c, Button &b, bool pressed, bool hit,
             const Runtime::PickHit &h, bool is_left)
 {

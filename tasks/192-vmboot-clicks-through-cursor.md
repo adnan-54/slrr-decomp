@@ -1,7 +1,7 @@
 ---
 id: 192
-status: todo
-branch:
+status: implemented
+branch: card/192
 depends: [191]
 ---
 # vmboot: route the dialog / garage / dealer / generator clicks and the finish Enter through the exe input paths

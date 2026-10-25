@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <deque>
 #include <set>
 #include <string>
 #include <vector>
@@ -255,6 +256,57 @@ Object *gadget_of(Boot &boot, Runtime::Resource *ref, Runtime::Resource *body)
     return nullptr;
 }
 
+// The native cursor resource behind Input.cursor.cursor (MainMenu etc. use it).
+Runtime::Resource *native_cursor(Boot &boot)
+{
+    Value mc, gref;
+    std::string e;
+    if (!boot.vm()->get_static_field("java.io.Input", "cursor", &mc, &e) ||
+        mc.kind != Value::Obj || !mc.obj ||
+        !boot.vm()->get_instance_field(mc.obj, "cursor", &gref, &e) ||
+        gref.kind != Value::Obj || !gref.obj)
+        return nullptr;
+    Runtime::Handle *h = boot.runtime()->handle(gref.obj);
+    return h ? h->target : nullptr;
+}
+
+// 64x64 grid scan with the 0x4eb000 pick; true when some point hits an enabled
+// gadget of cmd `cmd` whose handler is `handler` (nullptr: any handler).
+bool find_gadget_pos(Boot &boot, Object *handler, int cmd, float *x, float *y,
+                     Runtime::Resource **body)
+{
+    Runtime *rt = boot.runtime();
+    for (int iy = 0; iy < 64; iy++)
+        for (int ix = 0; ix < 64; ix++) {
+            float sx = (ix + 0.5f) / 32.0f - 1.0f, sy = (iy + 0.5f) / 32.0f - 1.0f;
+            Runtime::PickHit hit;
+            float far[3], near[3];
+            if (!rt->screen_pick(sx, sy, &hit, far, near) || !hit.body) continue;
+            Object *g = gadget_of(boot, hit.ref, hit.body);
+            Value v;
+            std::string e;
+            if (!g || !boot.vm()->get_instance_field(g, "cmd", &v, &e) ||
+                v.kind != Value::Int || v.i != cmd)
+                continue;
+            // The fullscreen shield behind a dialog's buttons also carries a
+            // cmd; only the gadget's handler tells them apart (Gadget.java:25).
+            if (handler &&
+                (!boot.vm()->get_instance_field(g, "handler", &v, &e) ||
+                 v.kind != Value::Obj || v.obj != handler))
+                continue;
+            // Group.handleEvent:171 drops clicks on a disabled gadget, so it is
+            // no click target (the race button fails the event requirements).
+            if (boot.vm()->get_instance_field(g, "disabled", &v, &e) &&
+                v.kind == Value::Int && v.i)
+                continue;
+            *x = sx;
+            *y = sy;
+            *body = hit.body;
+            return true;
+        }
+    return false;
+}
+
 // INVENTED harness: stands in for a player moving the mouse onto the ghost
 // button and clicking it. Scans a 64x64 grid of cursor positions with the
 // 0x4eb000 pick until the hit body is the gadget with cmd 0xB007, moves the
@@ -266,33 +318,10 @@ int menu_select(Boot &boot, FrameLoop &loop, int frame, Object *window, bool *cl
 {
     *clicked = false;
     Runtime *rt = boot.runtime();
-    Value mc, gref;
-    Runtime::Resource *cur = nullptr;
-    if (boot.vm()->get_static_field("java.io.Input", "cursor", &mc, err) && mc.kind == Value::Obj &&
-        mc.obj && boot.vm()->get_instance_field(mc.obj, "cursor", &gref, err) &&
-        gref.kind == Value::Obj && gref.obj) {
-        Runtime::Handle *h = rt->handle(gref.obj);
-        cur = h ? h->target : nullptr;
-    }
+    Runtime::Resource *cur = native_cursor(boot);
     float gx = 0.0f, gy = 0.0f;
     Runtime::Resource *ghost = nullptr;
-    for (int iy = 0; iy < 64 && !ghost; iy++)
-        for (int ix = 0; ix < 64 && !ghost; ix++) {
-            float x = (ix + 0.5f) / 32.0f - 1.0f, y = (iy + 0.5f) / 32.0f - 1.0f;
-            Runtime::PickHit hit;
-            float far[3], near[3];
-            if (!rt->screen_pick(x, y, &hit, far, near) || !hit.body) continue;
-            Object *g = gadget_of(boot, hit.ref, hit.body);
-            Value cmd;
-            std::string e;
-            if (g && boot.vm()->get_instance_field(g, "cmd", &cmd, &e) &&
-                cmd.kind == Value::Int && cmd.i == 0xB007) {
-                ghost = hit.body;
-                gx = x;
-                gy = y;
-            }
-        }
-    if (!cur || !ghost) {
+    if (!cur || !find_gadget_pos(boot, nullptr, 0xB007, &gx, &gy, &ghost)) {
         std::printf("  FAIL menu select: %s; falling back to osdCommand 0xB007\n",
                     !cur ? "no native cursor (Input.cursor.cursor)"
                          : "no grid point picks the ghost button");
@@ -322,6 +351,64 @@ struct Checker {
         if (!ok) failures++;
     }
 };
+
+// Card 192: one Osd gadget click driven from the main frame loop, so a click in
+// flight never skips a fixed frame (kGarageCmd, ...). `what` names the step in
+// the prints and checks; `thread` keeps the fallback osdCommand's thread name.
+struct PendingClick {
+    Object *handler;
+    int cmd;
+    const char *what;
+    const char *thread;
+    int phase;
+    uint32_t body;
+};
+
+// One step per frame: phase 0 resolves the gadget, 1..10 hold mouse button 1,
+// 11..20 release (the release frame sends the LCLICK).
+// INVENTED: the press/hold timing (10+10 frames, as menu_select) and the
+// osdCommand fallback when no grid point reaches the gadget.
+void drive_clicks(Boot &boot, std::deque<PendingClick> &q, Checker &c,
+                  std::set<std::string> *routed)
+{
+    if (q.empty()) return;
+    PendingClick &pc = q.front();
+    if (pc.phase == 0) {
+        Runtime::Resource *cur = native_cursor(boot);
+        float x = 0.0f, y = 0.0f;
+        Runtime::Resource *body = nullptr;
+        if (cur && find_gadget_pos(boot, pc.handler, pc.cmd, &x, &y, &body)) {
+            char move[64];
+            snprintf(move, sizeof move, "move %g,%g", (double)x, (double)y);
+            std::printf("  click %s: cursor %s on body 0x%x\n", pc.what, move, body->id);
+            boot.runtime()->queue_event(cur, nullptr, 0x10,
+                                        Value::make_str(std::string(move)));
+            pc.body = body->id;
+            pc.phase = 1;
+        } else {
+            std::printf("  click %s: no grid point picks cmd %d; falling back to "
+                        "osdCommand\n",
+                        pc.what, pc.cmd);
+            std::string err;
+            if (!osd_command(boot, pc.handler, pc.cmd, pc.thread, &err))
+                std::printf("  click %s: fallback not started%s\n", pc.what,
+                            err.empty() ? "" : (" (" + err + ")").c_str());
+            q.pop_front();
+            return;
+        }
+    }
+    g_input->devices[1].raw.mouse_buttons[0] = pc.phase <= 10 ? 0x80 : 0;
+    if (pc.phase >= 20) {
+        const bool ok = game::cursor_last_click_body() == pc.body;
+        std::printf("  click %s: cursor LCLICK body 0x%x %s\n", pc.what, pc.body,
+                    ok ? "ok" : "missed");
+        if (routed->insert(pc.what).second)
+            c.check(ok, std::string(pc.what) + " clicked through the native cursor");
+        q.pop_front();
+        return;
+    }
+    pc.phase++;
+}
 
 bool contains(const std::vector<std::string> &v, const std::string &s)
 {
@@ -503,8 +590,12 @@ std::string thread_state(const natives::ThreadInfo &t)
 // osdCommand(0) resolves the wait. StringRequesterDialog's OK path also needs
 // its `input`: the shipped 2.3.1 class checks the gadget's osd.stringValue for
 // SIF_NOEMPTY (2.2.1 source: input), so both get the name.
-// INVENTED: stands in for clicking the dialog's Osd buttons (no render hit test).
-void answer_dialogs(Boot &boot, std::vector<Object *> &answered, int frame)
+// The OK button is the gadget with cmd 0 on the waiting Dialog (Dialog.java:153;
+// buttonTexts "YES;NO" makes YES index 0). Buttonless dialogs (no cmd-0 gadget,
+// e.g. SimpleLoadingDialog) take drive_clicks' fallback.
+// INVENTED: stands in for clicking the dialog's Osd buttons.
+void answer_dialogs(Boot &boot, std::vector<Object *> &answered, int frame,
+                    std::deque<PendingClick> &clicks)
 {
     for (const natives::ThreadInfo &t : natives::thread_report(*boot.vm())) {
         Object *d = t.wait_on;
@@ -529,6 +620,7 @@ void answer_dialogs(Boot &boot, std::vector<Object *> &answered, int frame)
             Value input;
             if (!boot.vm()->get_instance_field(d, "input", &input, &err) ||
                 input.kind != Value::Str || input.s.empty()) {
+                // INVENTED: the typed name (no keyboard input to the requester).
                 boot.vm()->set_instance_field(d, "input", Value::make_str("vmboot"), &err);
                 Value osd;
                 if (boot.vm()->get_instance_field(d, "osd", &osd, &err) &&
@@ -537,12 +629,8 @@ void answer_dialogs(Boot &boot, std::vector<Object *> &answered, int frame)
                                                   Value::make_str("vmboot"), &err);
             }
         }
-        bool ok = osd_command(boot, d, 0, "THRD-DIALOG-OK", &err);
-        if (ok)
-            std::printf("  dialog OK: %s (frame %d)\n", cls.c_str(), frame);
-        else
-            std::printf("  dialog %s: not answered%s\n", cls.c_str(),
-                        err.empty() ? "" : (" (" + err + ")").c_str());
+        clicks.push_back({d, 0, "dialog OK", "THRD-DIALOG-OK", 0, 0});
+        std::printf("  dialog OK: %s (frame %d)\n", cls.c_str(), frame);
     }
 }
 
@@ -645,18 +733,21 @@ void game_init_check(Boot &boot, Checker &c)
     // then let each handler continue.
     const int kDialog = 4200, kDialogStep = 300;
     std::vector<Object *> answered;
+    std::deque<PendingClick> clicks;
+    std::set<std::string> cursor_steps;  // steps that went through the cursor
     // Garage section at the time of the dealer command (dealer_from) and whether
     // the CMD_BUYCARSUSED (122) handler was started.
     std::string dealer_from = "(none)";
     std::string buy_from = "(none)";
-    bool dealer_at_garage = false, dealer_started = false, buy_at_market = false;
+    bool dealer_at_garage = false, buy_at_market = false;
     std::string eventlist_from = "(none)", race_from = "(none)";
     bool eventlist_at_garage = false, race_at_eventlist = false;
     for (int i = select_end + 1; i <= kFrames; i++) {
         g_input->devices[0].raw.keys[0x1c] = 0;
+        drive_clicks(boot, clicks, c, &cursor_steps);
         loop.frame(i * 16);
         if (i >= kDialog && (i - kDialog) % kDialogStep == 0)
-            answer_dialogs(boot, answered, i);
+            answer_dialogs(boot, answered, i, clicks);
         if (i == kGarageCmd) {
             // Garage.java:1724,1739: CMD_BUYCARSUSED opens the used car dealer
             // between 7 and 17 h. getTime() is a plain getter for the static
@@ -674,11 +765,7 @@ void game_init_check(Boot &boot, Checker &c)
                     std::printf("  garage cmd 122 at game hour %g\n",
                                 (double)(t.f / 3600.0f));
                 // INVENTED: stands in for clicking the Used Car Dealer button
-                dealer_started = osd_command(boot, st.obj, 122, "THRD-GARAGE-CMD", &gerr);
-                // A handler failing inside its first slice also returns false but
-                // keeps its thread in the report; only a start failure sets err.
-                if (!dealer_started && !gerr.empty())
-                    std::printf("  garage cmd 122: not started (%s)\n", gerr.c_str());
+                clicks.push_back({st.obj, 122, "garage cmd 122", "THRD-GARAGE-CMD", 0, 0});
             } else {
                 std::printf("  garage cmd skipped: actualState is %s\n",
                             dealer_from.c_str());
@@ -692,7 +779,8 @@ void game_init_check(Boot &boot, Checker &c)
             if (actual_state(boot, &st, &berr) &&
                 object_class(boot, st.obj) == "java.game.CarMarket" &&
                 !shown_car_has_engine(boot, st.obj))
-                osd_command(boot, st.obj, 58, "THRD-MARKET-BROWSE", &berr);
+                clicks.push_back(
+                    {st.obj, 58, "market browse right", "THRD-MARKET-BROWSE", 0, 0});
         }
         if (i == kBuyCmd || i == kBackCmd) {
             // CarMarket.java:817-867,1013-1153: AXIS_SELECT buys the shown car
@@ -711,12 +799,12 @@ void game_init_check(Boot &boot, Checker &c)
                     // NoYesDialog's display() returns osdCommand's argument
                     // (Dialog.java:204-220) and its YES button is index 0
                     // (buttonTexts "YES;NO", Dialog.java:138-153).
-                    bool ok = osd_command(boot, st.obj, cmd,
-                                          i == kBuyCmd ? "THRD-MARKET-BUY"
-                                                       : "THRD-MARKET-BACK", &merr);
+                    clicks.push_back({st.obj, cmd,
+                                      i == kBuyCmd ? "market buy" : "market back",
+                                      i == kBuyCmd ? "THRD-MARKET-BUY"
+                                                   : "THRD-MARKET-BACK",
+                                      0, 0});
                     std::printf("  cmd %d -> %s (frame %d)\n", cmd, cls.c_str(), i);
-                    if (!ok && !merr.empty())
-                        std::printf("  cmd %d: not started (%s)\n", cmd, merr.c_str());
                 } else {
                     std::printf("  cmd %d skipped: actualState is %s (frame %d)\n",
                                 cmd, cls.c_str(), i);
@@ -734,11 +822,8 @@ void game_init_check(Boot &boot, Checker &c)
                 if (eventlist_at_garage) {
                     // INVENTED: stands in for clicking the Garage "Browse racing
                     // events" button.
-                    bool ok = osd_command(boot, st.obj, 133, "THRD-GARAGE-EVENTLIST",
-                                          &terr);
-                    if (!ok && !terr.empty())
-                        std::printf("  garage cmd 133: not started (%s)\n",
-                                    terr.c_str());
+                    clicks.push_back({st.obj, 133, "garage cmd 133",
+                                      "THRD-GARAGE-EVENTLIST", 0, 0});
                 } else {
                     std::printf("  garage cmd 133 skipped: actualState is %s\n",
                                 eventlist_from.c_str());
@@ -764,10 +849,8 @@ void game_init_check(Boot &boot, Checker &c)
                 }
                 if (gen) {
                     // INVENTED: stands in for clicking the Generator Race button.
-                    bool ok = osd_command(boot, gen, 0x10E, "THRD-EVENT-RACE", &rerr);
-                    if (!ok && !rerr.empty())
-                        std::printf("  eventlist cmd 0x10E: not started (%s)\n",
-                                    rerr.c_str());
+                    clicks.push_back({gen, 0x10E, "eventlist cmd 0x10E",
+                                      "THRD-EVENT-RACE", 0, 0});
                 } else if (race_at_eventlist) {
                     std::printf("  eventlist cmd 0x10E: EventList.eGen is null\n");
                 } else {
@@ -3385,14 +3468,20 @@ void game_init_check(Boot &boot, Checker &c)
                 wait++;
             }
             bool sent = false;
-            // INVENTED: stands in for the Enter hotkey (no input-to-Osd path here)
-            if (ready)
-                sent = osd_command(boot, fwv.obj, 0x01, "THRD-FINISH-ENTER", &ferr);
-            else if (ferr.empty())
+            if (ready) {
+                // INVENTED: the exe reads a real keyboard; hold the MENUSET
+                // AXIS_SELECT scan (RCDIK_ENTER, 0x1c) for 1 s so the 50 ms
+                // Frontend HotkeyWatcher samples it (kPress..kRelease).
+                g_input->devices[0].raw.keys[0x1c] = 0x80;
+                for (int i = 0; i < 60; i++) frames(1);
+                g_input->devices[0].raw.keys[0x1c] = 0;
+                sent = true;
+            } else if (ferr.empty()) {
                 ferr = "fWindow never reached windowStatus 3";
-            std::printf("  finish window: %s after %d frame(s), osdCommand(0x01) %s\n",
+            }
+            std::printf("  finish window: %s after %d frame(s), Enter %s\n",
                         ready ? "windowStatus 3" : "not ready", wait,
-                        sent ? "started" : ("not started: " + ferr).c_str());
+                        sent ? "held" : ("not sent: " + ferr).c_str());
             for (int i = 0; i < 600; i++) frames(1);
         }
         Value fin;
@@ -3420,7 +3509,9 @@ void game_init_check(Boot &boot, Checker &c)
     }
 
     std::vector<natives::ThreadInfo> threads = natives::thread_report(*boot.vm());
-    if (dealer_at_garage) {
+    // A cursor-routed click runs the handler in the frame loop, so only the
+    // fallback path has a THRD-GARAGE-CMD thread to look for.
+    if (dealer_at_garage && !cursor_steps.count("garage cmd 122")) {
         bool dealer_thread = false;
         for (const natives::ThreadInfo &t : threads)
             if (t.name == "THRD-GARAGE-CMD") dealer_thread = true;
