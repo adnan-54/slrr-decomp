@@ -406,6 +406,11 @@ Runtime::Runtime(ResourceManager &resources, Vm *vm, ClassPath *classes)
     process_world().trigger_event = [this](RigidBody *target, RigidBody *other,
                                            uint32_t code) {
         Resource *r = static_cast<Resource *>(target->owner);
+        // INVENTED: routing of the bot_trigger contacts to the parent bot (the
+        // exe's forwarding was not traced); the script queue below is unchanged.
+        if (r)
+            if (Resource *bot = game::bot_of_trigger(r))
+                game::bot_trigger_event(bot, other, code);
         if (r)
             queue_event(r, nullptr, code,
                         Value::make_str(std::to_string((int32_t)other->owner_id)));

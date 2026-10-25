@@ -1,7 +1,7 @@
 ---
 id: 183
-status: todo
-branch:
+status: implemented
+branch: card/183
 depends: [181, 182]
 ---
 # `native bot` bot_trigger sensor: create (0x483bd0), follow/resize (0x47f980 tail), vf14 0x20/0x40 obstacle list

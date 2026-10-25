@@ -359,6 +359,15 @@ struct BotData {
     BotSnapshot snap;
     bool snap_valid = false;
     int control_ticks = 0;   // control_cars bot-branch counter (vmboot)
+    // Card 183: bot_trigger sensor child (+0x26f8/+0x2700) and the obstacle list.
+    Runtime::Resource *trigger = nullptr;  // +0x2700 target
+    int trigger_wait = 0;                  // +0x2708
+    struct BotObstacle {
+        RigidBody *body;  // cBodyList +0x24
+        int type;         // +0x2c: 1 static, 2 heavy dynamic, 0 other
+        // sub-records (+0x30 chain): card 184
+    };
+    std::vector<BotObstacle> obstacles;    // +0x26ac list, append order
 };
 
 // Lazy per-resource payloads, created on first native access.
@@ -414,6 +423,11 @@ void control_cars(float dt);
 // 0x47f980 native bot vf11 on the same mode-8 control list: per physics tick,
 // build the controlled car's snapshot S and run the mode switch 0x484b90.
 void control_bots(float dt);
+// 0x480850 type_bot vf14 codes 0x20 (add) / 0x40 (remove): the bot_trigger
+// sensor's contact with `other`. Routed from the trigger event callback.
+void bot_trigger_event(Runtime::Resource *bot, RigidBody *other, uint32_t code);
+// The bot whose bot_trigger is `trigger`, else null.
+Runtime::Resource *bot_of_trigger(Runtime::Resource *trigger);
 // Number of CarData payloads that own car bodies (vmboot body_count check).
 int car_body_instances();
 // Every live CarData payload (vmboot: shipped C_drag corpus, card 161).

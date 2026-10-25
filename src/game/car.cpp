@@ -2594,6 +2594,16 @@ static void bot_steer(BotData &b, const BotSnapshot &s, const CarData &car,
 {
     float fx = s.pos[0] + s.fwd[0], fz = s.pos[2] + s.fwd[2];
     float vx = b.plan_T[0] - fx, vz = b.plan_T[2] - fz;
+    // 0x483bd0 head: create the bot_trigger sphere child once.
+    if (!b.trigger && g_rt && b.self) {
+        char str[96];
+        snprintf(str, sizeof str, "%.2f,%.2f,%.2f,0,0,0,sphere,%.2f", s.pos[0],
+                 s.pos[1], s.pos[2], 100.0f);
+        // 0x523c80 createScripted(DAT_005fe214 = system.rpk 0x34, str, "bot_trigger")
+        if (Runtime::Resource *ty = g_rt->resolve(0x34))
+            b.trigger = g_rt->instantiate(ty, b.self, "bot_trigger", str, true, nullptr);
+        b.trigger_wait = 0;  // +0x2708
+    }
     BotAvoid &av = BotAvoid::shared();
     av.reset(fx, fz, vx, vz, b.half_width, 0.0f);  // 0x40ab10
     // obstacle adds (0x409fa0): cards 182/184
@@ -3004,6 +3014,61 @@ static void bot_snapshot(BotData &b, CarData &c, float dt)
     s.c0 = 0;                  // the planner's speed-factor field starts clear
 }
 
+// 0x47f980 tail (right after 0x484b90): move/resize the bot_trigger sphere.
+static void bot_trigger_follow(BotData &b)
+{
+    if (!b.trigger) return;
+    const BotSnapshot &s = b.snap;
+    float rmax = (b.mode == 2 || b.mode == 4) ? 55.0f : 10.0f;
+    float r = s.speed * 2.5f + 10.0f;
+    if (r < 10.0f) r = 10.0f;
+    else r = std::min(r, rmax);
+    float ang = b.axis[1] * 0.005905512f;  // +0x21e0 after the slew, 0.75/127 rad
+    float c = cosf(ang), sn = sinf(ang), e = r - 10.0f;
+    float x = s.pos[0] + e * c * s.fwd[0] + e * sn * s.fwd[2];
+    float z = s.pos[2] + e * c * s.fwd[2] - e * sn * s.fwd[0];
+    char str[128];
+    snprintf(str, sizeof str, "%f,%f,%f,%f,%f,%f,%f", x, s.pos[1], z, 0.0f, 0.0f,
+             0.0f, r);  // "fffffff" 0x56a000
+    move_trigger(b.trigger, str);  // 0x4eb3f0 -> type_trigger vf7 0x4d4af0
+    // INVENTED: the deferred "touched" list 0x501da0 is untraced and skipped;
+    // +0x2708 is only reset by the exe's own branch (0 stays 0).
+    if (b.trigger_wait > 0) b.trigger_wait--;
+}
+
+Runtime::Resource *bot_of_trigger(Runtime::Resource *trigger)
+{
+    if (!trigger || !trigger->parent) return nullptr;
+    auto it = g_bots.find(trigger->parent);
+    return it != g_bots.end() && it->second.trigger == trigger ? trigger->parent : nullptr;
+}
+
+// 0x480850 type_bot vf14 codes 0x20 / 0x40 (param record +0x50 = body B).
+void bot_trigger_event(Runtime::Resource *bot, RigidBody *other, uint32_t code)
+{
+    auto it = g_bots.find(bot);
+    if (it == g_bots.end() || !other) return;
+    BotData &b = it->second;
+    if (code == 0x40) {
+        for (size_t i = 0; i < b.obstacles.size();)
+            if (!b.obstacles[i].body || b.obstacles[i].body == other)
+                b.obstacles.erase(b.obstacles.begin() + (long)i);
+            else
+                i++;
+        return;
+    }
+    if (code != 0x20) return;
+    float inv = other->def.inv_mass;  // B.def+0x2c
+    int type = inv < 1e-5f ? 1 : inv < 0.01f ? 2 : 0;
+    // INVENTED: the 0x468b00(0xa0000000) owner flag (type = 0 when t+0xc & 0x8000) is untraced, skipped.
+    RigidBody *root = other;
+    while ((root->body_flags & 4) && root->parent) root = root->parent;
+    if (b.active >= 0 && b.active < (int)b.controlled.size() && b.controlled[(size_t)b.active] &&
+        root->owner_id == b.controlled[(size_t)b.active]->id)
+        return;  // own car
+    b.obstacles.push_back({other, type});  // sub-records: card 184
+}
+
 // 0x47f980 native bot vf11: runs on the mode-8 control list (0x47bc20) after
 // the cars (creation order), once per physics tick with dt = ctrlAcc.
 void control_bots(float dt)
@@ -3046,6 +3111,7 @@ void control_bots(float dt)
         // the new steer unchanged.
         float r = b.steer_rate * b.snap.dt;
         b.axis[1] = std::clamp(b.axis[1], old - r, old + r);
+        bot_trigger_follow(b);  // 0x47f980 tail
     }
 }
 
