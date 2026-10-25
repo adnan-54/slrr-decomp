@@ -18,6 +18,7 @@ Read a note with `Read offset/limit` using the line numbers below; do not open t
 | 17-scx-mesh | SCX mesh format, loaders v1-v6, materials |
 | 18-events-frame-input | event dispatch 0x47c760, main-loop input 0x566160, s7 (line 223) mouse cursor events 0x4b8430 + screen pick 0x4eb000 + raycast 0x4fe1a0, s8 (line 265) cursor leftovers (dead RCLICK hand-off, write-only fields, Osd click targets), s9 (line 287) car/bot/part native dtors 0x49beb0/0x4805a0/0x4c3a50 + setParent 0x4ec210 + second-race probe |
 | 20-script-compiler | .java -> TUFA compiler plan |
+| 21-hud-osd | car HUD: gauge record G (M+0x1a44+i*0x48) defaults 0x4909b0/0x49ab20, osd_* keywords 0x5da7b8, Chassis.getOSD/setOSD 0x4b1fd0/0x4b4850, per-frame block of type_car__vf13 0x494910 + gauge_update 0x4b1d50 |
 | classes | RTTI class table |
 
 ## Big notes: section -> start line
