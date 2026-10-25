@@ -4,6 +4,7 @@
 // `wheel`/`friction`/`wheelpars` lines (createCar), slots from the part cfg.
 #include "game/car.h"
 #include "game/bot_avoid.h"
+#include "game/cursor.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -1156,6 +1157,8 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
         b.self = inst;
         g_bots[inst] = std::move(b);
     }
+    // 0x4b7a10 type_cursor vf3 (frontend.rpk 0x2a `native cursor`).
+    if (type && has_native_ref(rt, type, "cursor")) cursor_create(rt, inst);
     CfgFile cfg;
     if (!type || !load_native_cfg(rt, type, "car", &cfg) || cfg.bodies.empty()) return;
     CarData *car = car_data(rt, inst);

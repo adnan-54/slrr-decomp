@@ -29,6 +29,7 @@
 #include "audio/sound.h"
 #include "engine/math.h"
 #include "game/car.h"
+#include "game/cursor.h"
 #include "game/runtime.h"
 #include "input/controller.h"
 #include "input/cursor.h"
@@ -5435,7 +5436,8 @@ bool mc_get_pos(Vm &vm, const Args &a, Value *out, std::string *err)
         *out = Value::make_null();
         return true;
     }
-    // INVENTED: no CursorSource is installed yet; the exe reads an uninitialized
+    // The CursorSource is the native cursor (game/cursor.cpp, getInfo 2).
+    // INVENTED: zeros before a cursor exists; the exe reads an uninitialized
     // info block when the cursor resource does not answer.
     float x = 0.0f, y = 0.0f;
     input::cursor_pos(&x, &y);
@@ -5459,7 +5461,7 @@ bool mc_get_pos_out(Vm &vm, const Args &a, Value *out, std::string *err)
         *out = Value::make_null();
         return true;
     }
-    // INVENTED: zeros without a CursorSource (see mc_get_pos).
+    // INVENTED: zeros before a native cursor exists (see mc_get_pos).
     float x = 0.0f, y = 0.0f;
     input::cursor_pos(&x, &y);
     if (!write_f(vm, dst, "x", x, err) || !write_f(vm, dst, "y", y, err))
@@ -5480,7 +5482,7 @@ bool mc_get_picked_pos(Vm &vm, const Args &a, Value *out, std::string *err)
         *out = Value::make_null();
         return true;
     }
-    // INVENTED: zeros without a CursorSource (see mc_get_pos).
+    // INVENTED: zeros before a native cursor exists (see mc_get_pos).
     float v[3] = {0.0f, 0.0f, 0.0f};
     input::cursor_picked_pos(v);
     Object *p = new_point(vm, "java.lang.Vector3", v, false, err);
@@ -5502,7 +5504,7 @@ bool mc_get_picked_pos_out(Vm &vm, const Args &a, Value *out, std::string *err)
         *out = Value::make_null();
         return true;
     }
-    // INVENTED: zeros without a CursorSource (see mc_get_pos).
+    // INVENTED: zeros before a native cursor exists (see mc_get_pos).
     float v[3] = {0.0f, 0.0f, 0.0f};
     input::cursor_picked_pos(v);
     if (!write_f(vm, dst, "x", v[0], err) || !write_f(vm, dst, "y", v[1], err) ||
@@ -7693,6 +7695,9 @@ void advance_sim(Vm &vm, float dt)
         }
     }
     if (!(done > 0.0f) && rt) rt->flush_deferred();
+    // 0x4b79e0 type_cursor vf11. INVENTED placement: the exe ticks native types
+    // from its type list; once per frame here with the frame dt.
+    if (rt) game::cursor_tick(*rt, dt);
 }
 
 const std::vector<Entry> &table()

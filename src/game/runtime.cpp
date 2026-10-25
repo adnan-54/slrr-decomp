@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "game/car.h"
+#include "game/cursor.h"
 #include "physics/mesh.h"
 #include "physics/physics.h"
 #include "platform/fs.h"
@@ -865,7 +866,8 @@ void Runtime::queue_event(Resource *target, Resource *sender, uint32_t code,
         if (!game::car_command(*this, target, ev, param) &&
             !game::part_command(*this, target, ev, param) &&
             !game::player_command(*this, target, ev, param) &&
-            !game::bot_command(*this, target, ev, param) && target->script)
+            !game::bot_command(*this, target, ev, param) &&
+            !game::cursor_command(*this, target, ev, param) && target->script)
             dispatch_script(*this, target, sender, code, param, method);
     }
 

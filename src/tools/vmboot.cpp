@@ -18,6 +18,7 @@
 
 #include "app/boot.h"
 #include "game/car.h"
+#include "game/cursor.h"
 #include "input/backend.h"
 #include "input/device.h"
 #include "mesh/scx.h"
@@ -225,10 +226,90 @@ bool osd_command(Boot &boot, Object *receiver, int cmd, const char *thread_name,
 
 // MainMenu.java:144-145: the invisible ghost button sends CMD_MENU_SELECT
 // (0xB007); Gates.osdCommand (MainMenu.java:607) runs slider.execute(CMD_MENU_SEL).
-bool menu_select(Boot &boot, Object *window, std::string *err)
+bool menu_select_command(Boot &boot, Object *window, std::string *err)
 {
-    // INVENTED: stands in for the Osd ghost-button click (no render hit test)
     return osd_command(boot, window, 0xB007, "THRD-MENU-SELECT", err);
+}
+
+// Gadget (Gadget.java:17,25) of Group `ref` whose phy is `body`, else null.
+Object *gadget_of(Boot &boot, Runtime::Resource *ref, Runtime::Resource *body)
+{
+    Runtime *rt = boot.runtime();
+    std::string e;
+    Value vec, sz;
+    if (!ref || !ref->script ||
+        !boot.vm()->get_instance_field(ref->script, "gadget", &vec, &e) ||
+        vec.kind != Value::Obj || !vec.obj || !rt->call_method(vec.obj, "size", {}, &sz, &e) ||
+        sz.kind != Value::Int)
+        return nullptr;
+    for (int32_t i = 0; i < sz.i; i++) {
+        Value g, phy;
+        if (!rt->call_method(vec.obj, "elementAt", {Value::make_int(i)}, &g, &e) ||
+            g.kind != Value::Obj || !g.obj ||
+            !boot.vm()->get_instance_field(g.obj, "phy", &phy, &e) || phy.kind != Value::Obj ||
+            !phy.obj)
+            continue;
+        Runtime::Handle *h = rt->handle(phy.obj);
+        if (h && h->target == body) return g.obj;
+    }
+    return nullptr;
+}
+
+// INVENTED harness: stands in for a player moving the mouse onto the ghost
+// button and clicking it. Scans a 64x64 grid of cursor positions with the
+// 0x4eb000 pick until the hit body is the gadget with cmd 0xB007, moves the
+// native cursor there and holds mouse button 1 through the synthetic backend.
+// Runs frames from `frame`; returns the last frame run. *clicked: the cursor's
+// LCLICK reached the ghost button's body.
+int menu_select(Boot &boot, FrameLoop &loop, int frame, Object *window, bool *clicked,
+                std::string *err)
+{
+    *clicked = false;
+    Runtime *rt = boot.runtime();
+    Value mc, gref;
+    Runtime::Resource *cur = nullptr;
+    if (boot.vm()->get_static_field("java.io.Input", "cursor", &mc, err) && mc.kind == Value::Obj &&
+        mc.obj && boot.vm()->get_instance_field(mc.obj, "cursor", &gref, err) &&
+        gref.kind == Value::Obj && gref.obj) {
+        Runtime::Handle *h = rt->handle(gref.obj);
+        cur = h ? h->target : nullptr;
+    }
+    float gx = 0.0f, gy = 0.0f;
+    Runtime::Resource *ghost = nullptr;
+    for (int iy = 0; iy < 64 && !ghost; iy++)
+        for (int ix = 0; ix < 64 && !ghost; ix++) {
+            float x = (ix + 0.5f) / 32.0f - 1.0f, y = (iy + 0.5f) / 32.0f - 1.0f;
+            Runtime::PickHit hit;
+            float far[3], near[3];
+            if (!rt->screen_pick(x, y, &hit, far, near) || !hit.body) continue;
+            Object *g = gadget_of(boot, hit.ref, hit.body);
+            Value cmd;
+            std::string e;
+            if (g && boot.vm()->get_instance_field(g, "cmd", &cmd, &e) &&
+                cmd.kind == Value::Int && cmd.i == 0xB007) {
+                ghost = hit.body;
+                gx = x;
+                gy = y;
+            }
+        }
+    if (!cur || !ghost) {
+        std::printf("  FAIL menu select: %s; falling back to osdCommand 0xB007\n",
+                    !cur ? "no native cursor (Input.cursor.cursor)"
+                         : "no grid point picks the ghost button");
+        menu_select_command(boot, window, err);
+        return frame;
+    }
+    char move[64];
+    snprintf(move, sizeof move, "move %g,%g", (double)gx, (double)gy);
+    std::printf("  menu select: cursor %s on ghost button body 0x%x\n", move, ghost->id);
+    rt->queue_event(cur, nullptr, 0x10, Value::make_str(std::string(move)));
+    // Mouse button 1 = SysMouse control 3 (ControlSet.java:301 AXIS_CURSOR_BUTTON1).
+    for (int k = 0; k < 20; k++) {
+        g_input->devices[1].raw.mouse_buttons[0] = k < 10 ? 0x80 : 0;
+        loop.frame(++frame * 16);
+    }
+    *clicked = game::cursor_last_click_body() == ghost->id;
+    return frame;
 }
 
 struct Checker {
@@ -549,14 +630,16 @@ void game_init_check(Boot &boot, Checker &c)
     const std::string class_before =
         have_state ? object_class(boot, state_before.obj) : "(none)";
     bool selected = false;
+    int select_end = kSelect;
     if (have_state) {
         Value window;
         if (boot.vm()->get_instance_field(state_before.obj, "window", &window, &serr) &&
             window.kind == Value::Obj && window.obj)
-            selected = menu_select(boot, window.obj, &serr);
+            select_end = menu_select(boot, loop, kSelect, window.obj, &selected, &serr);
         else if (serr.empty())
             serr = "MainMenu.window is not an object";
     }
+    c.check(selected, "main menu ghost button clicked through the native cursor");
     // The NEW CAREER dialog is up once the select handler has run; answer every
     // modal dialog that shows up from then on (loading screen, name, garage),
     // then let each handler continue.
@@ -569,7 +652,7 @@ void game_init_check(Boot &boot, Checker &c)
     bool dealer_at_garage = false, dealer_started = false, buy_at_market = false;
     std::string eventlist_from = "(none)", race_from = "(none)";
     bool eventlist_at_garage = false, race_at_eventlist = false;
-    for (int i = kSelect + 1; i <= kFrames; i++) {
+    for (int i = select_end + 1; i <= kFrames; i++) {
         g_input->devices[0].raw.keys[0x1c] = 0;
         loop.frame(i * 16);
         if (i >= kDialog && (i - kDialog) % kDialogStep == 0)
@@ -702,7 +785,7 @@ void game_init_check(Boot &boot, Checker &c)
         have_state_after ? object_class(boot, state_after.obj) : "(none)";
     std::printf("  menu select: actualState %s -> %s%s\n", class_before.c_str(),
                 class_after.c_str(),
-                selected ? "" : (" (invoke failed: " + serr + ")").c_str());
+                selected ? "" : (" (not clicked: " + serr + ")").c_str());
     std::printf("  final actualState: %s\n", class_after.c_str());
 
     // 0x47e050 sub-steps the process world (0x502060); 0x4e5810 System.simTime
