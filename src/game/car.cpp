@@ -1423,6 +1423,7 @@ bool car_set_matrix(Runtime &rt, Runtime::Resource *carres, const float pos[3],
 // the "+0x154 native instance dtor" step of Runtime::unload 0x51a1b0.
 void instance_dtor(Runtime &rt, Runtime::Resource *r)
 {
+    // INVENTED: a foreign Runtime unload must not touch this Runtime's pointer-keyed maps.
     if (!r || g_rt != &rt) return;
     auto it = g_cars.find(r);
     if (it != g_cars.end()) {
@@ -2837,7 +2838,7 @@ static void bot_plan(BotData &b, BotSnapshot &s, const CarData &car, float look,
     // ahead on the spline. Its car getInfo 2/3/4 is root body pos/vel/-Rcol2.
     if ((b.mode == 2 || b.mode == 3) && b.opponent != 0) {
         const CarData *opp = nullptr;
-        // A destroyed car's ref resolves to nothing in the exe (getInfo fails);
+        // INVENTED: assumes a destroyed car's ref resolves to nothing in the exe (getInfo fails; not traced);
         // payloads whose bodies left the world are skipped here.
         for (const auto &e : g_cars)
             if (e.second->root_body && e.first->id == b.opponent) {
