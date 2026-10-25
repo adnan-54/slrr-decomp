@@ -326,9 +326,14 @@ struct BotData {
     float target_d = 0.0f;       // +0x268c (0x485e10: d - look)
     float wheel_grip[4] = {1.0f, 1.0f, 1.0f, 1.0f};  // +0x2710 + i*4
     float curvature_enable = -1.0f;  // +0x2724
-    // 0x486020 argument stub (card 176) and the last snapshot (vmboot).
+    // 0x486020 last plan (card 176): projection d/lat, lateral offset, target
+    // point T and the spline direction D there (card 177 input).
     float plan_d = 0.0f;
     float plan_look = 0.0f;
+    float plan_lat = 0.0f;
+    float plan_off = 0.0f;
+    float plan_T[3] = {};
+    float plan_D[3] = {};
     BotSnapshot snap;
     bool snap_valid = false;
     int control_ticks = 0;   // control_cars bot-branch counter (vmboot)

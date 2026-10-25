@@ -2187,9 +2187,177 @@ void control_cars(float dt)
     }
 }
 
-// 0x485e10 (mode 3): look-ahead on the spline. The planner 0x486020 is a stub
-// that stores its arguments (card 176); 0x482910 (card 178) is the fallback.
-static void bot_mode3(BotData &b, const BotSnapshot &s)
+// 0x412ed0 dirAt, flattened to xz and normalised; false for a degenerate dir.
+static bool plan_dir_xz(const traffic::Path &p, float q, Vec3 *t)
+{
+    float d3[3];
+    traffic::path_dir_at(p, q, d3);
+    t->x = d3[0];
+    t->y = 0.0f;
+    t->z = d3[2];
+    float l = sqrtf(t->x * t->x + t->z * t->z);
+    if (l <= 1e-5f) return false;
+    t->x /= l;
+    t->z /= l;
+    return true;
+}
+
+// Signed angle from t0 to t around y (0x486020 step 1).
+static float plan_angle(const Vec3 &t, const Vec3 &t0)
+{
+    float g = t.z * t0.z + t.x * t0.x;
+    float a = g > 1.0f ? 0.0f : g < -1.0f ? 3.14159265f : acosf(g);
+    if (t.x * t0.z - t.z * t0.x <= 0.0f) a = -a;
+    return a;
+}
+
+// 0x486020 s(P): 0 when P is behind the car along f, 1 when ahead, 0.5 aside.
+static float plan_s(const Vec3 &P, float x, float z, const Vec3 &f)
+{
+    float ux = P.x - x, uz = P.z - z;
+    float l = sqrtf(ux * ux + uz * uz);
+    if (l <= 1e-5f) {
+        ux = uz = 0.0f;
+    } else {
+        ux /= l;
+        uz /= l;
+    }
+    float g = uz * f.z + ux * f.x;
+    return 0.5f * ((ux * f.z - uz * f.x <= 0.0f) ? -1.0f - g : g + 1.0f);
+}
+
+static Vec3 plan_pof(const traffic::Path &p, float q, float off)
+{
+    float out[3];
+    traffic::path_pos_offset_at(p, q, off, out);
+    return Vec3{out[0], out[1], out[2]};
+}
+
+// 0x486020 steps 1, 3 and 4 (card 176): lateral offset from the curvature
+// ahead, pull to the car's current lateral position, target search from
+// d - 10 back to +0x268c, then the straight-line extension of T. Step 5 and
+// 0x483bd0 are card 177.
+static void bot_plan(BotData &b, BotSnapshot &s, float look, float vmax0)
+{
+    (void)look;   // already in +0x268c (0x485e10)
+    (void)vmax0;  // step 5, card 177
+    const traffic::Path &p = b.spline;
+    float x = s.pos[0], z = s.pos[2];
+    float d = 0.0f, lat = 0.0f;
+    if (!traffic::path_project(p, x, z, &d, &lat)) return;
+    if (traffic::path_i1_at(p, d) == 0) s.nitro = -1.0f;   // +0xb8
+    s.c0 = traffic::path_i2_at(p, d) != 0;                 // +0xc0
+
+    // Step 1: lateral offset from the curvature ahead.
+    float lim = b.grip_base * 6.0f;  // +0x2584 * 6
+    float q = std::min(p.length, d - 20.0f);
+    Vec3 t0{};
+    bool have_t0 = plan_dir_xz(p, q, &t0);
+    q -= 2.0f;
+    float off = 0.0f;
+    if (b.curvature_enable < 0.0f && q > 0.0f && have_t0) {
+        float c = 1.0f, acc = 0.0f;
+        for (int i = 0; i < 100; i++) {
+            Vec3 t{};
+            plan_dir_xz(p, q, &t);
+            float a = plan_angle(t, t0);
+            float v = std::clamp(a * -15.0f * lim, -lim, lim);
+            acc += c;
+            off = (c / acc) * v + (1.0f - c / acc) * off;
+            q -= 2.0f;
+            c *= 0.96f;
+            if (q <= 0.0f) break;
+            t0 = t;
+        }
+    }
+    off = std::clamp(off, -0.8f, 0.8f);
+
+    // shortcut: step 2 (opponent +0x25e8, 0x486766..0x486942) is card 179; the
+    // traffic-bin block (+0x2724 < 0 && DAT_005e652c) has no manager in src.
+
+    // Step 3: pull toward the car's current lateral position.
+    if (b.mode == 3 || b.curvature_enable > 0.0f) {
+        float r = lat / traffic::path_width_at(p, d);
+        float thr = s.nitro > 0.0f ? 0.9f : 0.2f;
+        float k = s.nitro > 0.0f ? 0.25f : 0.1f;
+        float ad = std::fabs(off - r);
+        if (ad < thr) {
+            float bl = std::max(0.0f, (ad - thr + k) / k);
+            off = std::clamp((1.0f - bl) * r + bl * off, -0.9f, 0.9f);
+        }
+    }
+
+    // Step 4: target search from d - 10 back to L = +0x268c.
+    float L = b.target_d;
+    float f3[3];
+    traffic::path_dir_at(p, L, f3);  // raw x, z
+    Vec3 f{f3[0], f3[1], f3[2]};
+    float lo = -1.0f, hi = 1.0f;
+    bool back = false;
+    q = d - 10.0f;
+    do {
+        q -= 5.0f;
+        if (q <= L) q = L;
+        float h = traffic::path_width_at(p, q) - b.half_width;
+        if (h <= 1.0f) h = 1.0f;
+        Vec3 A = plan_pof(p, q, h);
+        Vec3 B = plan_pof(p, q, -h);
+        Vec3 C = plan_pof(p, q, (h - b.half_width) * off);
+        float sa = plan_s(A, x, z, f), sb = plan_s(B, x, z, f);
+        float sc = plan_s(C, x, z, f);
+        if (sb < sa) break;
+        if (sc < lo || hi < sc) {
+            q += 5.5f;
+            back = true;
+        } else {
+            lo = std::max(sa, lo);
+            hi = std::min(sb, hi);
+            if (back) break;
+        }
+    } while (L < q);
+    float q2 = d - (d - q) * 0.8f;
+    if (q2 <= b.param_floor) q2 = b.param_floor;  // +0x2608
+    float dw[3];
+    traffic::path_dir_at(p, q2, dw);
+    Vec3 T = plan_pof(p, q2,
+                      (traffic::path_width_at(p, q2) - b.half_width) * off);
+    Vec3 D{dw[0], dw[1], dw[2]};
+
+    // Straight-line extension of T while it stays on the spline.
+    Vec3 u = vec_normalize(Vec3{T.x - x, T.y - s.pos[1], T.z - z}, Vec3{});
+    float step = 28.0f;
+    int n = 100000;
+    do {
+        Vec3 P{T.x + u.x * step, T.y + u.y * step, T.z + u.z * step};
+        float pd = 0.0f, pl = 0.0f;
+        if (traffic::path_project_strict(p, P.x, P.z, &pd, &pl) &&
+            std::fabs(pl) < traffic::path_width_at(p, pd) &&
+            pd > b.param_floor) {
+            T = P;
+            if (--n == 0) {
+                n = 2;
+                step *= 0.333333f;
+            }
+        } else {
+            n = 2;
+            step *= 0.333333f;
+        }
+    } while (step >= 1.0f);
+
+    b.plan_d = d;
+    b.plan_lat = lat;
+    b.plan_off = off;
+    b.plan_T[0] = T.x;
+    b.plan_T[1] = T.y;
+    b.plan_T[2] = T.z;
+    b.plan_D[0] = D.x;
+    b.plan_D[1] = D.y;
+    b.plan_D[2] = D.z;
+}
+
+// 0x485e10 (mode 3): look-ahead on the spline; 0x482910 (card 178) is the
+// fallback.
+static void bot_mode3(BotData &b, BotSnapshot &s)
 {
     b.max_lat_accel = b.brake_mul * 1.2f;               // +0x2580 = +0x2588*1.2
     b.grip_base = std::min(b.grip_speed * 2.0f, 1.0f);  // +0x2584
@@ -2200,8 +2368,8 @@ static void bot_mode3(BotData &b, const BotSnapshot &s)
     if (!traffic::path_project(b.spline, s.pos[0], s.pos[2], &d, &lat))
         return;  // 0x482910 no-op
     b.target_d = d - look;  // +0x268c
-    b.plan_d = d;
     b.plan_look = look;
+    bot_plan(b, s, look, 1000.0f);  // 0x486020
 }
 
 // 0x47f980's snapshot S: getInfo cases 0x36/2/3/4/0x33/0x32/0x35/0x40 on the

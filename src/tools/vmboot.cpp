@@ -1618,6 +1618,7 @@ void game_init_check(Boot &boot, Checker &c)
             const float kTickDt = 0.016f;  // the 16 ms frame's ctrlAcc
             game::control_bots(kTickDt);
             int bad_snap = 0, bad_plan = 0, bad_ctrl = 0;
+            int bad_tgt = 0, bad_vec = 0;
             for (size_t i = 0; i < bot_brains.size(); i++) {
                 const game::BotData *bd = game::bot_data(bot_brains[i]);
                 game::CarData *cp = game::car_data(*rt, bot_cars[i]);
@@ -1645,6 +1646,33 @@ void game_init_check(Boot &boot, Checker &c)
                                bd->plan_look == look &&
                                bd->target_d == d - look;
                 if (!plan_ok) bad_plan++;
+                // Card 176: T is on the spline inside its width and behind the
+                // car in spline order; off is clamped and D is unit length.
+                float dT = 0.0f, latT = 0.0f;
+                bool tproj = traffic::path_project_strict(
+                    bd->spline, bd->plan_T[0], bd->plan_T[2], &dT, &latT);
+                float len = bd->spline.length;
+                float wrap = len > 0.0f ? std::fmod(d - dT, len) : 0.0f;
+                if (wrap < 0.0f) wrap += len;
+                bool tgt_ok = tproj &&
+                              std::fabs(latT) < traffic::path_width_at(
+                                                      bd->spline, dT) &&
+                              wrap > 0.0f && wrap < len * 0.5f;
+                if (!tgt_ok) bad_tgt++;
+                float dl = std::sqrt(bd->plan_D[0] * bd->plan_D[0] +
+                                     bd->plan_D[1] * bd->plan_D[1] +
+                                     bd->plan_D[2] * bd->plan_D[2]);
+                bool vec_ok =
+                    std::fabs(bd->plan_off) <= 0.9f &&
+                    std::fabs(dl - 1.0f) <= 1e-3f && std::isfinite(d) &&
+                    std::isfinite(lat) && std::isfinite(bd->plan_off) &&
+                    std::isfinite(bd->plan_T[0]) &&
+                    std::isfinite(bd->plan_T[1]) &&
+                    std::isfinite(bd->plan_T[2]) &&
+                    std::isfinite(bd->plan_D[0]) &&
+                    std::isfinite(bd->plan_D[1]) &&
+                    std::isfinite(bd->plan_D[2]);
+                if (!vec_ok) bad_vec++;
                 bool ctrl_ok = bd->control_ticks > 0 &&
                                cp->throttle == 0.0f &&
                                cp->brake_input == 0.0f &&
@@ -1656,6 +1684,12 @@ void game_init_check(Boot &boot, Checker &c)
                             (double)s.speed, (double)d, (double)look,
                             (double)s.wheel[0][1], (double)s.wheel[1][1],
                             (double)s.wheel[2][1], (double)s.wheel[3][1]);
+                std::printf("    bot %zu plan (0x486020): d %.2f, lat %.3f, "
+                            "off %.3f, T %.2f %.2f %.2f, d_T %.2f\n",
+                            i, (double)bd->plan_d, (double)bd->plan_lat,
+                            (double)bd->plan_off, (double)bd->plan_T[0],
+                            (double)bd->plan_T[1], (double)bd->plan_T[2],
+                            (double)dT);
                 (void)lat;
             }
             c.check(!bot_brains.empty() && bad_snap == 0,
@@ -1671,6 +1705,14 @@ void game_init_check(Boot &boot, Checker &c)
                     "every bot car reads the bot axes in control_cars (counter "
                     "> 0, throttle/brake/steer 0; 0x480720/0x498300, " +
                         std::to_string(bad_ctrl) + " bad)");
+            c.check(!bot_brains.empty() && bad_tgt == 0,
+                    "every bot target T projects strictly onto its spline "
+                    "inside the width and lies 0 < wrap(d - d_T) < length/2 "
+                    "behind the car (0x486020, " + std::to_string(bad_tgt) +
+                        " bad)");
+            c.check(!bot_brains.empty() && bad_vec == 0,
+                    "every bot holds |off| <= 0.9, a unit D and finite plan "
+                    "values (0x486020, " + std::to_string(bad_vec) + " bad)");
             // The wakeup above is only for the snapshot check; sleep the bot
             // cars again so the rest of the run keeps the player-only cost.
             for (Runtime::Resource *bcr : bot_cars)

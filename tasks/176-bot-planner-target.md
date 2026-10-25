@@ -1,6 +1,6 @@
 ---
 id: 176
-status: todo
+status: implemented
 branch: card/176
 depends: [175]
 ---
@@ -75,3 +75,6 @@ No unit tests, no map names in engine code. Do not write axes.
 Step 5 speed limit + 0x483bd0 (177), controls (178), opponent block / bot_trigger (179).
 
 ## Result
+Implemented `bot_plan` (0x486020 steps 1, 3, 4) in `src/game/car.cpp`, called from the mode-3
+look-ahead. Stores `plan_d/plan_lat/plan_off/plan_T/plan_D` in `BotData`. vmboot selfcheck and
+race pass with the new T/off/D checks (selfcheck 163 checks, race 153, 0 failures).
