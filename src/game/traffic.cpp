@@ -3,6 +3,9 @@
 #include <math.h>
 #include <string.h>
 
+// 0x571110 MSVC CRT rand, shared with java.lang.Math.random (natives.cpp).
+uint32_t msvc_rand();
+
 namespace {
 
 struct Reader {
@@ -777,6 +780,53 @@ void lane_init(Graph &g, Lane &l)
     l.halted = false;
 }
 
+// 0x40eef0 TrafficCarPool__alloc: free list first, else a new stable slot.
+uint32_t car_alloc(Graph &g)
+{
+    if (!g.free_cars.empty()) {
+        uint32_t i = g.free_cars.back();
+        g.free_cars.pop_back();
+        return i;
+    }
+    g.cars.emplace_back();
+    return (uint32_t)(g.cars.size() - 1);
+}
+
+// 0x40c400 TrafficCar__ctor (+ 0x40e040): serial, constants, everything else 0.
+void car_ctor(Graph &g, uint32_t i)
+{
+    Car &c = g.cars[i];
+    c = Car();
+    c.serial = ++g.car_serial;
+    c.k1c = 0.5f;
+    c.k28 = 1.2f;
+    c.k34 = 0.06f;
+    c.k38 = 6.0f;
+    c.k3c = 0.01f;
+    c.k40 = -1.0f;
+    c.e0 = c.e4 = c.e8 = g.sim_time;
+}
+
+// 0x40c730 TrafficCar__release: unlink the refs and clear the serial; the
+// caller pushes the slot on the free list.
+void car_release(Graph &g, uint32_t i)
+{
+    g.cars[i].serial = 0;
+    // INVENTED: the +0x130 instance and +0x144 type link unlinks are not modelled.
+}
+
+// 0x40d1e0 ctLane__insertCar: insert before the first car with a larger pos,
+// else append (list order = ascending pos).
+void lane_insert(Graph &g, size_t li, uint32_t ci)
+{
+    std::vector<uint32_t> &list = g.lanes[li].cars;
+    float pos = g.cars[ci].pos;
+    size_t at = 0;
+    while (at < list.size() && !(pos < g.cars[list[at]].pos)) at++;
+    list.insert(list.begin() + at, ci);
+    // shortcut: lane vf3 0x40cbd0 attach is card 214
+}
+
 }  // namespace
 
 // 0x419da0 Traffic__init.
@@ -803,6 +853,83 @@ void Graph::step(float t)
     sim_time = t;  // +0x84
     // shortcut: the event heap, the 4 active lists and the car notify list only
     // hold traffic cars; src has no car pool (notes/28 §3), so they stay empty.
+}
+
+// 0x40ce00 ctRoad__spawnCar (ECX = road).
+uint32_t Graph::spawn_on_road(size_t road, float p1, float p2, float p3, float p4)
+{
+    if (road >= roads.size()) return 0;   // INVENTED: the exe has no bounds check.
+    // Road lanes are the node chain road.node[0] -> lane.node14.
+    std::vector<size_t> free_lanes;
+    const Lane *l = lane_at(*this, roads[road].node[0]);
+    // INVENTED: cap the pointer walk with the lane count (the exe follows a cycle).
+    for (size_t guard = 0; l && guard < lanes.size(); guard++) {
+        if (!l->halted) free_lanes.push_back((size_t)(l - lanes.data()));
+        l = lane_at(*this, l->node14);
+    }
+    if (free_lanes.empty()) return 0;
+    size_t li = free_lanes[msvc_rand() % free_lanes.size()];  // rand15
+    Lane &lane = lanes[li];
+
+    uint32_t ci = car_alloc(*this);
+    car_ctor(*this, ci);
+    Car &car = cars[ci];
+    car.max_speed = 15.0f;
+    car.accel = 1.0f;
+    car.k34 = 0.06f;
+    car.k3c = 0.01f;
+    car.k158 = 0;
+    car.k14 = p1; car.k18 = p2; car.k20 = p3; car.k24 = p4;
+    car.next_lane_a = car.next_lane_b = 0;
+    car.lane = (uint32_t)li;
+    car.path_lane = (uint32_t)li;
+    car.path = &lane.path;
+    car.dir = -1;
+    car.kd0 = car.kd4 = 0;
+    car.lateral = 0.0f;
+    car.e0 = sim_time;
+
+    // Free length along the lane (list order is ascending pos).
+    float free_len = 0.0f, edge = p1;
+    for (uint32_t cj : lane.cars) {
+        const Car &c = cars[cj];
+        float back = c.pos - c.k14 - ((c.speed - 2.0f) * 0.5f + 1.0f) * c.k24 - p3;
+        if (edge < back) free_len += back - edge;
+        edge = c.k20 + c.pos + p4 + p1;
+    }
+    float tail = lane.path.length - p3;
+    if (edge < tail) free_len += tail - edge;
+    if (free_len <= 0.0f) {
+        car_release(*this, ci);
+        free_cars.push_back(ci);
+        return 0;
+    }
+
+    float r = (float)msvc_rand() * 3.0517578e-05f * free_len;  // rand15
+    float acc = 0.0f;
+    edge = p1;
+    for (uint32_t cj : lane.cars) {
+        const Car &c = cars[cj];
+        float back = c.pos - c.k14 - ((c.speed - 2.0f) * 0.5f + 1.0f) * c.k24 - p3;
+        if (edge < back) {
+            float nacc = back + acc - edge;
+            if (r <= nacc) break;
+            acc = nacc;
+        }
+        edge = c.k20 + c.pos + p4 + p1;
+    }
+    car.speed = 0.0f;
+    car.kac = 0.0f;
+    car.pos = (r - acc) + edge;
+    float p[3];
+    path_pos_offset_at(lane.path, car.pos, car.lateral, p);
+    for (int k = 0; k < 3; k++) car.world[k] = p[k];
+    float v[3];
+    path_dir_at(lane.path, car.pos, v);
+    car.front_x = p[0] + car.k18 * v[0];
+    car.front_z = p[2] + car.k18 * v[2];
+    lane_insert(*this, li, ci);
+    return ci + 1;
 }
 
 // 0x41a000 Traffic__load.

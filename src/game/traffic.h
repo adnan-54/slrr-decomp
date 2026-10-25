@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -48,8 +49,44 @@ struct Lane {
     float index_min_x = 0, index_run_max_x = 0, index_max_x = 0; uint32_t index_lane = 0;  // +0x78..+0x84
     uint32_t node88[4] = {}; float k98 = 0; uint32_t k9c = 0, ka0 = 0;  // +0x98 speed factor
     Path path;                                            // +0x3c
+    std::vector<uint32_t> cars;                           // +0x08/+0x0c list; INVENTED: exe intrusive prev/next replaced by car indices, ascending pos
     bool halted = false;                                  // +0xc4, INVENTED initial value
     float kc0 = 0, kc8 = 0, kcc = 0;                      // +0xc0 sim time, +0xc8, +0xcc path length
+};
+
+struct Car {                    // 0x164 bytes in the exe
+    uint32_t serial = 0;        // +0x00 (++g_car_serial; also the free-list link)
+    uint32_t prev = 0, next = 0;  // +0x04, +0x08 (exe intrusive lane links; unused here)
+    uint32_t lane = 0;          // +0x0c (INVENTED: lane index, pointer in the exe)
+    float k14 = 0, k18 = 0, k1c = 0, k20 = 0, k24 = 0, k28 = 0;  // +0x14..+0x28
+    float max_speed = 0;        // +0x2c
+    float accel = 0;            // +0x30
+    float k34 = 0, k38 = 0, k3c = 0, k40 = 0;  // +0x34..+0x40
+    uint32_t live_next = 0;     // +0x44
+    float pos = 0;              // +0x88 (distance on the lane path; counts down to the lane end)
+    float world[3] = {};        // +0x8c
+    float front_x = 0, front_z = 0;  // +0x98, +0x9c
+    float lateral = 0;          // +0xa8
+    float kac = 0;              // +0xac
+    float speed = 0;            // +0xb0
+    float kb4 = 0;              // +0xb4
+    uint32_t next_lane_a = 0, next_lane_b = 0;  // +0xb8, +0xbc
+    float kc0 = 0;              // +0xc0
+    uint32_t path_lane = 0;     // +0xc4 PathRef lane (INVENTED: index)
+    const Path *path = nullptr; // +0xc8 (&lane.path)
+    int32_t dir = 0;            // +0xcc
+    uint32_t kd0 = 0, kd4 = 0;  // +0xd0, +0xd4 second ref
+    uint8_t live = 0;           // +0xdc
+    uint8_t notify = 0;         // +0xdd
+    float e0 = 0, e4 = 0, e8 = 0;  // +0xe0..+0xe8 step times
+    uint32_t k124 = 0, k128 = 0;   // +0x124, +0x128
+    uint32_t k130 = 0, k134 = 0, inst_id = 0, k13c = 0;  // +0x130 instance link (id +0x138)
+    uint32_t k140 = 0;          // +0x140
+    uint32_t k144 = 0, k148 = 0, type_id = 0, k150 = 0;  // +0x144 type link (id +0x14c)
+    uint32_t seed = 0;          // +0x154
+    uint32_t k158 = 0;          // +0x158
+    uint32_t k15c = 0;          // +0x15c
+    uint32_t behaviour = 0;     // +0x160
 };
 
 struct Graph {
@@ -61,11 +98,18 @@ struct Graph {
     std::vector<uint8_t> road_enabled;          // +0xc4: enable flag per road group
     float max_road_width = 0;                   // +0x312c
     float cross_stop_offset = 0;                // +0x3140 (ctor 0x416000: 0)
+    // +0x70 car pool. INVENTED: deque gives stable addresses, the free list keeps
+    // indices, and the serial counter is per graph (the exe's is process-wide).
+    std::deque<Car> cars;
+    std::vector<uint32_t> free_cars;
+    uint32_t car_serial = 0;
     // Node ids stay raw (1-based into eq, light, road, lane; 0 = null).
     // INVENTED: ids instead of pointers; bounds checks the exe does not have.
     bool load(const uint8_t *data, size_t size, size_t *consumed, std::string *err);
     void init(float t);   // 0x419da0: per-node init pass after Traffic__load
     void step(float t);   // 0x41b290: sim_time = t (+0x84); car pool not ported
+    // 0x40ce00: spawn an abstract car on a free lane of road; returns index + 1 (0 = none).
+    uint32_t spawn_on_road(size_t road, float p1, float p2, float p3, float p4);
     size_t node_count() const;  // eq + light + road + lane
     // 0x419050: cross_eq first, then cross_light; first strict minimum wins.
     const Cross *nearest_cross(float x, float y, float z, float dist, bool yflag) const;

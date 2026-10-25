@@ -1,7 +1,7 @@
 ---
 id: 213
-status: todo
-branch:
+status: implemented
+branch: card/213
 depends: [212]
 ---
 # Traffic: car pool + ctRoad__spawnCar + lane insert
