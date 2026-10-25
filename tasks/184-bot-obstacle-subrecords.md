@@ -1,7 +1,7 @@
 ---
 id: 184
-status: todo
-branch:
+status: implemented
+branch: card/184
 depends: [183]
 ---
 # `native bot` obstacle sub-records from the contact body's shape (vf14 0x20 body: 0x482350 points, 0x481d20 edges)
