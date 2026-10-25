@@ -2040,5 +2040,14 @@
   "0x40f350": "TrafficCar__liveStep",
   "0x40f4e0": "ctLane__activeStep",
   "0x41b290": "Traffic__step",
-  "0x41a9d0": "Traffic__reap"
+  "0x41a9d0": "Traffic__reap",
+  "0x41a3e0": "Traffic__bindObject",
+  "0x40ed30": "ctRoad__bindObject",
+  "0x40ebb0": "ctCross__bindObject",
+  "0x40f6d0": "ctLane__setLive",
+  "0x40fa50": "TrafficCar__dropLive",
+  "0x40f5e0": "TrafficCar__setLive",
+  "0x40ca40": "TrafficCar__unlinkLane",
+  "0x461980": "Camera__instanceLod",
+  "0x45f180": "Render__collectInstance"
 }
