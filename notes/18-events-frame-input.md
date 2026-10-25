@@ -219,3 +219,45 @@ event loads `java.game.CircuitRacing` on a Track, 0 failed threads; car/physics 
 freeride harness do not apply there (different map/grid). NEXT after 163: vmboot career flow
 (CMD_EVENTLIST + hint dialog + CMD_RACE) and what CircuitRacing needs per tick (countdown timers,
 checkpoint Triggers, bots via createBotCars/Bot/Navigator).
+
+## 7. Mouse cursor events and the screen pick (RE 2026-10-25, cards 189-191)
+Osd buttons are script-side (Osd.java/Group.java): each gadget has a `PhysicsRef` box
+(`phy.createBox(group, w, h, 0.001)`, `phy.setMatrix(pos, null)`) under its Group; the exe only
+turns mouse motion + buttons into `EVENT_CURSOR` (0x10000) string events. Group.handleEvent then
+calls `findGadget(physicsId)` and `g.click()` -> `osdCommand`. vmboot's "click" stand-ins
+(menu_select, answer_dialogs, dealer/garage/generator buttons) are INVENTED until this exists.
+- type_cursor (vtable 0x59e18c): vf3 0x4b7a10 creates the 0x1bc typed (ctor 0x4b72f0), `+0x4c=-1`,
+  `+0x50=3` (bit0 pick enabled, bit2 'standby'), `+0x190=3.0f`, `+0x1a8=1`, sensitivity
+  `DAT_005daa78/7c = cfg "mouseSensitivity"*1000`; vf11 0x4b79e0 = tick when `typed+0x10 & 1`
+  ("activate" command) -> `0x4b8430(typed, dt)`; vf14 0x4b7d70 = commands (`cursor vp cam id`,
+  `mode`, `activate a b` (|=1 on +0x10), `deactivate`, `enable` (+0x50|=1), `disable` (&=~5),
+  `standby` (&~1|4), `move x,y` / `relmove x,y` (clamped [-1,1], bone00 matrix)); vf15 0x4b7c60
+  getInfo: 2 -> pos +0xa4/+0xa8 (+ z = +0x170 pick t), 0x3b -> picked point +0x164.., 0x2c/0x3b
+  return the hovered id +0x144.
+- Tick 0x4b8430: pos += (getInfo(ctrl,0x43,0x2a) * sensX * dt, getInfo(0x43,0x2b) * sensY * dt)
+  (SysCursor variant copies the OS cursor DAT_005e93b8/bc), moved = |d|^2 > 1e-6, clamp [-1,1];
+  if `+0x50 & 1`: pick = `0x4eb000(pos, ...)` into the global pick record PTR_DAT_005daa74
+  (+0x74 ref link {prev,next,id,node}, +0x6c body link, +0x4c local hit point, +0x48 t, +0/+0xc ray
+  far/near). Picked world point +0x164 = near + (far-near)*t. Hover change (ref id or body differs):
+  `16 cur old_ref_id old_body_id moved` (EC_LEAVE) to old ref +0x13c and to the cursor, relink, then
+  `15 cur ref_id body_id moved` (EC_HOVER). Buttons: getInfo(ctrl,0x19,0x2d) left, 0x2e right,
+  pressed when value*(1/127) > 0.2. Strings (exact formats): LDOWN `1 cur ref body x y z` (local
+  hit point), LUP `2 cur ref body`, LCLICK to the target ref `5 cur body x y z`
+  (0x59e148 `%d %d %d %.3f %.3f %.3f`, x y z = LDOWN local hit), then to the cursor (sender = target)
+  `5 cur ref lx ly lz wx wy wz`; drag begin `9 cur body` once |pos - pos_at_down| >= type+0x20,
+  drag end `10 cur body`, drop `11 ...` to the ref under the cursor; right side 3/4/6/12/13/14 the
+  same with links +0xfc/+0x114. Every 'body' is `body_link->+0x50`, the physics-instance id
+  (Group: LDOWN token(3), LUP token(3), LCLICK token(2)).
+- Pick 0x4eb000: for each drawn viewport (0x421220 list, cull cursor outside its rect:
+  u = (cx - (2*vp_x - 1))/vp_w - 1, v likewise, need |u|,|v| <= 1, then v = -v) and each camera of
+  it (0x465100/0x4210d0): far = unproject(u,v,1), near = unproject(u,v,0) (0x461c20 = invProj
+  cam+0x45c with w divide, then cam matrix +0x39c), both *0.1; hit = raycast 0x4fe1a0(from=far,
+  to=near; t is measured from `to`, i.e. from the camera), root = cam+0xac0 = camera instance's
+  +0xfc parent (0x461dd0 tail). First camera with a hit wins.
+- Camera matrices (0x461dd0): +0x39c = camera instance matrix; +0x41c =
+  D3DXMatrixPerspectiveFovRH(fov*pi/180, aspect = type+0xc or viewport aspect, zn = type+0x14,
+  zf = type+0x18 * (cot(fov*pi/360))^(1/4)); +0x45c = inverse(+0x41c) (0x567630), +0x3dc =
+  inverse(+0x39c).
+- Raycast 0x4fe1a0 -> 0x4fddf0 (node walk) -> 0x4fc140 (body), t normalized over the segment,
+  smallest t wins; box 0x500580 slab test in body-local space (0x4af9a0), sphere 0x5007c0.
+  Kind-1 mesh triangles (0x4fd110) and poly hulls (0x4fd6d0) not ported (card 189 INVENTED skip).
