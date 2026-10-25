@@ -1,7 +1,7 @@
 ---
 id: 209
-status: todo
-branch:
+status: implemented
+branch: card/209
 depends: []
 ---
 # Car: `notify` type keyword + `car_add` / `car_rem` command messages to the parent

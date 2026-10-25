@@ -362,6 +362,11 @@ void fill_car(CarData &c, const CfgFile &cfg)
             c.driver_slot = -1;
             continue;
         }
+        // 0x48fb10 type cfg `notify`: M+0x2ec0 |= 2 (M+0x120 is taken as 0).
+        if (ln.key == "notify") {
+            c.notify = true;
+            continue;
+        }
         // 0x48fa30 type cfg `steerhelp` (table 0x5da878): M+0x132c..+0x1340,
         // missing values keep the ctor defaults.
         if (ln.key == "steerhelp") {
@@ -1352,6 +1357,9 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
     // 0x4b7a10 type_cursor vf3 (frontend.rpk 0x2a `native cursor`).
     if (type && has_native_ref(rt, type, "cursor")) cursor_create(rt, inst);
     CfgFile cfg;
+    // INVENTED: the exe's createCar always reaches the car_add tail; this early
+    // return for a cfg without `body` lines skips it. Every shipped car type has
+    // body lines.
     if (!type || !load_native_cfg(rt, type, "car", &cfg) || cfg.bodies.empty()) return;
     CarData *car = car_data(rt, inst);
     if (!car) return;
@@ -1511,6 +1519,13 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
         s.bump = w.bump;
         s.rebound = w.rebound;
     }
+    // 0x4992e0 tail: a `notify` car type tells its parent instance it appeared.
+    if (car->notify && (inst->id >> 16) != 0xffff && inst->parent) {
+        char buf[32];
+        // %d of the uint32 id, as the exe prints it.
+        snprintf(buf, sizeof buf, "car_add %d %d", (int32_t)inst->id, 0);
+        rt.queue_event(inst->parent, nullptr, 0x10, Value::make_str(buf));
+    }
     root = car->root_body ? car->root_body : car->chassis_body; // PhysBody__root
     if (root && !root->asleep) world.sleep(root);               // 0x506d90
 }
@@ -1641,6 +1656,14 @@ void instance_dtor(Runtime &rt, Runtime::Resource *r)
     auto it = g_cars.find(r);
     if (it != g_cars.end()) {
         CarData *c = it->second.get();
+        // 0x49beb0 head: a `notify` car tells its parent instance it went away,
+        // before its bodies leave the world.
+        if (c->notify && (r->id >> 16) != 0xffff && r->parent) {
+            char buf[32];
+            // 0x49beb0: T+0x2054 traffic car, none in src (traffic cars not ported)
+            snprintf(buf, sizeof buf, "car_rem %d %d", (int32_t)r->id, 0);
+            rt.queue_event(r->parent, nullptr, 0x10, Value::make_str(buf));
+        }
         if (c->chassis_body || c->root_body) {
             World &w = process_world();
             // 0x49beb0 walks part_comp to its parent car_root and removes it;
@@ -1660,8 +1683,6 @@ void instance_dtor(Runtime &rt, Runtime::Resource *r)
     // 0x4c3a50 type_part vf4 removes getPhysBody(handle)->+0xb4; src parts own
     // no root body (installed parts are compound children of the car), so
     // nothing to port.
-    // 0x49beb0's traffic branch (queue "car_rem %d %d", id>>16 == 0xffff) is
-    // not ported.
 }
 
 int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,

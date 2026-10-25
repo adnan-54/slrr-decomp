@@ -185,6 +185,7 @@ struct CarData {
     std::vector<Runtime::Resource *> part_list;
 
     uint32_t flags = 0;          // +0x70
+    bool notify = false;         // M+0x2ec0 bit 2 (0x48fb10)
     // Type record's HUD gauge block (0x49ab20 defaults): gear chars M+0x1a38,
     // the 17 gauge records M+0x1a44 + i*0x48.
     char gear_chars[9] = "N123456R";
