@@ -4070,6 +4070,46 @@ bool veh_get_horn(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4b4f40 java.game.parts.bodypart.Chassis.setHornSFX
+bool ch_set_horn_sfx(Vm &, const Args &a, Value *out, std::string *err)
+{
+    const char *who = "Chassis.setHornSFX";
+    if (!want(who, a, 4, err)) return false;
+    float pitch;
+    int32_t index;
+    if (!get_f(who, a[2], &pitch, err) || !get_i(who, a[3], &index, err))
+        return false;
+    Runtime::Handle *h = value_handle(a[1]);
+    const int32_t id = (h && h->target) ? (int32_t)h->target->id : 0;
+    if (game::CarData *c = car_of(a)) {
+        if ((uint32_t)index < 4) {
+            if (a[1].kind == Value::Obj && a[1].obj)  // exe: sfx != null
+                c->engine_sfx.horn_resource[index] = id;
+            c->engine_sfx.horn_pitch[index] = pitch;  // even when sfx == null
+        }
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4b5130 java.game.parts.bodypart.Chassis.setNitroSFX
+bool ch_set_nitro_sfx(Vm &, const Args &a, Value *out, std::string *err)
+{
+    const char *who = "Chassis.setNitroSFX";
+    if (!want(who, a, 3, err)) return false;
+    float pitch;
+    if (!get_f(who, a[2], &pitch, err)) return false;  // read, not stored
+    if (game::CarData *c = car_of(a)) {
+        if (a[1].kind == Value::Obj && a[1].obj) {  // exe: sfx != null
+            Runtime::Handle *h = value_handle(a[1]);
+            c->engine_sfx.nitro_start_resource =
+                (h && h->target) ? (int32_t)h->target->id : 0;
+        }
+    }
+    *out = Value::make_null();
+    return true;
+}
+
 // 0x4e6960 java.game.Vehicle.getSpeedSquare
 bool veh_get_speed_square(Vm &, const Args &a, Value *out, std::string *err)
 {
@@ -7940,8 +7980,8 @@ const std::vector<Entry> &table()
     {"java.game.parts.bodypart.Chassis", "getMin", "()Ljava.lang.Vector3;", ch_get_min, false},
     {"java.game.parts.bodypart.Chassis", "getMax", "()Ljava.lang.Vector3;", ch_get_max, false},
     {"java.game.Vehicle", "getHorn", "()I", veh_get_horn, false},
-    {"java.game.parts.bodypart.Chassis", "setHornSFX", "(Ljava.util.resource.ResourceRef;FI)V", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "setNitroSFX", "(Ljava.util.resource.ResourceRef;F)V", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "setHornSFX", "(Ljava.util.resource.ResourceRef;FI)V", ch_set_horn_sfx, false},
+    {"java.game.parts.bodypart.Chassis", "setNitroSFX", "(Ljava.util.resource.ResourceRef;F)V", ch_set_nitro_sfx, false},
     {"java.game.parts.bodypart.Chassis", "setCooling", "(FFF)V", ch_set_cooling, false},
     {"java.game.parts.bodypart.Chassis", "forceUpdate", "()V", ch_force_update, false},
     {"java.game.parts.bodypart.Chassis", "getMileage", "()F", ch_get_mileage, false},
