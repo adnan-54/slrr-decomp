@@ -1,7 +1,7 @@
 ---
 id: 200
-status: todo
-branch:
+status: implemented
+branch: card/200
 depends: [196]
 ---
 # cfg scan: exe %d / %x integer readers for osd_* ids/colours and type_ground params

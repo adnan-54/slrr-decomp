@@ -246,6 +246,42 @@ void osd_defaults(CarData &c)
     }
 }
 
+static int hex_digit(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// 0x527140 %d: skip ws; a leading 0x/0X goes to the hex reader 0x527490, else
+// the decimal reader 0x527420 ('+' is not accepted, leading 0 is decimal). The
+// value wraps like the exe's int32. `whole` is false when the token has junk.
+static bool vscan_int(const std::string &tok, int32_t *out, bool *whole)
+{
+    size_t p = 0;
+    while (p < tok.size() && (tok[p] == ' ' || (tok[p] >= 9 && tok[p] <= 13))) p++;
+    uint32_t v = 0;
+    if (p + 1 < tok.size() && tok[p] == '0' && (tok[p + 1] == 'x' || tok[p + 1] == 'X')) {
+        // 0x527490: the prefix is required and "0x" alone fails.
+        p += 2;
+        if (p >= tok.size() || hex_digit(tok[p]) < 0) return false;
+        for (; p < tok.size() && hex_digit(tok[p]) >= 0; p++)
+            v = v * 16 + (uint32_t)hex_digit(tok[p]);
+        *out = (int32_t)v;
+    } else {
+        // 0x527420 (%d: signed, no '+', leading 0 stays decimal).
+        bool neg = p < tok.size() && tok[p] == '-';
+        if (neg) p++;
+        if (p >= tok.size() || tok[p] < '0' || tok[p] > '9') return false;
+        for (; p < tok.size() && tok[p] >= '0' && tok[p] <= '9'; p++)
+            v = v * 10 + (uint32_t)(tok[p] - '0');
+        *out = (int32_t)(neg ? 0u - v : v);
+    }
+    *whole = p == tok.size();
+    return true;
+}
+
 // osd_* keyword bodies (table 0x5da7b8, 0x48e770..0x48f0a0), all gated by
 // M+0x120 == 0 (taken as 0 here). form is the scanf tail after "id, pos":
 // 0 none (gauge/damage), 1 off,scale,min,max (pin/nospin), 2 color,fmt
@@ -258,14 +294,20 @@ void fill_osd(CarData &c, const CfgLine &ln, int idx, int form, bool gear)
     const std::vector<std::string> &v = ln.values;
     size_t i = 0;
     if (i < v.size()) {
-        // INVENTED: 0x569380 integer conversion not traced; strtoul keeps 0xFF000000.
-        int32_t id = (int32_t)strtoul(v[i++].c_str(), nullptr, 0);
-        // 0x48eaa0: osd_gear sets the ref only when the scan got past the id.
-        if (!gear || v.size() > 1) {
+        int32_t id;
+        bool whole;
+        // 0x527140 %d -> 0x527490 / 0x527420
+        if (!vscan_int(v[i], &id, &whole)) return;
+        // 0x48eaa0: osd_gear sets the ref only when the scan got past the id
+        // (count > 1: the next conversion parsed).
+        if (!gear || (whole && v.size() > 1)) {
             g.ref_id = id;
             g.ref_pkg = nullptr;
             g.ref_local = 0;
         }
+        i++;
+        // Trailing junk makes the exe's next conversion fail.
+        if (!whole) return;
     }
     for (int k = 0; k < 3 && i < v.size(); k++) g.pos[k] = num(v[i++]);
     if (form == 0) return;
@@ -276,7 +318,16 @@ void fill_osd(CarData &c, const CfgLine &ln, int idx, int form, bool gear)
         if (i < v.size()) g.max = num(v[i++]);
         return;
     }
-    if (i < v.size()) g.color = (int32_t)strtoul(v[i++].c_str(), nullptr, 0);
+    if (i < v.size()) {
+        int32_t color;
+        bool whole;
+        // 0x527140 %d -> 0x527490 / 0x527420
+        if (!vscan_int(v[i], &color, &whole)) return;
+        g.color = color;
+        i++;
+        // Trailing junk makes the exe's next conversion fail.
+        if (!whole) return;
+    }
     if (form == 2 || form == 3) {
         // %8s: at most 8 chars + NUL. Gear chars live at M+0x1a38.
         char *dst = gear ? c.gear_chars : g.fmt;
