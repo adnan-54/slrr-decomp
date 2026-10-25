@@ -519,6 +519,203 @@ AI_params AI_throttle AI_turn AI_brake AI_handbrake AI_clutch AI_gear AI_nitro; 
   list `+0x26d4` and opponent avoidance in 0x486020. Hard check: bot cars do not move before raceActive, the
   script's `bot_laps` counts laps for all 4 bots by the player's finish.
 
+### 8.1 Bot tick, car snapshot, spline, planner, controls (RE 2026-10-24, cards 174-178)
+
+The card plan above (174 planner / 175 controls / 176 race start) is **superseded** by this section.
+
+**Who ticks the bot and how often.** `native bot` vtable 0x59aae4 (names.json indexing: vf3 = 0x4803a0 at
+0x59aaf0): vf11 = **0x47f980** (`stdcall(bot, dt)`, ret 8), vf12 0x47e960, vf13 0x4d1fe0, vf14 0x480850, vf15
+0x480720. vf15 returns 1 for GII 8 only (not 9), so the brain sits on the **mode-8 control list**:
+`Game__physicsTick` 0x47e050 -> `Game__runControlCallbacks` 0x47bc20(ctrlAcc) -> 0x47bc80 -> vf11 = 0x47f980,
+once per physics tick before the sub-steps, dt = ctrlAcc (same list and dt as `Vehicle__updateControls`
+0x498300). The list is in creation order: bot cars (Gamemode.createBotCars) are created before their brains
+(Bot.enterCar), so each car reads the bot axes written on the **previous** tick. (`0x47f980` is not a camera
+function; names.json `Camera__chaseAndDebugHud` is wrong; its tail only moves the bot's own debug object +0x26f8
+and debug HUD texts +0x2460.., not needed.)
+
+**How the car reads the bot (no new car code).** The bot is the car's slot player (0x4d2ab0 `activate`), so
+0x498300 reads it through `getInfo(brain, 0x43 / 0x19, axis)` = bot vf15 **0x480720**: axis table
+`bot+0x21dc + v*4` (v in 1..0x4b), `0x43` returns `raw * 0.007874016` (1/127), `0x19` returns `(int)raw`;
+`0x2a` returns mode `+0x259c`. Axis slots the bot writes (raw range -127..127 / 0..127):
+v1 `+0x21e0` steer, v28 `+0x224c` throttle, v29 `+0x2250` brake, v31 `+0x2258` nitro, v48 `+0x229c` handbrake,
+v49 `+0x22a0` clutch, v50 `+0x22a4` gear up/down (+127 / -127 pulse). Gearbox mode goes as car commands:
+`"transmission 0/2/5"`, once `"abs 0"`, `"asr 0"`, `"steerhelp 0"`.
+
+**0x47f980 vf11(bot, dt):** return if mode == 1. Drop dead control refs (+0x2310 list). If
+`controlled[active]` exists, build the car snapshot `S` (0xc8 bytes on the stack) with `getInfo(car, code, out)`:
+```
+S+0x00 int  gear            = getInfo(0x36)  (car+0x1e5c; out=0)
+S+0x04..0c  pos             = getInfo(2)     (0x4a15c0 case 2: body pos via 0x5060d0, and when the manager has
+            >3 wheels: y += (1/n) * sum over 4 wheels W of (W+0x7c - (W+0x60 + W+0x50 - (|g|*M/n) / W+0x44)),
+            M = 1/def+0x2c of the chassis body, |g| = |PTR_DAT_005dadf0+0x1c4..1cc|)
+S+0x10..18  velocity dir    = getInfo(3) (body linear velocity, state+0x70); S+0xa4 = |v| (3D) first, then
+            y := 0 and xz normalised (when the length != 0)
+S+0x1c..24  forward         = getInfo(4) = -(R third column) of the body; y := 0, xz normalised
+S+0x28..30  local ang. vel. = getInfo(0x33) = R^T * omega (state+0xd4); S+0x2c = yaw rate
+S+0x34..3c  Euler           = 0x569970 Math__matToYpr(getInfo(0x32) = 3x4 body matrix); |S+0x3c| > 1 = rolled
+S+0x40 int  wheel count min(n,4) = getInfo(0x35); per wheel i (S+0x44 + i*0x18): f0 = W+0xc0 (spin w),
+            f1 = load: 0 when out of contact (S+0x50 <= S+0xf0) else S+0xf4 * (def+0x2c / |g|)  (F_N/(M g)),
+            f2 = W+0x6c (friction) * (S+0xac ? S+0xac->+0x50 : 1), f3,f4 = W+0x140,+0x144 (contact slip
+            velocity), f5 = W+0x148;  then f2 of wheel i /= bot+0x2710+i*4 (ctor 1.0)
+S+0xa8      dt;  S+0xac rpm = car+0x1e80 * 9.549296 (0 without car); S+0xb0 redline = e(car+0x2050)+0x1c,
+            default 7000, 6000 when typed+0x50 == 0;  S+0xb4 wheelbase = getInfo(0x40) (manager wheel z:
+            (w2+w3-w0-w1)/2, 2.0 without wheels);  S+0xb8 nitro = car+0x1f5c / e+0xa4c when e+0xa4c > 0 and
+            e+0xa58 > 0 else 0;  S+0xbc = bot+0x22a4;  S+0xc0 byte = 0, S+0xc4 (planner outputs)
+bot+0x25d4 "engine running" latch: 1 when car+0x1e80 > e+0xf0, 0 when car+0x1e80 < 1.0
+```
+then `0x484b90(S)`. Here `car` = typed+0x4c (vehicle struct), `e` = car+0x2050 (engine).
+
+**0x484b90 mode switch (ECX bot):** old = +0x21e0; mode 1: nothing; 2 0x4859d0; **3 0x485e10**; 4 0x484db0;
+5/6 0x485600 (traffic, 5->6 when +0x2690 and a global slot is free); 7 0x487660; 8 0x484ca0 (grid);
+default `0x482910(S, 0, 0)`. Then steer slew: `r = +0x2598 (ctor 510) * S.dt`;
+`+0x21e0 = clamp(new, old - r, old + r)`.
+
+**0x485e10 mode 3:** `+0x2580 = +0x2588 * 1.2` (7.2), `+0x2584 = min(+0x258c * 2, 1)` (0.8). If spline:
+`look = min(|v| * +0x2558 + +0x255c, +0x2554)` (= min(10 v + 20, 55)); `0x414830(S.x, S.z, &d, &lat)`; on
+success `+0x268c = d - look`, `0x486020(S, look, 1000.0)` and return; else `0x482910(S, 0, 0)`. (The
+DAT_005fe210 / 0x413eb0 lines in between are a debug lap timer, no effect.)
+
+**Ctor 0x47ed10 defaults** (relevant): +0x2554 55, +0x2558 10, +0x255c 20, +0x2578 10, +0x257c 180, +0x2580 6,
++0x2584 0.4, +0x2588 6, +0x258c 0.4, +0x2590 0 (drive type, set on first control), **+0x2594 1.4** (half car
+width margin; correction to card 173's INVENTED 0), +0x2598 510, +0x26a8 0.5, +0x25c4/+0x25d0 -1,
++0x270c..+0x271c 1.0, global obstacle solver `DAT_005fe1f4` = new 0x38 (0x409f50) once.
+**Reset 0x484a40** (AI_suspend/BeginRace/spline): frees spline, `+0x2608 = -1` (param floor), +0x25bc 0,
++0x25c8 0, axes +0x224c/+0x2250/+0x21e0/+0x22a0 = 0, +0x25d8 0 (max grip), +0x25f4 0.1, +0x25f8/+0x25fc 0,
++0x26a4 0, **+0x2724 = -1** (< 0 enables the curvature/crest terms below).
+
+**Spline = the traffic `ctPath` class** (notes s2, src `traffic::Path`/`Segment`, ported for .trc). Bot-specific:
+- `0x4122b0 Path::addSegment(p0, d0, p1, d1, w, f1, i1, f2, f3, i2)`: realloc n+1 records (0x54), build via
+  0x414fe0, then `+0x3c w, +0x40 f1, +0x44 i1, +0x48 f2, +0x4c f3, +0x50 i2`; `length += seg.len`;
+  first segment: `start = p0`, `start_dir = normalize(seg.m0)`; every segment: `end = p1`,
+  `end_dir = normalize(seg.m1)`. (.spl 7-field lines: f1 1.0, i1 1, f2 10000, f3 10000, i2 1.)
+- `0x414fe0 Segment::buildHermite(p0, d0, p1, d1)`: `curved = 1`; `m0 = normalize(d0)`, `m1 = normalize(d1)`;
+  `L = |p1 - p0|`, `c = (p1 - p0)/L`; `f = sqrt(1/L)` (|m| = 1); `s0 = sqrt(max(0, (m0.c + 1)/2))`,
+  `s1 = sqrt(max(0, (m1.c + 1)/2))`; `len = L / ((s1 f + 1 - f) (s0 f + 1 - f))`; `m0 *= len`, `m1 *= len`;
+  loop { old = len; `0x4124d0` (new len); `m0, m1 *= len/old` } while `|(len - old)/old| > 0.01`;
+  `+0x34 = len`; defaults `+0x40 1.0, +0x44 1, +0x48 10000, +0x4c 10000, +0x50 0` (overwritten by 0x4122b0).
+- `0x4124d0 Segment::arcLength`: `len := 1`, sum of chord lengths between the Hermite points at t = 0, 0.01,
+  ..., 1.00 (101 points, `t/len` with len 1; straight segments `p0 + m0 t`), accumulated as two float sums
+  (i 1..50, 51..100), `len = sum1 + sum2`. Norisring route_1 (scratch python of these formulas): 37 segments,
+  chord sum 2427.42 m, length 2431.41 m.
+- Per-segment getters (all: negative d wraps by `+0x38`, walk while `d >= seg.len` up to n-1, i.e. the same walk
+  as `path_pos_at`): 0x414a80 width `+0x3c`, 0x414980 `+0x40` (f1, speed factor), 0x414a00 `+0x44` (i1),
+  0x413fd0 `+0x50` (i2), 0x413f30 `(1-t)*+0x4c + t*+0x48` (t = local d / len, km/h limit), 0x413110 side
+  (0x4131a0) at d, 0x4133f0 `posOffsetAt(d, off) = segment_pos + segment_side * off`.
+- `0x414050 Path::projectStrict(x, z, &d, &lat)`: `segment_project` per segment, **no endpoint fallback**
+  (0x414830 = src `path_project` has one), first strict `|lat|` minimum, `d = local + sum of earlier len`.
+
+**0x486020 planner (ECX bot, S, look, vmax0 = 1000)**, spline = +0x2604, "dirAt" = 0x412ed0, "w(q)" = width:
+```
+x,z = S.pos.xz; 0x414830(x, z, &d, &lat); if i1(d) == 0: S+0xb8 = -1; S+0xc0 = (i2(d) != 0)
+vmax = vmax0   [traffic-density term only when +0x2724 < 0 and DAT_005e652c (Traffic) != 0: 0x418b40 bins
+                DAT_005fe250/2b0; skip while src has no traffic manager in the race: bins stay 0]
+// 1. lateral line offset from curvature ahead
+lim = +0x2584 * 6; k = 20; q = min(length, d - 20); t0 = normalize_xz(dirAt(q)); q -= 2; c = 1; acc = 0; off = 0
+if (+0x2724 < 0 && q > 0) for i < 100:
+    t = normalize_xz(dirAt(q)); a = signed angle(t0 -> t) (acos(t.t0), negative when t.x*t0.z - t.z*t0.x <= 0)
+    v = clamp(a * -15 * lim, -lim, lim); (bins term skipped, see above) ; acc += c
+    off = (c/acc) * v + (1 - c/acc) * off; q -= 2; k += 2; c *= 0.96; if q <= 0 break; t0 = t
+off = clamp(off, -0.8, 0.8)
+// 2. opponent block (mode 2/3 and +0x25e8 opponent id): 0x486766..0x486942, overtaking side offset -> card 179
+// 3. pull toward the current lateral position
+if (mode == 3 || +0x2724 > 0): r = lat / w(d); (thr, k) = S+0xb8 > 0 ? (0.9, 0.25) : (0.2, 0.1)
+    if |off - r| < thr: b = max(0, (|off - r| - thr + k) / k); off = clamp((1-b) r + b off, -0.9, 0.9)
+// 4. target search, backwards from d-10 to L = +0x268c (= d - look)
+f = dirAt(L).xz (raw); lo = -1; hi = 1; back = 0; q = d - 10
+do { q = max(q - 5, L); h = max(w(q) - 1.4, 1); A = posOffsetAt(q, h); B = posOffsetAt(q, -h);
+     C = posOffsetAt(q, (h - 1.4) * off)
+     s(P): u = normalize_xz(P - (x, z)) (0 if |.| <= 1e-5); g = u.z f.z + u.x f.x;
+           s = (u.x f.z - u.z f.x <= 0 ? -1 - g : g + 1) * 0.5
+     if s(B) < s(A) break
+     if s(C) < lo || s(C) > hi { q += 5.5; back = 1 } else { lo = max(s(A), lo); hi = min(s(B), hi); if back break }
+} while (q > L)
+q2 = max(d - (d - q) * 0.8, +0x2608); D = dirAt(q2); T = posOffsetAt(q2, (w(q2) - 1.4) * off)
+u = normalize3(T - S.pos); step = 28; n = 100000
+do { P = T + u * step; if (projectStrict(P.x, P.z, &pd, &pl) && |pl| < w(pd) && pd > +0x2608)
+          { T = P; if (--n == 0) { n = 2; step *= 0.333333 } } else { n = 2; step *= 0.333333 } } while step >= 1
+// 5. speed limit: braking distance look-ahead, curvature, km/h limit, crests
+a0 = mode 3 ? 5 : 15; dist = a0; reach = v^2 / (2 * +0x2580) * 1.5 * (mode 3 ? 2 : 1) + a0
+q = d - a0; prev = normalize_xz(dirAt(q)); prevY = dirAt(q).y
+if dist < reach: while ((q -= 2) >= 0):
+    t = dirAt(q); dec = clamp(+0x2580 - t.y * 9.81, 0, +0x2580); f1 = f1(q); txz = normalize_xz(t)
+    kk = 1 (traffic: (Traffic+0x312c / w(q)) / 3 + 2/3)
+    g = +0x25d8 = max(+0x25d8, (S.w0.f2 + S.w1.f2 + S.w2.f2 + S.w3.f2) / 4)
+    mu = +0x2584 * g * (1 - t.y^2); a = acos(clamp(txz . prev, -1, 1))
+    if a > 0: vmax = min(vmax, sqrt(mu * 9.81 * 2 / a / kk * f1^2 + 2 dec dist))
+    if mode 3: vmax = min(vmax, sqrt(2 dec dist + (+0x258c * lerp_kmh(q) * 0.2777778 * 2.5)^2))
+    dY = asin(t.y) - asin(prevY)   (0x570ac1 = asinf)
+    if (+0x2724 < 0 && dY > 0.001): vmax = min(vmax, sqrt(cos(dY) * S.wheelbase * 4.905 / sin(dY) * f1^2
+                                                          + 2 dec dist))
+    prevY = t.y; dist += 2; if dist >= reach break; prev = txz
+if S+0xc0: r = |lat| / w(d); a = max(1.8 - r, 1.01) * |v|; if max(a, vmax/2) <= vmax: vmax = max(a, vmax/2)
+           S+0xc4 = min(r, 1)
+0x483bd0(S, T.x, T.z, -D.x, -D.z, vmax, vmax)
+```
+**0x483bd0 (S, tx, tz, dx, dz, v, v2)**: front `F = S.pos.xz + S.fwd.xz`; `V = (tx, tz) - F`;
+`0x40ab10` on the solver (F, V, +0x2594, 0): stores F, `len = |V|`, `dir = V/len`. If `+0x2700 == 0` create
+the `bot_trigger` sphere (`"%.2f,%.2f,%.2f,0,0,0,sphere,%.2f"`, r 100, 0x523c80) - card 179; walk obstacle
+list +0x26b4 (types 1/2, 0x409fa0 adds blocked angle intervals) - card 179. `0x40a8a0(&V, +0x269c, +0x26a0)`:
+with no intervals the heap is empty, the chosen angle is 0, so `V` comes back unchanged (`len * dir`);
+`+0x269c/+0x26a0 = V`; `c = normalize(V)`; `ang = 0x40a7d0(c, S.fwd.xz)` (`g = c.f`; `x = c.x f.z - f.x c.z`;
+`x <= 0 ? (g > 1 ? 0 : g < -1 ? -pi : -acos g) : (g > 1 ? 0 : g < -1 ? pi : acos g)`); `+0x25f0 = 0`;
+**`0x482910(S, steer = -ang, speed = max(0, v2))`**.
+
+**0x482910 controls (S, steer, speed):**
+```
+if |S+0x3c| > 1 (rolled): +0x25c8 += S.dt; crossing 5.0 -> queue "ai_info_rolled" to the bot's parent (+0xc);
+    zero +0x22a0 +0x224c +0x2250 +0x229c +0x21e0 +0x2258; return
++0x25c8 = 0
++0x25bc 1/2/3 and |v| < 0.5 -> 4/5/6 (+0x25c1 = 1); 7 -> 0          (stuck/reverse state, card 179)
+if +0x25bc in 4..6: 0x482f50(S, steer) (reverse out); return
+switch +0x2590: 0 -> queue "abs 0", "asr 0", "steerhelp 0"; type = getInfo(car, 0x34) (0 none, 1 -> 4,
+    2 -> 2, 3 -> 3, 4 cross -> 1, else 1); 1 -> 4; recurse 0x482910 once.
+  2..5: 0x483220(S, steer, speed)   then (all non-zero):
+  if +0x26a4: 0x4830a0(S)   (launch: set by AI_spline)
+  if |v| < 1 && +0x224c > 16 && gear < 7: +0x25d0 < -0.5 -> +0x25cc = 1, return;  now - +0x25d0 <= 3 -> return;
+      else +0x25c1 = 1, +0x25bc = 5;   then +0x25d0 = -1
+0x482da0 gate(S, steer, speed): axes := clutch 0, throttle 127, brake 0, steer 0, nitro 0;
+  shift pulse +0x22a4 toward 1st/reverse: gear g = S.gear: (g <= 0 or g == 7) and speed > 1e-4 -> +127 until
+  in gear; g in 1..6 and speed < -1e-4 -> -127; g == 0 with tiny speed and |v| <= 1 -> pulse; returns 0 while
+  shifting. In gear: +0x22a4 = 0; engine latch +0x25d4 == 0 -> throttle = brake = clutch = 127, return 0;
+  else (clears +0x25c1/+0x25cc timestamps) return 1.
+0x483220 drive (S, steer, speed)  [after gate == 1]:
+  skill = min(2 * +0x26a8, 1); load = sum f1 of 4 wheels;  wheel spin term ws by drive type (2: 5*(f3 w0 + f3 w1)
+  + f3 w2 + f3 w3, cap 1;  3: sum f3, cap 10;  4: 3*(front) + rear, cap 5; else steer)/(|v| + 1)
+  +0x25d8 = max(+0x25d8, avg f2)
+  yaw damping: y = ((|v| * 0.4 * 0.036)^2 + 0.2) * S.yawrate, dead zone 0.05; steer' = steer, if y*steer <= 0 and
+  |steer| < |y|: steer' = clamp(2 steer + y, sign-limited 0.1); speed fade (|v| - 10) * 0.0005 toward 0;
+  rate limit by S.dt * |v| * 2 against S.wheelbase, clamp [0.2, 1.2] * |steer'|, clamp +-0.75  -> st
+  understeer allowance u = clamp(S.wheelbase / (v^2 / ((f1w0 f2w0 + f1w1 f2w1) 9.81 / (f1w0 + f1w1))), 0, 0.75),
+  doubled in mode 3 (x4 when S+0xc0); slip a = acos(fwd.z vel.x - fwd.x vel.z) - pi/2;
+  +0x21e0 = clamp(st * -169.33333, -max(cap, (max(a,0) + u) * 169.33), max(cap, (u - min(a,0)) * 169.33)),
+            caps <= 127 (cap = 1, 10 or 5 from the drive type)
+  speed target: sp = min(speed, |v|); decel estimate (+0x25f8, +0x25fc, +0x25f4 = S.dt); if |st| > 0.375 and the
+  steer is not growing fast: speed = min(speed, sqrt(+0x25d8 * 9.81 * S.wheelbase / (2 (|st| - 0.375))))
+  e = clamp((0.1 - (|v| - speed) / ((speed + 1) * 0.1)) - clamp(2 - speed, 0, 2), -1, 1.1)
+  throttle cap = min(load*500+40 (mode 3), 127 - (|ws|*150 - 20), 128 - (skill - 1) * -28, 127);
+  +0x224c = clamp(int(e * 127), 0, cap); +0x22a0 clutch = clamp(127 - throttle*10, 0, 127);
+  nitro +0x2258 = 127 when S.nitro > 0 && e > 1.05 && cap == 128 && rpm > 0.33 redline && gear > 1
+  brake = clamp(int(e * -127), 0, 127) limited by the front/rear slip caps (423.33 / 211.67 terms, x2 with
+  S+0xc0), the load cap and 127 - |yaw + st| * 300  -> +0x2250; handbrake +0x229c = the rest up to the
+  127 - |yaw + st| * 200 cap
+  gearbox: "transmission 5" when |steer axis| <= 5 or rpm >= 0.9 redline or rpm <= 0.2 redline, and load >= 0.001;
+  else "transmission 0"  (sent every tick to controlled[active])
+0x4830a0 launch (once after AI_spline, +0x26a4): if brake/handbrake axes are 0 and (rpm <= 0.8 redline or
+  sideways slip >= 0.3 or |v| <= 5): "transmission 2", +0x22a4 = 127 unless gear > 0 or S.bc >= 127,
+  throttle 127, brake/handbrake 0, nitro 127, clutch max(80 - |v| * 20, 0); else "transmission 5", +0x26a4 = 0.
+```
+Globals: 0x5da4bc 0.4, 0x5da4c0 0.05, 0x5da4c4/c5 = 1/1 (obstacle switches). `0x5706e4` = acosf,
+`0x570ac1` = asinf, `0x570e7e`/`0x570fcb` = cosf/sinf (by usage).
+
+**Untraced (card 179):** 0x484ca0 (mode 8 grid rev), 0x482f50 reverse already decompiled (sets +0x2710..+0x271c
+to 1, 0x4876a0, steer = 169.33 * steer, throttle 64, ends in state 7), 0x409fa0/0x46b5e0/0x40abe0 obstacle
+intervals, the bot vf14 0x20/0x40 trigger contacts (+0x26d4), the opponent block of 0x486020.
+
+**Cards.** 174 spline build + strict queries · 175 bot tick + snapshot + axes plumbing (mode 3 only, no planner
+output yet) · 176 planner steps 1, 3, 4 (target point) · 177 planner step 5 + 0x483bd0 no-obstacle steering ·
+178 controls 0x482910/0x482da0/0x483220/0x4830a0 (bots drive, rpTotal for bot cars) · 179 sketch: mode 8 +
+bot_trigger obstacles + opponent block + reverse recovery.
+
 ## 9. Career circuit race: laps, finish and exit (script side, CircuitRacing.java; RE 2026-10-24, cards 171/172)
 Exe provides only triggers/timers/OSD/controls; the rules are script (memory: exe is a shell).
 - Norisring career event (vmboot): `laps = gmcEvent.specialSlots[0]` = 2, `cpTrigger.length` 4, `fines` null (no
