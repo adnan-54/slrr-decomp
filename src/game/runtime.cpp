@@ -63,10 +63,11 @@ static void dispatch_script(Runtime &rt, Runtime::Resource *target,
 }
 
 // 0x527140 Str__vscan rules for type_ground's params format
-// "%x,%f,%f,%f,%f,%f,%f,%s,%s": %x skips whitespace and reads hex (0x prefix
-// accepted), %f skips whitespace and reads a float, %s skips whitespace then
-// copies until whitespace, NUL or the next format character (','); a literal
-// must match and the scan stops at the first mismatch.
+// "%x,%f,%f,%f,%f,%f,%f,%s,%s": %x skips whitespace and reads hex (the 0x
+// prefix is required, 0x527490), %f skips whitespace and reads a float, %s
+// skips whitespace then copies until whitespace, NUL or the next format
+// character (','); a literal must match and the scan stops at the first
+// mismatch.
 // INVENTED: strtof stands in for the untraced 0x527530 float reader.
 static bool scan_ws(char c)
 {
@@ -82,8 +83,10 @@ static bool scan_hex(const std::string &s, size_t *i, uint32_t *out)
 {
     scan_skip_ws(s, i);
     size_t p = *i;
-    if (p + 1 < s.size() && s[p] == '0' && (s[p + 1] == 'x' || s[p + 1] == 'X'))
-        p += 2;
+    // 0x527490: the 0x/0X prefix is required; bare "FF" and "0x" alone fail.
+    if (p + 1 >= s.size() || s[p] != '0' || (s[p + 1] != 'x' && s[p + 1] != 'X'))
+        return false;
+    p += 2;
     size_t start = p;
     uint32_t v = 0;
     for (; p < s.size(); p++) {
