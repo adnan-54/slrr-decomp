@@ -67,7 +67,8 @@ struct Car {                    // 0x164 bytes in the exe
     float k14 = 0, k18 = 0, k1c = 0, k20 = 0, k24 = 0, k28 = 0;  // +0x14..+0x28
     float max_speed = 0;        // +0x2c
     float accel = 0;            // +0x30
-    float k34 = 0, k38 = 0, k3c = 0, k40 = 0;  // +0x34..+0x40
+    float k34 = 0, k38 = 0, k3c = 0;  // +0x34..+0x3c
+    int32_t k40 = 0;            // +0x40 (ctor 0x40c400 stores the int -1)
     uint32_t live_next = 0;     // +0x44
     float pos = 0;              // +0x88 (distance on the lane path; counts down to the lane end)
     float world[3] = {};        // +0x8c
@@ -104,7 +105,7 @@ struct Graph {
     std::vector<uint8_t> road_enabled;          // +0xc4: enable flag per road group
     float max_road_width = 0;                   // +0x312c
     float cross_stop_offset = 0;                // +0x3140 (ctor 0x416000: 0)
-    // +0x3148 lane event min-heap (schedule 0x417050, push 0x41a950). INVENTED:
+    // +0x00 lane event min-heap (schedule 0x417050, push 0x41a950). INVENTED:
     // std::vector grows geometrically where the exe's array grows by 0x400 entries;
     // lanes are indices (pointers in the exe).
     struct HeapEntry { float time; uint32_t lane; };

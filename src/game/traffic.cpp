@@ -803,7 +803,7 @@ void car_ctor(Graph &g, uint32_t i)
     c.k34 = 0.06f;
     c.k38 = 6.0f;
     c.k3c = 0.01f;
-    c.k40 = -1.0f;
+    c.k40 = -1;
     c.e0 = c.e4 = c.e8 = g.sim_time;
 }
 
@@ -819,13 +819,14 @@ void car_release(Graph &g, uint32_t i)
 float car_target_speed(const Graph &g, const Car &car)
 {
     float s = car.max_speed;
-    // INVENTED: bounds check; car.lane is an index (a pointer in the exe).
-    if (car.lane < g.lanes.size() && g.lanes[car.lane].k98 < s)
-        s = g.lanes[car.lane].k98;   // ctLane vf6 0x40dd50
+    // +0xc4 PathRef lane. INVENTED: bounds check; an index (a pointer in the exe).
+    if (car.path_lane < g.lanes.size() && g.lanes[car.path_lane].k98 < s)
+        s = g.lanes[car.path_lane].k98;   // ctLane vf6 0x40dd50
     float f = 0.0f;
     if (!car.next_lane_b) {          // +0xbc, next lane
         if (car.k124) {
-            // shortcut: vf6 of next-lane/cross objects not traced; 0 for spawned cars
+            // shortcut: +0x124 vf6(-1) not modelled (a cross's vf6 0x40dd00 would read
+            // paths[-1]); unreached: no city.trc lane has +0x34 == -1, so attach never sets +0x124
             s = (0.0f + s) * 0.5f;
         }
     } else {
