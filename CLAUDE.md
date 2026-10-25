@@ -7,7 +7,6 @@ Sample script: bin/Axis_FL_door.class + .java (smallest pair, part script for bi
 Sample car package: bin/Axis.rpk + bin/Axis.rdb (cars/racers/Axis, same car as FL_door.cfg and Axis_FL_door.class). Cross-check: cfg resource IDs (e.g. part 0x000000D2 "FL door") should resolve through this rpk/rdb.
 
 Resume point: read CHECKPOINT.md first (state, environment, next steps); run tools/checkpoint.sh to verify the setup.
-Token rules: read only CHECKPOINT.md at start; read notes via notes/INDEX.md with Read offset/limit (never whole big files); notes/LOG.md is history, grep only; open cards are in tasks/, merged in tasks/done/; every agent report <= 15 lines.
-Workflow: main session (Sonnet) orchestrates per the re-orchestrate skill (.claude/skills/re-orchestrate) with agents in .claude/agents/: re-analyst (opus) RE + cards, DeepSeek Flash implements cards, card-reviewer (sonnet) verifies, card-fixer (sonnet) fixes; opus only on escalation.
+Workflow: the main session orchestrates sub-agents per the re-orchestrate skill (.claude/skills/re-orchestrate): Claude does RE/task cards/review, DeepSeek Flash implements cards in tasks/.
 
 Tests: only keep checks that run against actual game facts: shipped files under bin/ (parse whole corpora, compare with the .java sources or .rdb data) or values read from the exe (tables, natives list). Do NOT write unit tests, synthetic programs or hand-made expected values derived from your own reading of the exe: they cannot catch a misread and only burn time. Verify behavior by comparing with the decompiled exe function and cite its address. Logic not taken from the exe (gap filling, design choices) must be marked with an `INVENTED:` comment, and never "improve" exe behavior (target is behaviour-equivalent).

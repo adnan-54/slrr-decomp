@@ -27,7 +27,7 @@ def dyno(cyl=4,bore=0.082,stroke=0.090,Vmin=0.00005,in_min=0.005,out_min=0.005,i
             b=min(P_turbo_max*g,P_waste); s=math.sqrt(b+1)
             Tin*=s; rho_in*=s; Pin*=s*s
         if 0<max_fuel<fuel_rate: Hin=Hin/(fuel_rate/max_fuel)
-        if 0<max_air<air_rate: Pin=Pin/(air_rate/max_air)  # setupRpmPoint writes +0x158 = P_in (tasks/done/007)
+        if 0<max_air<air_rate: Pin=Pin/(air_rate/max_air)  # setupRpmPoint writes +0x158 = P_in (tasks/007)
         burn=(1-min(rpm*5e-5,0.9))*time_burn
         # resetCycle (once per rpm point); the state then carries over between cycles (runCycle only clears accumulators)
         S=dict(P=Pin,T=Tin,H=Hin,t=0.,th=0.,b=0.,W=0.,V=Vmin,m=Vmin*rho_in)

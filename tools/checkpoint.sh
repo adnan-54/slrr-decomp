@@ -22,4 +22,4 @@ echo "== notes"; ls notes | sed 's/^/  /'
 echo "== src build check"
 mkdir -p /tmp/ckpt && printf '#include "engine/math.h"\nint main(){Quat q={0,0,0,1};quat_normalize(&q);return q.w==1.0f?0:1;}\n' > /tmp/ckpt/t.c \
   && gcc -I src -o /tmp/ckpt/t /tmp/ckpt/t.c -lm 2>/dev/null && /tmp/ckpt/t && ok "src/engine/math.h compiles and passes smoke test" || bad "src math smoke test"
-echo; echo "Next: read CHECKPOINT.md ('State' and 'Next-steps queue'); notes via notes/INDEX.md, history in notes/LOG.md; open the exe with rea open_binary and re-apply analysis/names.json."
+echo; echo "Next: read CHECKPOINT.md ('State' and 'Next-steps queue'); open the exe with rea open_binary and re-apply analysis/names.json."
