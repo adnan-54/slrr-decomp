@@ -320,6 +320,12 @@ void fill_car(CarData &c, const CfgFile &cfg)
                 *sh[i] = num(ln.values[i]);
             continue;
         }
+        // 0x48de60 type cfg `center`: M+0x1f1c, "%f %f %f"; missing -> 0.
+        if (ln.key == "center") {
+            for (size_t k = 0; k < 3; k++)
+                c.center[k] = k < ln.values.size() ? num(ln.values[k]) : 0.0f;
+            continue;
+        }
         // HUD gauge keywords (table 0x5da7b8): id, pos and the handler's tail.
         // `osd_damage_slot` scans "%c" into a stack temp and has no effect.
         if (ln.key.compare(0, 4, "osd_") == 0) {
