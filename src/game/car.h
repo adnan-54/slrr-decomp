@@ -334,6 +334,14 @@ struct BotData {
     float plan_off = 0.0f;
     float plan_T[3] = {};
     float plan_D[3] = {};
+    // Card 177: step-5 speed limit, reach, the 0x483bd0 bottleneck vector
+    // (+0x269c/+0x26a0) and the steer/speed pair handed to 0x482910 (card 178
+    // writes the axes). +0x25d8 is max_grip above.
+    float plan_vmax = 0.0f;
+    float plan_reach = 0.0f;
+    float plan_steer = 0.0f;
+    float plan_speed = 0.0f;
+    float plan_aim[2] = {};
     BotSnapshot snap;
     bool snap_valid = false;
     int control_ticks = 0;   // control_cars bot-branch counter (vmboot)

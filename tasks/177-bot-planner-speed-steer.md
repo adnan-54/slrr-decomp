@@ -1,6 +1,6 @@
 ---
 id: 177
-status: todo
+status: implemented
 branch: card/177
 depends: [176]
 ---
@@ -69,3 +69,10 @@ No unit tests, no map names in engine code.
 0x482910 and its callees (178), opponent block, bot_trigger, obstacles, mode 8 (179).
 
 ## Result
+Implemented 0x486020 step 5 (braking-distance look-ahead: curvature, mode-3 km/h limit, crest term, max grip +0x25d8,
+off-centre +0xc0 speed factor) and `bot_steer` (0x483bd0 no-obstacle path: V, angle to S.fwd, steer/speed pair).
+Stored in `BotData`: `plan_vmax`, `plan_reach`, `plan_steer`, `plan_speed`, `plan_aim[2]` (+0x269c/+0x26a0) and
+`max_grip` (+0x25d8). vmboot checks vmax/steer/reach/+0x25d8 per bot. `make -C src clean check` green;
+selfcheck 164 checks, race 154, 0 failures.
+Shortcuts (cards 179/178): traffic-density `kk` = 1, bot_trigger + obstacle walk, no axis writes. The steering
+`dx/dz = -D` argument is passed by 0x486020 but unused on the no-obstacle path.

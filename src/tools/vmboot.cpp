@@ -1618,7 +1618,7 @@ void game_init_check(Boot &boot, Checker &c)
             const float kTickDt = 0.016f;  // the 16 ms frame's ctrlAcc
             game::control_bots(kTickDt);
             int bad_snap = 0, bad_plan = 0, bad_ctrl = 0;
-            int bad_tgt = 0, bad_vec = 0;
+            int bad_tgt = 0, bad_vec = 0, bad_lim = 0;
             for (size_t i = 0; i < bot_brains.size(); i++) {
                 const game::BotData *bd = game::bot_data(bot_brains[i]);
                 game::CarData *cp = game::car_data(*rt, bot_cars[i]);
@@ -1673,6 +1673,18 @@ void game_init_check(Boot &boot, Checker &c)
                     std::isfinite(bd->plan_D[1]) &&
                     std::isfinite(bd->plan_D[2]);
                 if (!vec_ok) bad_vec++;
+                // Card 177: step-5 speed limit and the 0x483bd0 steer/speed.
+                bool lim_ok = bd->plan_speed > 0.0f &&
+                              bd->plan_speed <= 1000.0f &&
+                              std::fabs(bd->plan_steer) <= 3.14159265f &&
+                              std::isfinite(bd->plan_vmax) &&
+                              std::isfinite(bd->plan_steer) &&
+                              std::isfinite(bd->plan_speed) &&
+                              std::isfinite(bd->plan_reach) &&
+                              std::isfinite(bd->plan_aim[0]) &&
+                              std::isfinite(bd->plan_aim[1]) &&
+                              bd->max_grip > 0.0f;
+                if (!lim_ok) bad_lim++;
                 bool ctrl_ok = bd->control_ticks > 0 &&
                                cp->throttle == 0.0f &&
                                cp->brake_input == 0.0f &&
@@ -1690,6 +1702,11 @@ void game_init_check(Boot &boot, Checker &c)
                             (double)bd->plan_off, (double)bd->plan_T[0],
                             (double)bd->plan_T[1], (double)bd->plan_T[2],
                             (double)dT);
+                std::printf("    bot %zu limits (0x483bd0): vmax %.3f, steer "
+                            "%.2f deg, reach %.2f, +0x25d8 %.3f\n",
+                            i, (double)bd->plan_vmax,
+                            (double)(bd->plan_steer * 57.29578f),
+                            (double)bd->plan_reach, (double)bd->max_grip);
                 (void)lat;
             }
             c.check(!bot_brains.empty() && bad_snap == 0,
@@ -1713,6 +1730,11 @@ void game_init_check(Boot &boot, Checker &c)
             c.check(!bot_brains.empty() && bad_vec == 0,
                     "every bot holds |off| <= 0.9, a unit D and finite plan "
                     "values (0x486020, " + std::to_string(bad_vec) + " bad)");
+            c.check(!bot_brains.empty() && bad_lim == 0,
+                    "every bot holds 0 < speed <= 1000, |steer| <= pi, finite "
+                    "limit values and +0x25d8 > 0 after the 0x486020 speed "
+                    "look-ahead (0x486020/0x483bd0, " +
+                        std::to_string(bad_lim) + " bad)");
             // The wakeup above is only for the snapshot check; sleep the bot
             // cars again so the rest of the run keeps the player-only cost.
             for (Runtime::Resource *bcr : bot_cars)

@@ -2233,14 +2233,40 @@ static Vec3 plan_pof(const traffic::Path &p, float q, float off)
     return Vec3{out[0], out[1], out[2]};
 }
 
-// 0x486020 steps 1, 3 and 4 (card 176): lateral offset from the curvature
-// ahead, pull to the car's current lateral position, target search from
-// d - 10 back to +0x268c, then the straight-line extension of T. Step 5 and
-// 0x483bd0 are card 177.
+// 0x483bd0 no-obstacle path (card 177): V from the car front to T, the angle
+// to S.fwd, and the steer/speed pair 0x482910 receives. shortcut: the
+// bot_trigger create (+0x2700) and the obstacle walk (+0x26b4, 0x409fa0) are
+// card 179; with no intervals 0x40a8a0 keeps V unchanged.
+static void bot_steer(BotData &b, const BotSnapshot &s, float vmax)
+{
+    float fx = s.pos[0] + s.fwd[0], fz = s.pos[2] + s.fwd[2];
+    float vx = b.plan_T[0] - fx, vz = b.plan_T[2] - fz;
+    b.plan_aim[0] = vx;  // +0x269c
+    b.plan_aim[1] = vz;  // +0x26a0
+    float len = sqrtf(vx * vx + vz * vz);
+    float cx = 0.0f, cz = 0.0f;  // normalize(V), zero when |V| <= 1e-5
+    if (len > 1e-5f) {
+        cx = vx / len;
+        cz = vz / len;
+    }
+    float g = s.fwd[0] * cx + s.fwd[2] * cz;   // 0x40a7d0
+    float cr = cx * s.fwd[2] - s.fwd[0] * cz;
+    float ang;
+    if (cr <= 0.0f)
+        ang = g > 1.0f ? 0.0f : g < -1.0f ? -3.14159265f : -acosf(g);
+    else
+        ang = g > 1.0f ? 0.0f : g < -1.0f ? 3.14159265f : acosf(g);
+    b.plan_steer = -ang;                 // 0x482910(S, steer = -ang, ...)
+    b.plan_speed = std::max(0.0f, vmax);  // ... speed = max(0, v2)
+}
+
+// 0x486020 steps 1, 3, 4 and 5 (cards 176-177): lateral offset from the
+// curvature ahead, pull to the car's current lateral position, target search
+// from d - 10 back to +0x268c, the straight-line extension of T, then the
+// braking-distance speed limit and 0x483bd0. look is already in +0x268c.
 static void bot_plan(BotData &b, BotSnapshot &s, float look, float vmax0)
 {
-    (void)look;   // already in +0x268c (0x485e10)
-    (void)vmax0;  // step 5, card 177
+    (void)look;
     const traffic::Path &p = b.spline;
     float x = s.pos[0], z = s.pos[2];
     float d = 0.0f, lat = 0.0f;
@@ -2353,6 +2379,69 @@ static void bot_plan(BotData &b, BotSnapshot &s, float look, float vmax0)
     b.plan_D[0] = D.x;
     b.plan_D[1] = D.y;
     b.plan_D[2] = D.z;
+
+    // Step 5: braking-distance look-ahead speed limit. vmax0 = 1000.
+    float a0 = b.mode == 3 ? 5.0f : 15.0f;
+    float vmax = vmax0;
+    float dist = a0;
+    float reach = s.speed * s.speed / (2.0f * b.max_lat_accel) * 1.5f;
+    if (b.mode == 3) reach *= 2.0f;
+    reach += a0;
+    float q5 = d - a0;
+    float t5[3];
+    traffic::path_dir_at(p, q5, t5);
+    float pl = sqrtf(t5[0] * t5[0] + t5[2] * t5[2]);
+    bool have_prev = pl > 1e-5f;
+    Vec3 prev{have_prev ? t5[0] / pl : 0.0f, 0.0f,
+              have_prev ? t5[2] / pl : 0.0f};
+    float prev_y = t5[1];
+    while (have_prev && dist < reach) {
+        q5 -= 2.0f;
+        if (q5 < 0.0f) break;
+        traffic::path_dir_at(p, q5, t5);
+        float ty = t5[1];
+        float dec = std::clamp(b.max_lat_accel - ty * 9.81f, 0.0f,
+                               b.max_lat_accel);
+        float f1 = traffic::path_f1_at(p, q5);
+        Vec3 txz = vec_normalize(Vec3{t5[0], 0.0f, t5[2]}, Vec3{});
+        float kk = 1.0f;  // shortcut: traffic density term, card 179
+        float g = (s.wheel[0][2] + s.wheel[1][2] + s.wheel[2][2] +
+                   s.wheel[3][2]) * 0.25f;
+        if (b.max_grip < g) b.max_grip = g;  // +0x25d8
+        float mu = b.grip_base * b.max_grip * (1.0f - ty * ty);
+        float ca = std::clamp(txz.x * prev.x + txz.z * prev.z, -1.0f, 1.0f);
+        float a = acosf(ca);
+        if (a > 0.0f)
+            vmax = std::min(vmax,
+                            sqrtf(mu * 9.81f * 2.0f / a / kk * f1 * f1 +
+                                  2.0f * dec * dist));
+        if (b.mode == 3) {
+            float lim = traffic::path_lerp_at(p, q5) * 0.2777778f;
+            float k = b.grip_speed * lim * 2.5f;
+            vmax = std::min(vmax, sqrtf(2.0f * dec * dist + k * k));
+        }
+        float dY = asinf(ty) - asinf(prev_y);  // 0x570ac1 asinf
+        if (b.curvature_enable < 0.0f && dY > 0.001f)
+            vmax = std::min(vmax,
+                            sqrtf(cosf(dY) * s.wheelbase * 4.905f /
+                                      sinf(dY) * f1 * f1 +
+                                  2.0f * dec * dist));
+        prev_y = ty;
+        dist += 2.0f;
+        if (dist >= reach) break;
+        prev = txz;
+    }
+    // +0xc0: speed factor by the distance from the lane centre.
+    if (s.c0) {
+        float r = std::fabs(lat) / traffic::path_width_at(p, d);
+        float a = std::max(1.8f - r, 1.01f) * s.speed;
+        float m = std::max(a, vmax * 0.5f);
+        if (m <= vmax) vmax = m;
+        s.c4 = std::min(r, 1.0f);
+    }
+    b.plan_vmax = vmax;
+    b.plan_reach = reach;
+    bot_steer(b, s, vmax);  // 0x483bd0
 }
 
 // 0x485e10 (mode 3): look-ahead on the spline; 0x482910 (card 178) is the
