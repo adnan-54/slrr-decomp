@@ -1355,6 +1355,27 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
     if (!type || !load_native_cfg(rt, type, "car", &cfg) || cfg.bodies.empty()) return;
     CarData *car = car_data(rt, inst);
     if (!car) return;
+    // 0x4c1f90/0x4c23e3: car+0x2c binds the first `body` line's child frame X.
+    {
+        const CfgBody &bb = cfg.bodies[0];
+        float bang[3] = {bb.xform.rx, bb.xform.ry, bb.xform.rz};
+        euler_to_mat(&car->bbone_rot, bang);
+        Shape bshape;
+        body_line_shape(bb, &bshape);
+        BodyDef bdef;
+        bdef.shape = bshape;
+        Vec3 bcom{0.0f, 0.0f, 0.0f};
+        // INVENTED: the mass only scales inertia; com is mass-independent.
+        compute_mass_props(&bdef, bb.mass > 0.0f ? bb.mass : 1.0f, &bcom);
+        Vec3 bpos = Vec3{bb.xform.px, bb.xform.py, bb.xform.pz} +
+                    mat_vec(car->bbone_rot, bcom);
+        car->bbone_com[0] = bcom.x;
+        car->bbone_com[1] = bcom.y;
+        car->bbone_com[2] = bcom.z;
+        car->bbone_pos[0] = bpos.x;
+        car->bbone_pos[1] = bpos.y;
+        car->bbone_pos[2] = bpos.z;
+    }
     // INVENTED: the instance's super chain does not reach the type record, so
     // car_data cannot load the cfg; the exe's type manager vf3 gets it directly.
     if (car->wheels.empty()) fill_car(*car, cfg);

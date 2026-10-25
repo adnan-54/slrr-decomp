@@ -1,7 +1,7 @@
 ---
 id: 205
-status: todo
-branch:
+status: implemented
+branch: card/205
 depends: []
 ---
 # Chassis getMin/getMax/getWheelPos/getCM: use the first `body` child frame (fix cards 201/202)

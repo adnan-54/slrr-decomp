@@ -3661,15 +3661,26 @@ bool ch_get_angvel(Vm &vm, const Args &a, Value *out, std::string *err)
     return true;
 }
 
-// 0x4b3220 Chassis.getMin: part_comp bounds + 0.1; no car -> (0,0,0).
+// car+0x2c: first body line child frame X (notes/22 §4), p = X.t + X.R*center.
+static Vec3 bbone_point(const game::CarData &c)
+{
+    return Vec3{c.bbone_pos[0], c.bbone_pos[1], c.bbone_pos[2]} +
+           mat_vec(c.bbone_rot, Vec3{c.center[0], c.center[1], c.center[2]});
+}
+
+// 0x4b3220 Chassis.getMin: bbone frame (notes/22 §4) + 0.1; no car -> (0,0,0).
 bool ch_get_min(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     if (!want("Chassis.getMin", a, 1, err)) return false;
     game::CarData *c = car_of(a);
     float v[3] = {0.0f, 0.0f, 0.0f};
     // lo stays 0: part_comp's Poly has no vertices (0x50e5e0).
-    if (c && c->chassis_body)
-        for (int k = 0; k < 3; k++) v[k] = c->center[k] + 0.1f;
+    if (c && c->chassis_body) {
+        Vec3 p = bbone_point(*c);
+        v[0] = p.x + 0.1f;
+        v[1] = p.y + 0.1f;
+        v[2] = p.z + 0.1f;
+    }
     Object *o = new_point(vm, "java.lang.Vector3", v, false, err);
     if (!o) return false;
     *out = Value::make_obj(o);
@@ -3682,15 +3693,19 @@ bool ch_get_max(Vm &vm, const Args &a, Value *out, std::string *err)
     if (!want("Chassis.getMax", a, 1, err)) return false;
     game::CarData *c = car_of(a);
     float v[3] = {0.0f, 0.0f, 0.0f};
-    if (c && c->chassis_body)
-        for (int k = 0; k < 3; k++) v[k] = c->center[k] - 0.1f;
+    if (c && c->chassis_body) {
+        Vec3 p = bbone_point(*c);
+        v[0] = p.x - 0.1f;
+        v[1] = p.y - 0.1f;
+        v[2] = p.z - 0.1f;
+    }
     Object *o = new_point(vm, "java.lang.Vector3", v, false, err);
     if (!o) return false;
     *out = Value::make_obj(o);
     return true;
 }
 
-// 0x4b3e40 Chassis.getWheelPos(i): center + WheelData::hub (+0x78).
+// 0x4b3e40 Chassis.getWheelPos(i): bbone frame (notes/22 §4) + hub (+0x78).
 bool ch_get_wheel_pos(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     int32_t i;
@@ -3700,37 +3715,33 @@ bool ch_get_wheel_pos(Vm &vm, const Args &a, Value *out, std::string *err)
     game::CarData *c = car_of(a);
     float v[3] = {0.0f, 0.0f, 0.0f};
     // INVENTED: exe has no bounds check; i out of range -> (0,0,0)
-    if (c && c->chassis_body && i >= 0 && (size_t)i < c->wheels.size())
-        for (int k = 0; k < 3; k++) v[k] = c->center[k] + c->wheels[(size_t)i].hub[k];
+    if (c && c->chassis_body && i >= 0 && (size_t)i < c->wheels.size()) {
+        Vec3 p = bbone_point(*c);
+        const float *hub = c->wheels[(size_t)i].hub;
+        v[0] = p.x + hub[0];
+        v[1] = p.y + hub[1];
+        v[2] = p.z + hub[2];
+    }
     Object *o = new_point(vm, "java.lang.Vector3", v, false, err);
     if (!o) return false;
     *out = Value::make_obj(o);
     return true;
 }
 
-// 0x4b2680 Chassis.getCM: -M.center moved into the part_comp body state
-// (localToWorld 0x5060d0) and rotated back (R^T d); no car -> (0,0,0).
-// INVENTED: src part_comp pose (child of car_root) may lag the exe's state;
-// the result cancels it.
+// 0x4b2680 Chassis.getCM: X.R*center - X.t - bbone.shape.com; no car -> (0,0,0).
+// INVENTED: exe uses the live child/part_comp states; equal up to float
+// rounding, the rigid compound's X is constant.
 bool ch_get_cm(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     if (!want("Chassis.getCM", a, 1, err)) return false;
     game::CarData *c = car_of(a);
     float v[3] = {0.0f, 0.0f, 0.0f};
     if (c && c->chassis_body) {
-        RigidBody *b = c->chassis_body; // car+0x13ec, not walked to the root
-        Mat34 R = b->rotation();
-        Vec3 q = mat_vec(R, Vec3{-c->center[0], -c->center[1], -c->center[2]}) +
-                 b->pos; // 0x5060d0
-        Vec3 d = q - b->pos;
-        // R^T d (rows +0xa4/+0xb4/+0xc4)
-        float lx = R.m[0] * d.x + R.m[4] * d.y + R.m[8] * d.z;
-        float ly = R.m[1] * d.x + R.m[5] * d.y + R.m[9] * d.z;
-        float lz = R.m[2] * d.x + R.m[6] * d.y + R.m[10] * d.z;
-        // part_comp shape com +0x40 is 0 (0x4ba8c0)
-        v[0] = -lx;
-        v[1] = -ly;
-        v[2] = -lz;
+        Vec3 r = mat_vec(c->bbone_rot,
+                         Vec3{c->center[0], c->center[1], c->center[2]});
+        v[0] = r.x - c->bbone_pos[0] - c->bbone_com[0];
+        v[1] = r.y - c->bbone_pos[1] - c->bbone_com[1];
+        v[2] = r.z - c->bbone_pos[2] - c->bbone_com[2];
     }
     Object *o = new_point(vm, "java.lang.Vector3", v, false, err);
     if (!o) return false;
