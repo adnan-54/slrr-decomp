@@ -31,6 +31,13 @@ struct CrossPath { uint8_t a = 0, b = 0; uint16_t c = 0; uint32_t k58 = 0, k5c =
 struct Cross {                  // ctCross 0x40e850
     std::vector<CrossLink> links; std::vector<CrossPath> paths;
     float pos[3] = {}; uint32_t k30 = 0;
+    float radius = 0;                 // +0x34 (cross_init 0x415650)
+    uint32_t k38 = 0;                 // +0x38 (only zeroed, type unobserved)
+    std::vector<uint64_t> link_state; // +0x58, one zero per link
+    uint32_t cycle = 0;               // +0x5c (light_init 0x415700 zeroes it)
+    float phase_time = 0;             // +0x6c (light only)
+    std::vector<int32_t> phase;       // +0x70 (light only)
+    int32_t phase_count = 0;          // +0x74 (light only)
 };
 
 struct Road { uint32_t node[3] = {}; float v10[3] = {}, v1c[3] = {}; uint32_t k64 = 0; Path path; };
@@ -39,9 +46,10 @@ struct Lane {
     uint32_t road = 0, node14 = 0; uint8_t k18 = 0;       // +0x10 (parent road), +0x14, +0x18
     float v1c[3] = {}, v28[3] = {}; uint32_t k34 = 0, k38 = 0;
     float index_min_x = 0, index_run_max_x = 0, index_max_x = 0; uint32_t index_lane = 0;  // +0x78..+0x84
-    uint32_t node88[4] = {}; uint32_t k98 = 0, k9c = 0, ka0 = 0;
+    uint32_t node88[4] = {}; float k98 = 0; uint32_t k9c = 0, ka0 = 0;  // +0x98 speed factor
     Path path;                                            // +0x3c
     bool halted = false;                                  // +0xc4, INVENTED initial value
+    float kc0 = 0, kc8 = 0, kcc = 0;                      // +0xc0 sim time, +0xc8, +0xcc path length
 };
 
 struct Graph {
@@ -49,10 +57,14 @@ struct Graph {
     std::vector<Cross> cross_eq, cross_light;   // Traffic +0x10, +0x28
     std::vector<Road> roads;                    // +0x40
     std::vector<Lane> lanes;                    // +0x58
+    float sim_time = 0;                         // +0x84
+    std::vector<uint8_t> road_enabled;          // +0xc4: enable flag per road group
+    float max_road_width = 0;                   // +0x312c
     float cross_stop_offset = 0;                // +0x3140 (ctor 0x416000: 0)
     // Node ids stay raw (1-based into eq, light, road, lane; 0 = null).
     // INVENTED: ids instead of pointers; bounds checks the exe does not have.
     bool load(const uint8_t *data, size_t size, size_t *consumed, std::string *err);
+    void init(float t);   // 0x419da0: per-node init pass after Traffic__load
     size_t node_count() const;  // eq + light + road + lane
     // 0x419050: cross_eq first, then cross_light; first strict minimum wins.
     const Cross *nearest_cross(float x, float y, float z, float dist, bool yflag) const;

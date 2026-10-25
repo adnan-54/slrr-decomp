@@ -1,7 +1,7 @@
 ---
 id: 210
-status: todo
-branch:
+status: implemented
+branch: card/210
 depends: []
 ---
 # Traffic: Traffic__init after load + ground animate registration

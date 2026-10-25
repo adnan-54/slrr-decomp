@@ -194,7 +194,7 @@ bool read_lane(Reader &r, traffic::Lane &lane)
         return false;
     for (int i = 0; i < 4; i++)
         if (!r.u32(&lane.node88[i])) return false;
-    if (!r.u32(&lane.k98) || !r.u32(&lane.k9c) || !r.u32(&lane.ka0)) return false;
+    if (!r.f32(&lane.k98) || !r.u32(&lane.k9c) || !r.u32(&lane.ka0)) return false;
     return read_path(r, lane.path);
 }
 
@@ -668,6 +668,133 @@ bool Graph::align_to_road(float pos[3], float dir[3]) const
     }
     path_pos_at(p, d, pos);
     return true;
+}
+
+namespace {
+
+// Node ids are 1-based into [cross_eq, cross_light, roads, lanes]; 0 = null.
+// INVENTED: the exe dereferences the node table unchecked; a missing or
+// non-lane id yields null here.
+Lane *lane_at(Graph &g, uint32_t id)
+{
+    size_t base = g.cross_eq.size() + g.cross_light.size() + g.roads.size();
+    if (id <= base) return nullptr;
+    size_t i = id - 1 - base;
+    return i < g.lanes.size() ? &g.lanes[i] : nullptr;
+}
+
+// 0x415650 ctCross init (0x40e0d0 inlined).
+void cross_init(Graph &g, Cross &c)
+{
+    c.k38 = 0;
+    c.radius = 0.0f;
+    for (const CrossLink &link : c.links) {
+        Lane *l = lane_at(g, link.node);
+        if (!l) continue;                        // INVENTED guard
+        const float *e = link.flag ? l->v28 : l->v1c;
+        float dx = e[0] - c.pos[0], dy = e[1] - c.pos[1], dz = e[2] - c.pos[2];
+        float d = sqrtf(dx * dx + dy * dy + dz * dz);
+        if (d > c.radius) c.radius = d;          // strict >
+    }
+    c.link_state.assign(c.links.size(), 0);
+    uint32_t mx = 0;
+    uint16_t mn = c.paths.empty() ? 0 : c.paths[0].c;  // INVENTED: no paths -> 0
+    for (const CrossPath &p : c.paths) {
+        if (p.c > mx) mx = p.c;
+        if (p.c < mn) mn = p.c;
+    }
+    mx -= mx % 10;
+    if (mx == (uint32_t)(mn / 10) * 10) mx += 10;
+    c.cycle = mx;
+}
+
+// 0x415700 ctCrossLight init.
+void light_init(Graph &g, Cross &c)
+{
+    cross_init(g, c);
+    c.phase_time = g.sim_time;
+    c.phase.assign(c.links.size(), 0);
+    int32_t cnt = 0;
+    // INVENTED: lane_at guard; the exe reads links[0] unchecked.
+    Lane *first = c.links.empty() ? nullptr : lane_at(g, c.links[0].node);
+    uint32_t prev = first ? first->road : 0;
+    for (size_t i = 0; i < c.links.size(); i++) {
+        if (!c.links[i].flag) {
+            c.phase[i] = -1;                     // prev unchanged
+            continue;
+        }
+        Lane *l = lane_at(g, c.links[i].node);
+        if (!l) continue;                        // INVENTED guard
+        uint32_t r = l->road;
+        if (r != prev) cnt++;
+        c.phase[i] = cnt;
+        prev = r;
+    }
+    c.phase_count = cnt + 1;
+    c.cycle = 0;
+}
+
+// 0x40e260 ctRoad init (consts 1.1, 0.9090909, 1.75).
+void road_init(Graph &g, Road &road)
+{
+    // The exe walks the road's lane chain: road.node[0] then lane+0x14.
+    std::vector<Lane *> ls;
+    Lane *l = lane_at(g, road.node[0]);
+    // INVENTED: cap the pointer walk with the lane count (the exe follows a cycle).
+    for (size_t guard = 0; l && guard < g.lanes.size(); guard++) {
+        ls.push_back(l);
+        l = lane_at(g, l->node14);
+    }
+
+    int n = 0;
+    for (const Lane *lane : ls)
+        n += 1 - (lane->node88[0] != 0) - (lane->node88[1] != 0);
+
+    for (int dir = 0; dir < 2; dir++) {
+        float f = 1.0f;
+        for (const Lane *lane : ls)
+            if (lane->k18 == dir && !lane->node88[0] && !lane->node88[1]) f *= 1.1f;
+        for (Lane *lane : ls)
+            if (lane->k18 == dir && !lane->node88[0] && !lane->node88[1]) {
+                f *= 0.9090909f;
+                lane->k98 *= f;
+            }
+    }
+
+    float w = (float)n * 1.75f;
+    for (Segment &s : road.path.segs) s.width = w;
+    if (w > g.max_road_width) g.max_road_width = w;
+}
+
+// 0x40e150 ctLane init, no-car branch.
+void lane_init(Graph &g, Lane &l)
+{
+    l.kc8 = 0.0f;
+    // shortcut: the car branch (0x4107c0 car step, 0x417050 timed event) is not
+    // ported; the pool is empty at init.
+    l.kc0 = g.sim_time;
+    l.kcc = l.path.length;
+    l.halted = false;
+}
+
+}  // namespace
+
+// 0x419da0 Traffic__init.
+void Graph::init(float t)
+{
+    sim_time = t;
+    // T+0x3118 (player pseudo-car) is null right after the ctor.
+    max_road_width = 0.0f;
+    for (Cross &c : cross_eq) cross_init(*this, c);
+    for (Cross &c : cross_light) light_init(*this, c);
+    for (Road &r : roads) road_init(*this, r);
+    for (Lane &l : lanes) lane_init(*this, l);
+
+    int m = 0;
+    for (const Road &r : roads)
+        if ((int32_t)r.k64 > m) m = (int32_t)r.k64;
+    road_enabled.assign((size_t)m + 1, 0);         // [0] = 0
+    for (int i = 1; i <= m; i++) road_enabled[(size_t)i] = 1;
 }
 
 // 0x41a000 Traffic__load.

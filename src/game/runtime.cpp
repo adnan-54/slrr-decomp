@@ -412,7 +412,7 @@ void move_trigger(Runtime::Resource *r, const std::string &params)
 // load the named .trc (File__readAll 0x565610, Traffic__load 0x41a000).
 // INVENTED: lazy creation at the first lookup and the failure log; the exe
 // creates the graph when the instance is made resident and has no failure log.
-static void load_ground(Runtime &rt, Runtime::Resource *r)
+static void load_ground(Runtime &rt, Runtime::Resource *r, Runtime::Handle *h)
 {
     uint32_t gametype = 0;
     std::string params;
@@ -432,9 +432,12 @@ static void load_ground(Runtime &rt, Runtime::Resource *r)
         std::fprintf(stderr, "ground: %s: %s\n", trc.c_str(), err.c_str());
         return;
     }
-    // shortcut: Traffic__init 0x419da0 and the 0x47d670 registration are not
-    // ported.
+    // 0x4bb2b8: Traffic__init(T, *0x5dadf0) right after the load.
+    g->init(process_world().time);
     r->traffic = g;
+    // 0x4bb2e8 Game__registerCallback(ground, 0x1c): the exe does this at
+    // instance create, src at the first handle lookup (see ground_traffic).
+    rt.register_callback(h, 0x1c);
 }
 
 Runtime::Runtime(ResourceManager &resources, Vm *vm, ClassPath *classes)
@@ -627,7 +630,7 @@ traffic::Graph *Runtime::ground_traffic(Handle *h)
     if (r->type != 1) return nullptr;
     if (!r->ground_checked) {
         r->ground_checked = true;
-        load_ground(*this, r);
+        load_ground(*this, r, h);
     }
     return r->traffic.get();
 }
