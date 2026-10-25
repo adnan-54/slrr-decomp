@@ -7787,6 +7787,9 @@ void advance_sim(Vm &vm, float dt)
     // 0x4b79e0 type_cursor vf11. INVENTED placement: the exe ticks native types
     // from its type list; once per frame here with the frame dt.
     if (rt) game::cursor_tick(*rt, dt);
+    // 0x494910 HUD block. INVENTED: vf13 runs in the render pass per drawn car;
+    // src calls it once per advance_sim.
+    game::hud_cars(s.measure_per_hour, s.measure_inv10);
 }
 
 const std::vector<Entry> &table()

@@ -3520,6 +3520,91 @@ std::vector<CarData *> car_payloads()
     return out;
 }
 
+// 0x4b1d50 clamp: out = min; if min <= y { out = max; if y <= max out = y }
+// (NaN -> min).
+static float gauge_clamp(const OsdGauge &g, float y)
+{
+    float out = g.min;
+    if (g.min <= y) {
+        out = g.max;
+        if (y <= g.max) out = y;
+    }
+    return out;
+}
+
+// 0x4b1d50 gauge_update(G, elem, parent, x): "elem created" = live, pin angle and
+// text value instead of the render objects. Kinds other than 1/2/5 do nothing.
+static void gauge_update(const OsdGauge &g, HudGauge &h, float x)
+{
+    if (g.ref_id == 0) return;  // G+0x24: ref not set
+    char buf[64];
+    if (g.kind == 1) {  // pin: bone00 ori.z + clamped value
+        h.live = true;
+        h.angle = gauge_clamp(g, g.scale * x + g.offset);
+    } else if (g.kind == 2) {  // text: sprintf(G.fmt, (double)value)
+        h.live = true;
+        snprintf(buf, sizeof buf, g.fmt,
+                 (double)gauge_clamp(g, g.scale * x + g.offset));
+        h.text = buf;
+    } else if (g.kind == 5) {  // lamp shown while x > 0.01
+        h.live = !(x <= 0.01f);
+    }
+}
+
+// 0x494910 type_car__vf13 HUD block (0x4954bc..0x495945). The traffic/bot id
+// (car+0x2054) has no src field, so its skip test is always false.
+void hud_cars(float measure_per_hour, float measure_inv10)
+{
+    for (CarData *car : car_payloads()) {
+        for (int s = 0; s < car->control_slots; s++) {
+            // INVENTED: HUD viewport (R_s+0x58) taken as present; cockpit view
+            // (R_s+0x38) absent, so the G0/G1 elements stay deleted.
+            if (!car->slot_player[s] || s != car->driver_slot) continue;
+            const float rpm = fabsf(car->rpm_smoothed * 9.549296f);  // [0x59ab98]
+            const float v =
+                car->root_body ? vec_length(car->root_body->vel) : 0.0f;
+            // Gear G9: 0x4eb370 direct, no ref test, no clamp.
+            char buf[64];
+            snprintf(buf, sizeof buf, car->osd[9].fmt,
+                     (int)(char)car->gear_chars[car->gear]);
+            car->hud[9].text = buf;
+            gauge_update(car->osd[7], car->hud[7], rpm);  // rpm
+            gauge_update(car->osd[8], car->hud[8], v / measure_per_hour);  // speed
+            gauge_update(car->osd[12], car->hud[12],
+                         car->mileage * measure_inv10);  // mileage
+            if (car->tank_nitro > 0.0f) {  // nos
+                gauge_update(car->osd[10], car->hud[10],
+                             car->nitro / car->tank_nitro);
+            }
+            if (car->dyno && car->dyno->turbo_mul > 0.0f &&
+                car->dyno->turbo_range > 0.0f &&
+                car->dyno->p_turbo_max > 0.0f) {  // turbo
+                gauge_update(car->osd[11], car->hud[11],
+                             car->dyno->boost_gauge(rpm));
+            }
+            gauge_update(car->osd[2], car->hud[2], rpm);       // rpmpin
+            gauge_update(car->osd[3], car->hud[3], v * 3.6f);  // spdpin [0x59ab88]
+            if (car->tank_nitro > 0.0f) {  // nospin
+                gauge_update(car->osd[4], car->hud[4],
+                             car->nitro / car->tank_nitro);
+            }
+            gauge_update(car->osd[13], car->hud[13],
+                         (car->flags & 0x1000000u) ? 1.0f : 0.0f);  // abs
+            gauge_update(car->osd[14], car->hud[14],
+                         (car->flags & 0x2000000u) ? 1.0f : 0.0f);  // asr
+            gauge_update(car->osd[15], car->hud[15], car->handbrake_input);
+            gauge_update(car->osd[16], car->hud[16],
+                         (car->engine_temp > 100.0f || rpm > car->rpm_limit ||
+                          rpm > car->max_rpm)
+                             ? 1.0f
+                             : 0.0f);  // emergency
+            // Cockpit G0/G1: R_s+0x38 is not modelled (absent), so delete.
+            car->hud[0].live = false;
+            car->hud[1].live = false;
+        }
+    }
+}
+
 void bind_wheel(Object *wrapper, WheelData *w)
 {
     if (wrapper && w) g_wheels[wrapper] = w;

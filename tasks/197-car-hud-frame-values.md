@@ -1,7 +1,7 @@
 ---
 id: 197
-status: todo
-branch:
+status: implemented
+branch: card/197
 depends: [196]
 ---
 # car HUD: per-frame gauge values (type_car__vf13 HUD block)

@@ -83,4 +83,5 @@ struct EngineModel {
     void setup_rpm_point();      // 0x4f4ca0  (card 007)
     void run_cycle();            // 0x4f4560  (card 007)
     void build_tables(int step); // 0x4f4640  (card 007)
+    float boost_gauge(float rpm) const;  // 0x4f5ab0
 };

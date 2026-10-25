@@ -374,6 +374,25 @@ void EngineModel::setup_rpm_point()
     burn_time = (1.0f - k) * time_burn;
 }
 
+// 0x4f5ab0 EngineModel__boostGauge: the turbo g of setupRpmPoint, normalised by
+// the wastegate pressure. Caller guarantees turbo_mul, turbo_range, p_turbo_max > 0.
+// Denominator is sqrt(P), not sqrt(P+1): the exe quirk.
+float EngineModel::boost_gauge(float rpm) const
+{
+    float g;
+    const float x = fabsf(rpm * turbo_mul - turbo_opt);
+    if (turbo_band <= x) {
+        g = 1.0f - (x - turbo_band) / (turbo_range - turbo_band);
+        if (g <= 0.0f) g = 0.0f;
+    } else {
+        g = 1.0f;
+    }
+    float bst = p_turbo_max * g;
+    if (p_turbo_waste <= bst) bst = p_turbo_waste;
+    const float p = p_turbo_max < p_turbo_waste ? p_turbo_max : p_turbo_waste;
+    return (sqrtf(bst + 1.0f) - 1.0f) / (sqrtf(p) - 1.0f);
+}
+
 // 0x4f4560 EngineModel__runCycle
 void EngineModel::run_cycle()
 {

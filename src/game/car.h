@@ -151,6 +151,14 @@ struct OsdGauge {
     float max = 0.0f;       // +0x44
 };
 
+// Per-frame HUD state of one gauge, computed by 0x4b1d50 gauge_update. The exe
+// keeps render elements (mesh instance / text / lamp); src keeps the value only.
+struct HudGauge {
+    bool live = false;    // element exists ("created")
+    float angle = 0.0f;   // pin angle (ori.z + clamped value)
+    std::string text;     // text printf result
+};
+
 struct PartData {
     std::vector<Slot> slots;
     float tear = 1.0f;           // +0xb4
@@ -181,6 +189,7 @@ struct CarData {
     // the 17 gauge records M+0x1a44 + i*0x48.
     char gear_chars[9] = "N123456R";
     OsdGauge osd[17];
+    HudGauge hud[17];            // 0x4b1d50 state, index = gauge index
     float throttle = 0.0f;       // +0x1de4
     float brake_input = 0.0f;    // +0x1de8
     float handbrake_input = 0.0f;   // +0x1df4
@@ -467,6 +476,9 @@ void control_cars(float dt);
 // 0x47f980 native bot vf11 on the same mode-8 control list: per physics tick,
 // build the controlled car's snapshot S and run the mode switch 0x484b90.
 void control_bots(float dt);
+// 0x494910 type_car__vf13 HUD block (0x4954bc..0x495945): per-frame gauge
+// values of the driver slot of every car, gauge_update 0x4b1d50.
+void hud_cars(float measure_per_hour, float measure_inv10);
 // 0x480850 type_bot vf14 codes 0x20 (add) / 0x40 (remove): the bot_trigger
 // sensor's contact with `other`. Routed from the trigger event callback.
 void bot_trigger_event(Runtime::Resource *bot, RigidBody *other, uint32_t code);
