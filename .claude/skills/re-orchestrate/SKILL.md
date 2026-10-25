@@ -50,7 +50,7 @@ Format and the frozen DeepSeek prompt: `tasks/README.md`. A card must fit Flash:
 ## 4. Review gate (Claude session)
 For each branch with `status: implemented`:
 1. Spawn `card-reviewer` with card path + branch (sonnet).
-2. `PASS` → `git merge --no-edit`, (no per-card build; one `make -C src clean check` per batch at the end), status merged, move card to `done/`, delete branch/worktree.
+2. `PASS` → `git merge --no-edit`, `make -C src clean check`, status merged, move card to `done/`, delete branch/worktree.
 3. `FAIL` → small → `card-fixer`; after 2 failures or `ESCALATE OPUS` → same agent with `model: opus`; large → new card for the next DeepSeek phase.
 4. Tell the user in a few lines: what merged, what was wrong, corrections to earlier claims.
 
