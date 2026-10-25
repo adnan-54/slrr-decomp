@@ -257,6 +257,29 @@ struct CarData {
     CarData();
 };
 
+// Car snapshot S built by 0x47f980 vf11 and passed to 0x484b90/0x485e10/
+// 0x486020 (0xc8 stack bytes). Offsets are the exe's; src keeps it next to the
+// bot so vmboot can read the last tick.
+struct BotSnapshot {
+    int32_t gear = 0;        // +0x00 getInfo(0x36) = car+0x1e5c
+    float pos[3] = {};       // +0x04 getInfo(2), y corrected from the wheels
+    float vel_dir[3] = {};   // +0x10 getInfo(3), y = 0, xz normalised
+    float fwd[3] = {};       // +0x1c getInfo(4) = -(R col 2), xz normalised
+    float ang_vel[3] = {};   // +0x28 getInfo(0x33) = R^T omega
+    float euler[3] = {};     // +0x34 0x569970(R)
+    int32_t wheels = 0;      // +0x40 getInfo(0x35) = min(n, 4)
+    float wheel[4][6] = {};  // +0x44 + i*0x18: spin, load, friction, slip xyz
+    float speed = 0.0f;      // +0xa4 |v| 3D
+    float dt = 0.0f;         // +0xa8 tick accumulator (ctrlAcc)
+    float rpm = 0.0f;        // +0xac car+0x1e80 * 9.549296
+    float redline = 0.0f;    // +0xb0 engine e+0x1c
+    float wheelbase = 0.0f;  // +0xb4 getInfo(0x40), 2.0 without wheels
+    float nitro = 0.0f;      // +0xb8 car+0x1f5c / e+0xa4c
+    float gear_axis = 0.0f;  // +0xbc bot+0x22a4
+    uint8_t c0 = 0;          // +0xc0 planner: no speed-factor field
+    float c4 = 0.0f;         // +0xc4 planner output
+};
+
 // `native bot` payload (0x4803a0 create, 0x480850 vf14 EVENT_COMMAND). Offsets
 // are the bot object's; a spline record is the 0x54-byte one of 0x4122b0.
 struct BotData {
@@ -281,6 +304,34 @@ struct BotData {
     std::vector<SplinePoint> spline_points;  // +0x2604
     traffic::Path spline;     // +0x2604 ctPath built from the points (0x4122b0)
     int segments = 0;
+
+    // Ctor 0x47ed10 / reset 0x484a40 scalars (notes/19 s8.1). The axis table is
+    // bot+0x21dc + v*4, raw -127..127; v1 steer is +0x21e0.
+    float axis[0x4c] = {};       // +0x21dc
+    float look_dist = 55.0f;     // +0x2554
+    float look_speed = 10.0f;    // +0x2558
+    float look_base = 20.0f;     // +0x255c
+    float grid_speed = 10.0f;    // +0x2578
+    float grid_range = 180.0f;   // +0x257c
+    float max_lat_accel = 6.0f;  // +0x2580
+    float grip_base = 0.4f;      // +0x2584
+    float brake_mul = 6.0f;      // +0x2588
+    float grip_speed = 0.4f;     // +0x258c
+    int drive_type = 0;          // +0x2590
+    float half_width = 1.4f;     // +0x2594
+    float steer_rate = 510.0f;   // +0x2598
+    int engine_running = 0;      // +0x25d4
+    float max_grip = 0.0f;       // +0x25d8
+    float param_floor = -1.0f;   // +0x2608
+    float target_d = 0.0f;       // +0x268c (0x485e10: d - look)
+    float wheel_grip[4] = {1.0f, 1.0f, 1.0f, 1.0f};  // +0x2710 + i*4
+    float curvature_enable = -1.0f;  // +0x2724
+    // 0x486020 argument stub (card 176) and the last snapshot (vmboot).
+    float plan_d = 0.0f;
+    float plan_look = 0.0f;
+    BotSnapshot snap;
+    bool snap_valid = false;
+    int control_ticks = 0;   // control_cars bot-branch counter (vmboot)
 };
 
 // Lazy per-resource payloads, created on first native access.
@@ -333,6 +384,9 @@ void drive_cars(float dt);
 // 0x47bc20 Game__runControlCallbacks -> 0x498300 Vehicle__updateControls for
 // every car, once per physics tick before the sub-steps.
 void control_cars(float dt);
+// 0x47f980 native bot vf11 on the same mode-8 control list: per physics tick,
+// build the controlled car's snapshot S and run the mode switch 0x484b90.
+void control_bots(float dt);
 // Number of CarData payloads that own car bodies (vmboot body_count check).
 int car_body_instances();
 // Every live CarData payload (vmboot: shipped C_drag corpus, card 161).

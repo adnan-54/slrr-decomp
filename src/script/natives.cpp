@@ -7678,6 +7678,8 @@ void advance_sim(Vm &vm, float dt)
         ctrl_acc += step;
         if (ctrl_acc > 1e-4f) {
             game::control_cars(ctrl_acc);
+            // The bots sit after the cars on the same mode-8 list (0x47f980).
+            game::control_bots(ctrl_acc);
             ctrl_acc = 0.0f;
         }
         while (step > 0.0f) {

@@ -1,6 +1,6 @@
 ---
 id: 175
-status: todo
+status: implemented
 branch: card/175
 depends: [174]
 ---
@@ -75,3 +75,37 @@ No unit tests, no map names in engine code. Do not write axes (card 178).
 0x486020 body (176/177), 0x482910 (178), modes 2/4-8, debug tail of 0x47f980, bot_trigger (179).
 
 ## Result
+Branch `card/175`. Implemented:
+- `car.h`: `BotData::axis[0x4c]` (+0x21dc), ctor/reset scalars (+0x2554..+0x2598, +0x25d4, +0x268c,
+  +0x2710..+0x271c, +0x2724), named `BotSnapshot` with the S offsets in comments; `control_bots(float)`.
+- `car.cpp`: `bot_reset` now clears axes 1/28/29/49 and the new state (0x484a40); `bot_snapshot` builds S
+  from CarData/sim (cases 2/3/4/0x36/0x33/0x32/0x35/0x40/0xac/0xb0/0xb8/0xbc); `bot_mode3` = mode-3 arm of
+  0x484b90 + 0x485e10 with the 0x486020 call stubbed to store d/look; `control_bots` = 0x47f980 (mode 1 skip,
+  controlled ref, car lookup, snapshot, engine latch +0x25d4, mode 3, steer slew +0x2598*dt); other modes
+  no-op (cards 176-179). `control_cars` bot branch reads `ax/=127.0f` (0x43) and `ai=(int)` (0x19) from
+  `axis[]`; controller path unchanged.
+- `natives.cpp`: `control_bots(ctrl_acc)` after `control_cars` in `advance_sim`.
+- `vmboot.cpp`: card-175 block after the settle: one forced `control_bots(0.016f)` then per-bot snapshot
+  checks (pos xz == root body pos, speed == |velocity|, dt, 4 wheels, load sum > 0, gear, plan
+  `+0x268c == d - min(10*speed + 20, 55)`, bot control branch + zero throttle/brake/steer) and print.
+  The "no hull contact at rest" check now only counts the player's root/chassis bodies, since the bot
+  cars are woken for these checks.
+
+INVENTED:
+- 0x47f980: iterate `g_bots` sorted by resource id (the exe walks creation order; `g_bots` is a pointer map).
+- Vehicle y in the snapshot: wheel-hub y minus (radius + rest length - (9.81*m/n)/spring) averaged over 4
+  wheels as the exe does; plain root body y when there are no wheel records (0x4a15c0 case 2).
+- Redline when the typed car has no engine record: 7000 (exe: 7000 default, 6000 for typed+0x50 == 0).
+- c0 of the snapshot = 0 (same as reset; 0x4a15c0's source was not read for that case).
+- vmboot fixture: after the player wakeup the harness also queues "wakeup" to each bot car (axes stay 0, so
+  no script input would ever wake them) and queues "suspend" after the checks; the exe sleeps until the
+  card-178 update path runs.
+- vmboot forces one `control_bots(0.016f)` after the settle so S.dt is the checked value.
+
+Checks: `make -C src clean check` green (vmboot selfcheck 161 checks / race 151 checks, all PASSED).
+Bots print pos/speed/d/look/loads; e.g. bot0 (33.975, 31.534) speed 0.2213 d 2141.44 look 22.21 loads
+0.211/0.266/0.332/0.405.
+
+Doubts: snapshot case 2/3/4 details come from the card's table only (no rea access); the bot cars stay at
+rest because card 178 does not write the axes yet; the forced snapshot call means check 1 is evaluated
+one tick later than "first tick past beginRace".

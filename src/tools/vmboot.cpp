@@ -1114,6 +1114,9 @@ void game_init_check(Boot &boot, Checker &c)
     // both the settle block and the drive block below.
     std::vector<RigidBody *> trig_bodies;
     std::vector<Vec3> trig_start;
+    // Card 175: native-bot brains and their controlled cars (filled by the
+    // card-173 block below, consumed after the 300 settle frames).
+    std::vector<Runtime::Resource *> bot_brains, bot_cars;
     int sensor_contact_frames = 0;
     if (car_res && car_payload && car_payload->root_body) {
         RigidBody *root = car_payload->root_body;
@@ -1373,6 +1376,10 @@ void game_init_check(Boot &boot, Checker &c)
                 }
                 const game::BotData *bd = game::bot_data(brain);
                 game::CarData *cp = car ? game::car_data(*rt, car) : nullptr;
+                if (brain && car) {
+                    bot_brains.push_back(brain);
+                    bot_cars.push_back(car);
+                }
                 bool controlled_ok = bd && bd->controlled.size() == 1 &&
                                      bd->controlled[0] == car && bd->active == 0;
                 bool slot_ok = false;
@@ -1581,6 +1588,12 @@ void game_init_check(Boot &boot, Checker &c)
         unsigned rejects_before = gate_rejects(car_payload->sim.get());
         boot.runtime()->queue_event(car_res, nullptr, 0x10,
                                     Value::make_str("wakeup"));
+        // INVENTED harness fixture, as for the player: in normal play a bot car
+        // wakes on the first control input (0x498599); this card keeps the bot
+        // axes 0, so wake the bot cars here to let the springs load them.
+        for (Runtime::Resource *bcr : bot_cars)
+            boot.runtime()->queue_event(bcr, nullptr, 0x10,
+                                        Value::make_str("wakeup"));
         // Card 158 checks over the 300 settle frames: the drive hook fires once
         // per executed step with the car awake (0x47be30), and it leaves the
         // body velocities untouched (forces only, 0x504e70/0x5051e0).
@@ -1597,6 +1610,72 @@ void game_init_check(Boot &boot, Checker &c)
             loop.frame(i * 16);
             sensor_contact_frames += sensor_contacts_now();
             if (awake && process_world().time > t0) awake_steps++;
+        }
+        // Card 175: native bot tick 0x47f980. Rebuild each brain's snapshot
+        // from the current pose (a tick takes S at its start), then compare it
+        // with the car and with the mode-3 look-ahead 0x485e10.
+        {
+            const float kTickDt = 0.016f;  // the 16 ms frame's ctrlAcc
+            game::control_bots(kTickDt);
+            int bad_snap = 0, bad_plan = 0, bad_ctrl = 0;
+            for (size_t i = 0; i < bot_brains.size(); i++) {
+                const game::BotData *bd = game::bot_data(bot_brains[i]);
+                game::CarData *cp = game::car_data(*rt, bot_cars[i]);
+                if (!bd || !cp || !cp->root_body) {
+                    bad_snap++;
+                    bad_plan++;
+                    bad_ctrl++;
+                    continue;
+                }
+                const game::BotSnapshot &s = bd->snap;
+                const RigidBody *rb = cp->root_body;
+                float load_sum = 0.0f;
+                for (int w = 0; w < s.wheels; w++) load_sum += s.wheel[w][1];
+                bool snap_ok = bd->snap_valid && s.wheels == 4 &&
+                               s.pos[0] == rb->pos.x && s.pos[2] == rb->pos.z &&
+                               s.speed == vec_length(rb->vel) &&
+                               s.dt == kTickDt && load_sum > 0.0f &&
+                               s.gear == cp->gear;
+                if (!snap_ok) bad_snap++;
+                float d = 0.0f, lat = 0.0f;
+                bool proj = traffic::path_project(bd->spline, s.pos[0],
+                                                  s.pos[2], &d, &lat);
+                float look = std::min(std::fabs(s.speed) * 10.0f + 20.0f, 55.0f);
+                bool plan_ok = proj && bd->plan_d == d &&
+                               bd->plan_look == look &&
+                               bd->target_d == d - look;
+                if (!plan_ok) bad_plan++;
+                bool ctrl_ok = bd->control_ticks > 0 &&
+                               cp->throttle == 0.0f &&
+                               cp->brake_input == 0.0f &&
+                               cp->steer_input == 0.0f;
+                if (!ctrl_ok) bad_ctrl++;
+                std::printf("    bot %zu tick (0x47f980): pos %.3f %.3f, speed "
+                            "%.4f, d %.2f, look %.2f, loads %.3f/%.3f/%.3f/%.3f\n",
+                            i, (double)s.pos[0], (double)s.pos[2],
+                            (double)s.speed, (double)d, (double)look,
+                            (double)s.wheel[0][1], (double)s.wheel[1][1],
+                            (double)s.wheel[2][1], (double)s.wheel[3][1]);
+                (void)lat;
+            }
+            c.check(!bot_brains.empty() && bad_snap == 0,
+                    "every mode-3 bot snapshot matches its car after the first "
+                    "tick past beginRace (pos xz exact, |v|, dt, 4 wheels, "
+                    "loads > 0, gear; 0x47f980, " + std::to_string(bad_snap) +
+                        " bad)");
+            c.check(!bot_brains.empty() && bad_plan == 0,
+                    "every bot holds +0x268c = d - min(10|v| + 20, 55) for the "
+                    "path projection of its snapshot pos (0x485e10, " +
+                        std::to_string(bad_plan) + " bad)");
+            c.check(!bot_brains.empty() && bad_ctrl == 0,
+                    "every bot car reads the bot axes in control_cars (counter "
+                    "> 0, throttle/brake/steer 0; 0x480720/0x498300, " +
+                        std::to_string(bad_ctrl) + " bad)");
+            // The wakeup above is only for the snapshot check; sleep the bot
+            // cars again so the rest of the run keeps the player-only cost.
+            for (Runtime::Resource *bcr : bot_cars)
+                boot.runtime()->queue_event(bcr, nullptr, 0x10,
+                                            Value::make_str("suspend"));
         }
         unsigned awake_calls = g_drive_probe.calls_awake - awake_calls0;
         unsigned bad_vel = g_drive_probe.bad_velocity - bad_vel0;
@@ -1682,9 +1761,15 @@ void game_init_check(Boot &boot, Checker &c)
                 "no world contact has car_root or part_comp as a side");
         // Card 160 done-when 3: the springs carry the car at rest, so no
         // collision child hull touches the soup (0x4feb20 not triggered).
+        // Card 175 keeps the bot cars awake for its snapshot check, so only
+        // count hull contacts that involve the player's bodies.
         int hull_contacts_rest = 0;
         for (const Contact &ct : process_world().contacts)
-            if (ct.child_index >= 0) hull_contacts_rest++;
+            if (ct.child_index >= 0 &&
+                (ct.a == root || ct.b == root ||
+                 ct.a == car_payload->chassis_body ||
+                 ct.b == car_payload->chassis_body))
+                hull_contacts_rest++;
         c.check(root->collision_children.size() > 0,
                 "car_root has collision child hulls from the cfg body lines (0x4feb20, " +
                     std::to_string(root->collision_children.size()) + " hull(s))");

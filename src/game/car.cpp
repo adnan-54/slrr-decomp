@@ -56,12 +56,19 @@ float clamp01(float v)
     return v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v;
 }
 
-// 0x484a40: drop the spline (0x2604) the last AI_spline built.
+// 0x484a40: drop the spline (0x2604) the last AI_spline built and reset the
+// axes/scalars the planner reads.
 void bot_reset(BotData &b)
 {
     b.spline_points.clear();
     b.spline = traffic::Path();
     b.segments = 0;
+    // +0x21e0 steer, +0x224c throttle, +0x2250 brake, +0x22a0 clutch.
+    b.axis[1] = b.axis[28] = b.axis[29] = b.axis[49] = 0.0f;
+    b.max_grip = 0.0f;           // +0x25d8
+    b.param_floor = -1.0f;       // +0x2608
+    b.curvature_enable = -1.0f;  // +0x2724
+    b.snap_valid = false;
 }
 
 // Point-mass parallel-axis term of 0x5032d0: m * (|r|^2 E - r r^T).
@@ -2041,12 +2048,25 @@ void control_cars(float dt)
             c->brake_input = 0.0f;
             c->horn_id = 0;
         } else {
-            input::Controller *p =
-                natives::controller_of(c->slot_player[c->driver_slot]);
-            auto ax = [p](int v) { return p ? p->get_axis_val(v) : 0.0f; };
+            // A native bot driver answers getInfo 0x43 = axis*1/127 and 0x19 =
+            // (int)axis (0x480720); a controller returns its axis value.
+            Runtime::Resource *pl = c->slot_player[c->driver_slot];
+            auto bit = g_bots.find(pl);
+            const float *bax = bit != g_bots.end() ? bit->second.axis : nullptr;
+            if (bax) bit->second.control_ticks++;
+            input::Controller *p = bax ? nullptr : natives::controller_of(pl);
+            auto raw = [p, bax](int v) {
+                if (bax) return v >= 0 && v < 0x4c ? bax[v] : 0.0f;
+                return p ? p->get_axis_val(v) : 0.0f;
+            };
+            auto ax = [bax, &raw](int v) {
+                return bax ? raw(v) * 0.007874016f : raw(v);
+            };
             // ai(v): the native player answers int(val * 127) (notes/09).
-            auto ai = [&ax](int v) {
-                return (float)(int)(ax(v) * 127.0f) * (1.0f / 127.0f);
+            auto ai = [bax, &raw](int v) {
+                float r = raw(v);
+                return bax ? (float)(int)r * (1.0f / 127.0f)
+                           : (float)(int)(r * 127.0f) * (1.0f / 127.0f);
             };
             c->steer_input = ax(1);         // TURN_LEFTRIGHT
             c->throttle = ax(28);
@@ -2164,6 +2184,161 @@ void control_cars(float dt)
             if (asleep) world.wake(c->root_body);  // 0x507060 via 0x498599
         }
         c->steer_copy = c->steer_input;
+    }
+}
+
+// 0x485e10 (mode 3): look-ahead on the spline. The planner 0x486020 is a stub
+// that stores its arguments (card 176); 0x482910 (card 178) is the fallback.
+static void bot_mode3(BotData &b, const BotSnapshot &s)
+{
+    b.max_lat_accel = b.brake_mul * 1.2f;               // +0x2580 = +0x2588*1.2
+    b.grip_base = std::min(b.grip_speed * 2.0f, 1.0f);  // +0x2584
+    if (b.spline.segs.empty()) return;                  // 0x482910 no-op
+    float look = std::min(std::fabs(s.speed) * b.look_speed + b.look_base,
+                          b.look_dist);
+    float d = 0.0f, lat = 0.0f;
+    if (!traffic::path_project(b.spline, s.pos[0], s.pos[2], &d, &lat))
+        return;  // 0x482910 no-op
+    b.target_d = d - look;  // +0x268c
+    b.plan_d = d;
+    b.plan_look = look;
+}
+
+// 0x47f980's snapshot S: getInfo cases 0x36/2/3/4/0x33/0x32/0x35/0x40 on the
+// controlled car (notes/19 s8.1). Body pose/vel come from car_root; the wheel
+// records are the simulation's (same suspension state 0x4a15c0 reports).
+static void bot_snapshot(BotData &b, CarData &c, float dt)
+{
+    BotSnapshot &s = b.snap;
+    const RigidBody *body = c.root_body;
+    const Car *sim = c.sim.get();
+    Mat34 r = body->rotation();
+
+    s.gear = c.gear;
+    // getInfo(2): body pos; with >3 wheels y += (1/n) sum over the first four
+    // wheels of hub y - (radius + rest - |g| M / n / spring).
+    float y = body->pos.y;
+    bool corrected = c.wheels.size() > 3 && c.chassis_body &&
+                     c.chassis_body->def.inv_mass > 0.0f;
+    if (corrected) {
+        float m = 1.0f / c.chassis_body->def.inv_mass;
+        float n = (float)c.wheels.size();
+        float sum = 0.0f;
+        for (int i = 0; i < 4; i++) {
+            const WheelData &w = c.wheels[(size_t)i];
+            if (!(w.spring_k > 0.0f)) {
+                corrected = false;
+                break;
+            }
+            sum += w.hub[1] - (w.radius + w.rest_len -
+                               (9.81f * m / n) / w.spring_k);
+        }
+        if (corrected) y += sum / n;
+    }
+    // INVENTED fallback when the wheel records are missing: plain body y.
+    s.pos[0] = body->pos.x;
+    s.pos[1] = y;
+    s.pos[2] = body->pos.z;
+
+    // getInfo(3): velocity direction; |v| is the 3D speed.
+    Vec3 v = body->vel;
+    s.speed = vec_length(v);
+    float vn = sqrtf(v.x * v.x + v.z * v.z);
+    s.vel_dir[0] = vn != 0.0f ? v.x / vn : 0.0f;
+    s.vel_dir[1] = 0.0f;
+    s.vel_dir[2] = vn != 0.0f ? v.z / vn : 0.0f;
+
+    // getInfo(4): -(R third column), flattened and normalised.
+    Vec3 fwd{-r.m[2], -r.m[6], -r.m[10]};
+    float fn = sqrtf(fwd.x * fwd.x + fwd.z * fwd.z);
+    s.fwd[0] = fn != 0.0f ? fwd.x / fn : 0.0f;
+    s.fwd[1] = 0.0f;
+    s.fwd[2] = fn != 0.0f ? fwd.z / fn : 0.0f;
+
+    // getInfo(0x33): local angular velocity R^T omega; getInfo(0x32) -> Euler.
+    Vec3 omega = mat_tvec(r, body->angular_velocity());
+    s.ang_vel[0] = omega.x;
+    s.ang_vel[1] = omega.y;
+    s.ang_vel[2] = omega.z;
+    mat_to_ypr(r, s.euler);
+
+    // getInfo(0x35): min(n, 4) wheels, 6 floats each:
+    // spin, load/(M|g|), friction * ground, slip velocity xyz.
+    int n = std::min((int)c.wheels.size(), 4);
+    float inv_mass = c.chassis_body ? c.chassis_body->def.inv_mass : 0.0f;
+    s.wheels = n;
+    for (int i = 0; i < n; i++) {
+        float *f = s.wheel[i];
+        if (!sim || (size_t)i >= sim->wheels.size()) continue;
+        const Wheel &w = sim->wheels[(size_t)i];
+        f[0] = w.spin;  // W+0xc0
+        f[1] = w.contact ? w.load * inv_mass / 9.81f : 0.0f;  // S+0xf4
+        float grip = w.contact ? w.ground_friction : 1.0f;    // ground +0x50
+        f[2] = b.wheel_grip[i] != 0.0f
+                   ? w.friction_eff * grip / b.wheel_grip[i]     // W+0x6c
+                   : 0.0f;
+        f[3] = w.slip_velocity.x;  // W+0x140
+        f[4] = w.slip_velocity.y;  // W+0x144
+        f[5] = w.slip_velocity.z;  // W+0x148
+    }
+
+    // getInfo(0x40): (w2 + w3 - w0 - w1) z / 2, 2.0 without wheels.
+    s.wheelbase = 2.0f;
+    if (c.wheels.size() >= 4)
+        s.wheelbase = (c.wheels[2].hub[2] + c.wheels[3].hub[2] -
+                       c.wheels[0].hub[2] - c.wheels[1].hub[2]) * 0.5f;
+
+    s.dt = dt;
+    s.rpm = c.rpm_smoothed * 9.549296f;
+    // INVENTED: the exe's no-engine defaults 7000 / 6000 (typed+0x50 == 0) are
+    // not modelled; the engine's e+0x1c is what card 175 needs.
+    s.redline = c.rpm_limit > 0.0f ? c.rpm_limit : 7000.0f;
+    s.nitro = c.tank_nitro > 0.0f && c.consumption_nitro > 0.0f
+                  ? c.nitro / c.tank_nitro
+                  : 0.0f;
+    s.gear_axis = b.axis[50];  // +0x22a4
+    s.c0 = 0;                  // the planner's speed-factor field starts clear
+}
+
+// 0x47f980 native bot vf11: runs on the mode-8 control list (0x47bc20) after
+// the cars (creation order), once per physics tick with dt = ctrlAcc.
+void control_bots(float dt)
+{
+    // INVENTED: g_bots is keyed by pointer; the exe's list is creation order,
+    // which the resource id follows.
+    std::vector<std::pair<uint32_t, BotData *>> order;
+    order.reserve(g_bots.size());
+    for (auto &kv : g_bots) order.emplace_back(kv.first->id, &kv.second);
+    std::sort(order.begin(), order.end(),
+              [](const std::pair<uint32_t, BotData *> &a,
+                 const std::pair<uint32_t, BotData *> &b) {
+                  return a.first < b.first;
+              });
+    for (auto &e : order) {
+        BotData &b = *e.second;
+        if (b.mode == 1) continue;  // AI_suspend
+        // shortcut: src control refs never die (the exe drops dead +0x2310
+        // entries; the camera event +0x218c path is not modelled).
+        if (b.active < 0 || b.active >= (int)b.controlled.size()) continue;
+        Runtime::Resource *car = b.controlled[(size_t)b.active];
+        auto it = car ? g_cars.find(car) : g_cars.end();
+        if (it == g_cars.end()) continue;  // getInfo on a non-car fails
+        CarData &c = *it->second;
+        if (!c.root_body) continue;
+        bot_snapshot(b, c, dt);
+        b.snap_valid = true;
+        // +0x25d4 engine-running latch.
+        if (c.rpm_smoothed > c.idle_omega)
+            b.engine_running = 1;
+        else if (c.rpm_smoothed < 1.0f)
+            b.engine_running = 0;
+        // 0x484b90 mode switch, then the steer slew +0x21e0.
+        float old = b.axis[1];
+        if (b.mode == 3) bot_mode3(b, b.snap);
+        // shortcut: modes 2/4..8 (race/grid/traffic) and the default 0x482910
+        // controls are cards 176-179; they leave the new steer unchanged.
+        float r = b.steer_rate * b.snap.dt;
+        b.axis[1] = std::clamp(b.axis[1], old - r, old + r);
     }
 }
 
