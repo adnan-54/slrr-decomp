@@ -3521,6 +3521,82 @@ void game_init_check(Boot &boot, Checker &c)
                 "after the finish key no world body belongs to a destroyed bot "
                 "car (Bot.deleteCar, 0x49beb0; got " +
                     std::to_string(bot_roots) + ")");
+        // Card 194: second career race from the EventList after the first
+        // finish. Track.exit cleanup (Track.java:1074-1160: destroyBots,
+        // releaseCar, map.unload, remSceneElements) unloaded the map ground;
+        // EventList.eGen (EventList.java:22,537-545) CMD_RACE 0x10E must enter
+        // a fresh Track with a new ground and bots.
+        // INVENTED: the 1200-frame EventList settle (the end-of-race handler
+        // runs to completion first), the 3000-frame switch budget and the 500
+        // frames of Track activity after the switch.
+        const int kSecondSettle = 1200, kSecondBudget = 3000, kSecondTail = 500;
+        frames(kSecondSettle);
+        Value ev;
+        std::string eerr;
+        Object *e_gen = nullptr;
+        std::string second_from = "(none)";
+        if (actual_state(boot, &ev, &eerr)) {
+            second_from = object_class(boot, ev.obj);
+            Value gv;
+            if (is_a(boot, ev.obj->cls, "java.game.EventList") &&
+                boot.vm()->get_instance_field(ev.obj, "eGen", &gv, &eerr) &&
+                gv.kind == Value::Obj)
+                e_gen = gv.obj;
+        }
+        if (e_gen) {
+            // Same command as the first race: cursor click on the Generator
+            // Race button, osd_command fallback (EventList.java:537-545).
+            clicks.push_back({e_gen, 0x10E, "second race cmd 0x10E",
+                              "THRD-EVENT-RACE-2", 0, 0});
+            for (int step = 0; !clicks.empty() && step < 60; step++) {
+                drive_clicks(boot, clicks, c, &cursor_steps);
+                frames(1);
+            }
+        }
+        std::printf("  second race: cmd 0x10E -> %s\n", second_from.c_str());
+        int second_frames = 0;
+        bool second_track = false;
+        for (; second_frames < kSecondBudget; second_frames++) {
+            Value sv;
+            std::string serr;
+            if (actual_state(boot, &sv, &serr) &&
+                is_a(boot, sv.obj->cls, "java.game.Track")) {
+                second_track = true;
+                break;
+            }
+            frames(1);
+        }
+        if (second_track) frames(kSecondTail);
+        Value sv;
+        std::string serr;
+        const bool second_ok = actual_state(boot, &sv, &serr);
+        const std::string second_cls = second_ok ? object_class(boot, sv.obj) : "(none)";
+        int second_bots = 0;
+        for (const game::CarData *cp : game::car_payloads())
+            if (cp->root_body) second_bots++;
+        int second_ground = 0;
+        for (RigidBody *b : process_world().statics)
+            if (b->def.shape.type == SHAPE_MESH && b->def.shape.mesh) second_ground++;
+        std::printf("  second race: active section %s after %d frame(s); world roots "
+                    "active %zu, sleeping %zu; native bot payloads %d; static map "
+                    "grounds %d\n",
+                    second_cls.c_str(), second_frames,
+                    process_world().bodies.size(), process_world().sleeping.size(),
+                    second_bots, second_ground);
+        c.check(second_track && second_ok &&
+                    is_a(boot, sv.obj->cls, "java.game.Track"),
+                "after the second race command the active section is java.game.Track "
+                "(got " + second_cls + ")");
+        int second_failed = 0;
+        for (const natives::ThreadInfo &t : natives::thread_report(*boot.vm()))
+            if (!t.error.empty()) second_failed++;
+        c.check(second_failed == 0,
+                "no failed thread over the second-race block (got " +
+                    std::to_string(second_failed) + ")");
+        c.check(second_ground > 0,
+                "the second Track has a map ground again (SHAPE_MESH static body, "
+                "car.cpp:1733 drive_cars lookup; got " +
+                    std::to_string(second_ground) + ")");
         }
     }
 

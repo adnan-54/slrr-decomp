@@ -1,7 +1,7 @@
 ---
 id: 194
-status: todo
-branch:
+status: implemented
+branch: card/194
 depends: [193]
 ---
 # vmboot: second career race from the EventList after the first finish
