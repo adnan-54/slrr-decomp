@@ -1,7 +1,7 @@
 ---
 id: 181
-status: todo
-branch:
+status: implemented
+branch: card/181
 depends: [178]
 ---
 # `native bot` obstacle solver (global `DAT_005fe1f4`, 0x38 bytes): 0x40ab10 / 0x409fa0 / 0x40a6f0 / 0x40a8a0 + heap 0x46b5e0 / 0x40abe0
