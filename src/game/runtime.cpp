@@ -1149,6 +1149,40 @@ void Runtime::unregister_callback(Handle *h, int mode)
     }
 }
 
+// 0x47ba10 Game__runAnimateCallbacks(dt), ECX = Game: walk the mode-0x1c list,
+// next read before the body runs (a body may unregister its node).
+void Runtime::run_animate_callbacks(float)
+{
+    for (auto it = callbacks_.begin(); it != callbacks_.end();) {
+        auto nx = std::next(it);
+        Callback *cb = it->get();
+        if (cb->mode != 0x1c) {
+            it = nx;
+            continue;
+        }
+        if (cb->handle.id == 0) {
+            callbacks_.erase(it);      // delete node; count--
+            it = nx;
+            continue;
+        }
+        Resource *inst = cb->handle.target;
+        // shortcut: no resident bit (inst+0x7c); a bound target is live.
+        if (!inst) {
+            it = nx;
+            continue;
+        }
+        if (inst->traffic) {
+            // 0x4bac10 type_ground vf13: 0x41b290 with the process world time.
+            inst->traffic->step(process_world().time);
+        } else {
+            // shortcut: script "animate" and other native vf13 not dispatched;
+            // no shipped script registers mode 0x1c (only Chassis.java calls
+            // unregisterCallbacks).
+        }
+        it = nx;
+    }
+}
+
 Object *Runtime::wrap(Resource *r, std::string *err)
 {
     if (!r) return nullptr;

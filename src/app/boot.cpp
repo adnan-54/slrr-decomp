@@ -207,9 +207,18 @@ void FrameLoop::frame(int now_ms)
         last_vm_ms_ = now_ms;
     }
 
-    // 0x47d760: per-frame deferred flush, then listener + voice service,
-    // both outside the 15 ms control gate.
-    if (rt) rt->flush_deferred();  // 0x47d070
+    // 0x47d760: animate pass over the mode-0x1c list, then the per-frame
+    // deferred flush, then listener + voice service, outside the 15 ms gate.
+    // frame_dt = (now - previous frame) * 0.001, capped at 0.1 (0x5da468).
+    if (rt) {
+        const float frame_dt =
+            std::min((float)(now_ms - last_frame_ms_) * 0.001f, 0.1f);
+        last_frame_ms_ = now_ms;
+        rt->run_animate_callbacks(frame_dt);  // 0x47ba10
+        rt->flush_deferred();                 // 0x47d070
+    } else {
+        last_frame_ms_ = now_ms;
+    }
     // No camera in src = the exe's DAT_005f1e44 <= 0 branch: listener at the origin.
     audio::SfxService &sfx = audio::sfx_service();
     const float listener[3] = {0.0f, 0.0f, 0.0f};

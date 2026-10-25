@@ -797,6 +797,14 @@ void Graph::init(float t)
     for (int i = 1; i <= m; i++) road_enabled[(size_t)i] = 1;
 }
 
+// 0x41b290 Traffic step.
+void Graph::step(float t)
+{
+    sim_time = t;  // +0x84
+    // shortcut: the event heap, the 4 active lists and the car notify list only
+    // hold traffic cars; src has no car pool (notes/28 §3), so they stay empty.
+}
+
 // 0x41a000 Traffic__load.
 bool Graph::load(const uint8_t *data, size_t size, size_t *consumed, std::string *err)
 {

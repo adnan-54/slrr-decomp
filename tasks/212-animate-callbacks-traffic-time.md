@@ -1,7 +1,7 @@
 ---
 id: 212
-status: todo
-branch:
+status: implemented
+branch: card/212
 depends: [211]
 ---
 # Game: animate callback walk (0x47ba10) + ground traffic time step

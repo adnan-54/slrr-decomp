@@ -65,6 +65,7 @@ struct Graph {
     // INVENTED: ids instead of pointers; bounds checks the exe does not have.
     bool load(const uint8_t *data, size_t size, size_t *consumed, std::string *err);
     void init(float t);   // 0x419da0: per-node init pass after Traffic__load
+    void step(float t);   // 0x41b290: sim_time = t (+0x84); car pool not ported
     size_t node_count() const;  // eq + light + road + lane
     // 0x419050: cross_eq first, then cross_light; first strict minimum wins.
     const Cross *nearest_cross(float x, float y, float z, float dist, bool yflag) const;

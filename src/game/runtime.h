@@ -266,6 +266,9 @@ class Runtime {
     void register_callback(Handle *h, int mode);
     // 0x47e390: unlink the handle of the first node of `mode` with id == h->id.
     void unregister_callback(Handle *h, int mode);
+    // 0x47ba10 Game__runAnimateCallbacks: one pass over the mode-0x1c list per
+    // frame; reaps id-0 nodes, then native vf13(native_obj, dt) or script animate.
+    void run_animate_callbacks(float dt);
     // Wrapper object selected like FUN_004e7320 (GameRef/RenderRef/ResourceRef).
     Object *wrap(Resource *r, std::string *err);
     // Script class chain lookup used by GameRef.isScripted.

@@ -650,7 +650,7 @@ bool g_city_mode = false;
 // :1693-1700); Valocity.java:30 builds map = new GroundRef(maps.city:1r) and
 // :41 sets Integrator.isCity. The ground's .trc went through Traffic__load
 // 0x41a000 -> Traffic__init 0x419da0 at the first ground_traffic lookup.
-void city_checks(Boot &boot, Checker &c, Object *state)
+void city_checks(Boot &boot, Checker &c, Object *state, FrameLoop &loop)
 {
     std::string e;
     const std::string cls = state ? object_class(boot, state) : "(none)";
@@ -707,6 +707,18 @@ void city_checks(Boot &boot, Checker &c, Object *state)
     c.check(graph->max_road_width > 0.0f,
             "city: Traffic__init set max_road_width (0x419da0, got " +
                 std::to_string((double)graph->max_road_width) + ")");
+
+    // 0x47ba10 walks the mode-0x1c list every frame; the ground's node was
+    // registered by load_ground above (lazy here, at instance create in the
+    // exe). Run frames so 0x4bac10 -> 0x41b290 writes the world time to +0x84.
+    // INVENTED harness: the extra frames make the write observable.
+    const float t0 = process_world().time;
+    for (int k = 0; k < 3; k++) loop.frame(loop.last_control_ms() + 16);
+    c.check(graph->sim_time == process_world().time && process_world().time > t0,
+            "city: Traffic sim_time is the process world time after the animate "
+            "pass (0x47ba10 -> 0x4bac10 -> 0x41b290, got " +
+                std::to_string((double)graph->sim_time) + " vs " +
+                std::to_string((double)process_world().time) + ")");
 
     int failed = 0;
     for (const natives::ThreadInfo &t : natives::thread_report(*boot.vm()))
@@ -1010,7 +1022,7 @@ void game_init_check(Boot &boot, Checker &c)
     // Card 211: city mode stops after the city checks; the Track/race checks
     // below are for the EventList path only.
     if (g_city_mode) {
-        city_checks(boot, c, have_state_after ? state_after.obj : nullptr);
+        city_checks(boot, c, have_state_after ? state_after.obj : nullptr, loop);
         return;
     }
 
