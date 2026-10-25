@@ -2474,9 +2474,10 @@ void game_init_check(Boot &boot, Checker &c)
                 "Up (axis 28) gives throttle > 0.9 (got " +
                     std::to_string((double)car_payload->throttle) + ")");
         c.check(awake, "throttle input wakes the sleeping car_root (0x498599)");
-        // The Left/Right checks test the raw axis 1 mapping: "steerhelp 0"
-        // (0x4a2e60, as bots send) sets flag 0x200, so 0x498a79 skips the
-        // 0x498a6e..0x498d44 steer help and +0x1ddc stays the axis value.
+        // INVENTED harness fixture: the Left/Right checks test the raw axis 1
+        // mapping: "steerhelp 0" (0x4a2e60, as bots send) sets flag 0x200, so
+        // 0x498a79 skips the 0x498a6e..0x498d44 steer help and +0x1ddc stays
+        // the axis value.
         const float help = car_payload->steer_help;
         game::car_command(*rt, car_res, 0x10, Value::make_str("steerhelp 0"));
         key(203, true);

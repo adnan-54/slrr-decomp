@@ -1,7 +1,7 @@
 ---
 id: 195
-status: todo
-branch:
+status: implemented
+branch: card/195
 depends: []
 ---
 # cleanup: INVENTED markers (cards 188/190) and 0x567630 singular case

@@ -1318,7 +1318,8 @@ bool Runtime::raycast(Resource *root, const float from[3], const float to[3],
 
 // ---- screen pick (0x4eb000) -----------------------------------------------
 
-// 0x567630: general 4x4 inverse (row-major); identity when singular.
+// 0x567630: general 4x4 inverse (row-major); no singular test (det 0 -> inf/NaN).
+// INVENTED: 1/det instead of rcpps + one Newton step (rcpps is CPU-dependent).
 static render::Mat4 mat4_inverse(const render::Mat4 &a)
 {
     const float *m = a.m;
@@ -1356,7 +1357,6 @@ static render::Mat4 mat4_inverse(const render::Mat4 &a)
     inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] +
               m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
     float det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
-    if (det == 0.0f) return render::mat4_identity();
     det = 1.0f / det;
     render::Mat4 o;
     for (int i = 0; i < 16; i++) o.m[i] = inv[i] * det;
@@ -1423,6 +1423,7 @@ bool Runtime::screen_pick(float cx, float cy, PickHit *hit, float far_out[3],
             Resource *cam = cup.get();
             if (cam->type != 3 || cam->camera_viewport != vp) continue;
             // 0x461dd0: P from fov/near/far, IP = P^-1, CM from the bone.
+            // cos/sin order verified (asm 0x461f4c cosf, 0x461f5b sinf, DIVSS cos/sin).
             const float deg = cam->camera_fov * 0.017453292f;
             const float rad = cam->camera_fov * (3.14159265f / 360.0f);
             const float k = sqrtf(sqrtf(cosf(rad) / sinf(rad)));
