@@ -1,7 +1,7 @@
 ---
 id: 189
-status: todo
-branch:
+status: implemented
+branch: card/189
 depends: []
 ---
 # physics: PhysicsRef box/sphere shapes + segment raycast over the resource tree (pick core)

@@ -1998,10 +1998,7 @@ bool ph_create_box(Vm &, const Args &a, Value *out, std::string *err)
         !get_f("PhysicsRef.createBox", a[3], &y, err) ||
         !get_f("PhysicsRef.createBox", a[4], &z, err))
         return false;
-    (void)x;
-    (void)y;
-    (void)z;
-    // 0x4f7d60: box half extents = x*0.5f, y*0.5f, z*0.5f; not stored (no physics).
+    // 0x4f7d60: box half extents = x*0.5f, y*0.5f, z*0.5f.
     Runtime *rt = game_rt();
     Runtime::Handle *h = rt->handle(o);           // 0x4ecc70
     Runtime::Resource *parent = value_resource(a[1]);
@@ -2012,6 +2009,10 @@ bool ph_create_box(Vm &, const Args &a, Value *out, std::string *err)
     if (!inst) return true;  // 0x518a40 no free slot: the exe faults (INVENTED)
     inst->type = 2;          // 0x524620 creation info: INSTANCE_PHYSICS
     inst->name = alias;
+    inst->pick_shape = 5;    // shape+8: box
+    inst->pick_half[0] = x * 0.5f;
+    inst->pick_half[1] = y * 0.5f;
+    inst->pick_half[2] = z * 0.5f;
     rt->bind(h, inst);       // 0x4e8a50 first 0x40cac0
     // shortcut: rigid body, 0x218 physics object and typed+0xb4 link not modelled;
     // upgrade when the physics world exists (0x4f7830/0x4f7b50/0x4f7d60/0x524620).
@@ -2028,8 +2029,7 @@ bool ph_create_sphere(Vm &, const Args &a, Value *out, std::string *err)
     if (!want("PhysicsRef.createSphere", a, 4, err) ||
         !get_f("PhysicsRef.createSphere", a[2], &r, err))
         return false;
-    (void)r;
-    // 0x4f7d60: sphere radius = r; not stored (no physics).
+    // 0x4f7d60: sphere radius = r.
     Runtime *rt = game_rt();
     Runtime::Handle *h = rt->handle(o);           // 0x4ecc70
     Runtime::Resource *parent = value_resource(a[1]);
@@ -2040,24 +2040,12 @@ bool ph_create_sphere(Vm &, const Args &a, Value *out, std::string *err)
     if (!inst) return true;  // 0x518a40 no free slot: the exe faults (INVENTED)
     inst->type = 2;          // 0x524620 creation info: INSTANCE_PHYSICS
     inst->name = alias;
+    inst->pick_shape = 1;    // shape+8: sphere
+    inst->pick_radius = r;
     rt->bind(h, inst);       // 0x4e8a50 first 0x40cac0
     // shortcut: rigid body, 0x218 physics object and typed+0xb4 link not modelled;
     // upgrade when the physics world exists (0x4f7830/0x4f7b50/0x4f7d60/0x524620).
     return true;
-}
-
-// INVENTED: the exe reads/writes the attached rigid body's pose (state = typed+0xb4,
-// pos at state+0x64+idx*0xd4, ypr at state+0xa4+idx*0xd4, refreshed by 0x504180);
-// src/ has no body service, so a physics instance keeps a stand-in pose here.
-struct PhysicsPose {
-    float pos[3] = {};
-    float ypr[3] = {};
-};
-// shortcut: entries are never freed (no instance-destroy hook yet).
-std::map<Runtime::Resource *, PhysicsPose> &physics_poses()
-{
-    static std::map<Runtime::Resource *, PhysicsPose> m;
-    return m;
 }
 
 // 0x4e1c40 PhysicsRef.getPos: new Vector3 from the scripted resource pose.

@@ -69,6 +69,12 @@ class Runtime {
         float vel[3] = {};
         float ang[3] = {};
         float detail = 0.0f;
+        // Collision shape of a physics instance, from PhysicsRef.createBox /
+        // createSphere (0x4e16a0/0x4e1880 -> 0x4f7d60): shape+8 kind 1 sphere,
+        // 5 box. INVENTED storage: the exe keeps it in the body's shape record.
+        int pick_shape = 0;
+        float pick_half[3] = {};
+        float pick_radius = 0.0f;
         // java.render.Text state, render-instance typed data +0x16c..+0x17c
         // (Text__create 0x4e8f40). src has no typed-data/bone service yet, so it
         // lives on the bound Resource. INVENTED mapping; same as card 062.
@@ -152,6 +158,16 @@ class Runtime {
     // 0x4dc910 GfxEngine.setGlobalEnvmap rebinds it via FUN_0040cac0;
     // Game__renderFrame 0x421920 step 2 resolves it to a texture. No reader yet.
     Handle global_envmap;
+
+    // 0x4eb000 pick record: ref = body+0x44 link (the physics instance's
+    // parent), body = the physics instance; t is normalized from the `to` end
+    // of the segment; point is body-local (0x4fe1a0 tail).
+    struct PickHit {
+        Resource *ref = nullptr;
+        Resource *body = nullptr;
+        float t = 0.0f;
+        float point[3] = {};
+    };
 
     Runtime(ResourceManager &resources, Vm *vm = nullptr, ClassPath *classes = nullptr);
     ~Runtime();
@@ -251,6 +267,10 @@ class Runtime {
     bool class_is_a(const std::string &cls, const std::string &base);
     // 0x47c640 Game__getInfo(h, 0x39) -> 0x4bb570: the ground's traffic graph or null.
     traffic::Graph *ground_traffic(Handle *h);
+    // 0x4fe1a0 pick raycast over the resource tree: 0x4fddf0 node walk,
+    // 0x4fc140 body hit, 0x5007c0 sphere and 0x500580 box tests. hit == null
+    // means first-only (the exe's t_out == NULL). Returns whether anything hit.
+    bool raycast(Resource *root, const float from[3], const float to[3], PickHit *hit);
     // 0x55aca0 -> 0x55bec0: load "<dir>\<base>.class" on demand for a record's
     // `script <dir>\<Name>.class` ref; returns the fresh ClassState, null on
     // failure.
@@ -285,3 +305,14 @@ class Runtime {
 // 0x4d4af0 type_trigger vf7: move/resize a trigger sensor body from
 // "x,y,z,yaw,pitch,roll,r" (no-op when r has no trigger body).
 void move_trigger(Runtime::Resource *r, const std::string &params);
+
+// INVENTED: the exe reads/writes the attached rigid body's pose (state =
+// typed+0xb4, pos at state+0x64+idx*0xd4, ypr at state+0xa4+idx*0xd4,
+// refreshed by 0x504180); src has no body service, so a physics instance
+// keeps a stand-in pose here.
+struct PhysicsPose {
+    float pos[3] = {};
+    float ypr[3] = {};
+};
+// shortcut: entries are never freed (no instance-destroy hook yet).
+std::map<Runtime::Resource *, PhysicsPose> &physics_poses();

@@ -1138,3 +1138,174 @@ bool Runtime::class_is_a(const std::string &cls, const std::string &base)
     }
     return false;
 }
+
+// ---- pick raycast (0x4fe1a0) ----------------------------------------------
+
+// shortcut: entries are never freed (no instance-destroy hook yet).
+std::map<Runtime::Resource *, PhysicsPose> &physics_poses()
+{
+    static std::map<Runtime::Resource *, PhysicsPose> m;
+    return m;
+}
+
+// 0x4b1ef0: 0 -> 0, negative -> -1, positive -> 1.
+static float pick_sign(float v)
+{
+    return v < 0.0f ? -1.0f : (v > 0.0f ? 1.0f : 0.0f);
+}
+
+// 0x5007c0: ray o + dir*s against a sphere; returns the segment parameter
+// measured from the `to` end (dir runs from -> to, len = |to - from|) in
+// [0,1], or -1 on a miss.
+static float ray_sphere(Vec3 o, Vec3 dir, float len, Vec3 c, float r)
+{
+    Vec3 v = c - o;
+    float p = vec_dot(dir, v);
+    if (p < -r || p > len + r) return -1.0f;
+    float r2 = r * r;
+    float q = vec_dot(v, v) - p * p;
+    if (q <= r2 && (p >= 0.0f || p * p + q <= r2) &&
+        (p <= len || (p - len) * (p - len) + q <= r2)) {
+        float t = ((len - p) - sqrtf(r2 - q)) / len;
+        return t > 0.0f ? t : 0.0f;
+    }
+    return -1.0f;
+}
+
+// 0x500580: segment a->b in box-local space against half extents h; parameter
+// measured from b, -1 on a miss. Keeps the exe's seed and min/max order
+// (y seeded from its own axis, then x and z folded in).
+static float slab(Vec3 a, Vec3 b, float hx, float hy, float hz)
+{
+    const float h[3] = {hx, hy, hz};
+    const float av[3] = {a.x, a.y, a.z};
+    const float bv[3] = {b.x, b.y, b.z};
+    for (int k = 0; k < 3; k++)
+        if (!(av[k] <= h[k] || bv[k] <= h[k]) ||
+            !(-h[k] <= av[k] || -h[k] <= bv[k]))
+            return -1.0f;
+    const float d[3] = {a.x - b.x, a.y - b.y, a.z - b.z};
+    float lo[3], hi[3];
+    for (int k = 0; k < 3; k++) {
+        if (d[k] == 0.0f) {
+            lo[k] = 0.0f;
+            hi[k] = 1.0f;
+            continue;
+        }
+        float s = pick_sign(d[k]);
+        lo[k] = (-s * h[k] - bv[k]) / d[k];
+        hi[k] = (s * h[k] - bv[k]) / d[k];
+    }
+    float lo_t = d[1] == 0.0f ? 0.0f : lo[1];
+    float hi_t = d[1] == 0.0f ? 1.0f : hi[1];
+    hi_t = fminf(hi_t, hi[0]);
+    hi_t = fminf(hi_t, hi[2]);
+    lo_t = fmaxf(lo_t, lo[0]);
+    lo_t = fmaxf(lo_t, lo[2]);
+    if (!(lo_t <= hi_t)) return -1.0f;
+    return lo_t > 0.0f ? lo_t : 0.0f;
+}
+
+struct PickRay {
+    Vec3 from, to, dir;
+    float len = 0.0f;
+    float best_t = 1.0f;
+    bool first_only = true;
+    Runtime::PickHit *out = nullptr;
+};
+
+static bool body_hit(PickRay &ray, Runtime::Resource *body);
+
+// 0x4fddf0: walk the resource tree, testing kind-1 children and kind-2 bodies.
+static bool walk(PickRay &ray, Runtime::Resource *node)
+{
+    if (node->type != 2) {
+        // 0x4fd110 triangle test of the node's own mesh: not ported (INVENTED).
+        if ((node->flags & 0x40u) != 0) return false;
+        for (Runtime::Resource *child : node->children) {
+            if (child->type != 1 && child->type != 2) continue;
+            // INVENTED: the child+0xb0 bounds cull is skipped, src has no node bounds.
+            if (walk(ray, child) && ray.first_only) return true;
+        }
+        return false;
+    }
+    // body+0x58 flags 0x4020 are not modelled: treated as 0.
+    if (node->pick_shape == 0) return false;
+    return body_hit(ray, node);
+}
+
+// 0x4fc140: one physics body: bound-sphere cull, child bodies, then the shape.
+static bool body_hit(PickRay &ray, Runtime::Resource *body)
+{
+    // INVENTED: the exe's child bodies always carry a shape; src children may not.
+    if (body->pick_shape == 0) return false;
+    PhysicsPose &pose = physics_poses()[body];
+    Vec3 pos{pose.pos[0], pose.pos[1], pose.pos[2]};
+    float hx = body->pick_half[0], hy = body->pick_half[1], hz = body->pick_half[2];
+    // INVENTED bound radius (shape+0xc not traced): |half extents| for a box,
+    // the radius for a sphere.
+    float bound = body->pick_shape == 5
+                      ? sqrtf(hx * hx + hy * hy + hz * hz)
+                      : body->pick_radius;
+    float t0 = ray_sphere(ray.from, ray.dir, ray.len, pos, bound);
+    if (!(0.0f <= t0 && t0 <= ray.best_t)) return false;
+    for (Runtime::Resource *child : body->children)
+        if (body_hit(ray, child)) return true;
+    float t;
+    if (body->pick_shape == 5) {
+        // 0x4af9a0 body-local: R^T*(p - pos); box test on the segment.
+        Mat34 rot;
+        euler_to_mat(&rot, pose.ypr);
+        Vec3 a = mat_tvec(rot, ray.from - pos);
+        Vec3 b = mat_tvec(rot, ray.to - pos);
+        t = slab(a, b, hx, hy, hz);
+        if (t <= 0.0f) return false;
+    } else {
+        // shape kind 1 sphere: the bound-sphere parameter is the hit.
+        // Kind 6/7 hulls are not stored (INVENTED skip).
+        t = t0;
+    }
+    if (t < ray.best_t) {
+        ray.best_t = t;
+        if (ray.out) {
+            ray.out->ref = body->parent;  // body+0x44 owner link
+            ray.out->body = body;
+            ray.out->t = t;
+            // hit_index/hit_sub/normal are not part of PickHit.
+        }
+    }
+    return false;
+}
+
+// 0x4fe1a0: hit == NULL selects first-only (the exe's t_out == NULL).
+bool Runtime::raycast(Resource *root, const float from[3], const float to[3],
+                      PickHit *hit)
+{
+    if (!root) return false;
+    PickRay ray;
+    ray.from = Vec3{from[0], from[1], from[2]};
+    ray.to = Vec3{to[0], to[1], to[2]};
+    Vec3 d = ray.to - ray.from;
+    ray.len = vec_length(d);
+    ray.dir = d * (1.0f / (ray.len > 1e-6f ? ray.len : 1e-6f));
+    ray.first_only = hit == nullptr;
+    ray.out = hit;
+    if (hit) *hit = PickHit{};
+    bool r = walk(ray, root);
+    if (ray.first_only) return r;
+    if (ray.best_t < 1.0f) {
+        Vec3 p = (ray.from - ray.to) * ray.best_t + ray.to;
+        if (hit->body) {  // 0x4fe1a0 tail: world -> body-local
+            PhysicsPose &pose = physics_poses()[hit->body];
+            Mat34 rot;
+            euler_to_mat(&rot, pose.ypr);
+            p = mat_tvec(rot, p - Vec3{pose.pos[0], pose.pos[1], pose.pos[2]});
+        }
+        hit->t = ray.best_t;
+        hit->point[0] = p.x;
+        hit->point[1] = p.y;
+        hit->point[2] = p.z;
+        return true;
+    }
+    return false;
+}
