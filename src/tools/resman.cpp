@@ -538,6 +538,8 @@ static int selfcheck(const char *game_dir)
         c.check(map_ok,
                 "every type-1 city.rpk record parses" + (map_ok ? "" : ": " + map_err));
         size_t road_extra_bad = 0, road_phys_bad = 0, road_child_bad = 0;
+        size_t road_bind_bad = 0;
+        std::string road_bind_why;
         std::set<std::string> road_values;
         for (const RpkMapObject &obj : objects) {
             std::string at = obj.rec.name;
@@ -577,6 +579,12 @@ static int selfcheck(const char *game_dir)
                 if (!obj.rec.has_extra) road_extra_bad++;
                 if (obj.phys) road_phys_bad++;
                 if (obj.children != 0) road_child_bad++;
+                // 0x41a3e0: the object binds itself; rec.id stands in for the
+                // instance id (the exe passes the created object).
+                if (!graph.bind_object(obj.params, obj.rec.id)) {
+                    road_bind_bad++;
+                    road_bind_why = at + ": bind returned 0";
+                }
                 int32_t kind = 0, gv = 0, idx = 0;
                 if (!ped::parse_road_params(obj.params, &kind, &gv, &idx)) {
                     road_bad++;
@@ -616,6 +624,19 @@ static int selfcheck(const char *game_dir)
         c.check(kinds[1] == 484 && kinds[2] == 53 && kinds[3] == 218,
                 "road kinds 484/53/218 = city.trc pools (got " + std::to_string(kinds[1]) +
                     "/" + std::to_string(kinds[2]) + "/" + std::to_string(kinds[3]) + ")");
+        c.check(road_bind_bad == 0,
+                "bind_object returns a node for every road object" +
+                    (road_bind_bad ? ": " + road_bind_why : ""));
+        size_t unbound = 0;
+        for (const traffic::Road &road : graph.roads)
+            if (!road.object) unbound++;
+        for (const traffic::Cross &cross : graph.cross_eq)
+            if (!cross.object) unbound++;
+        for (const traffic::Cross &cross : graph.cross_light)
+            if (!cross.object) unbound++;
+        c.check(unbound == 0,
+                "every pool node is bound once, 484/53/218 (got " +
+                    std::to_string(unbound) + " unbound)");
         c.check(road_extra_bad == 0,
                 "every road object has the 48-byte bounds block (got " +
                     std::to_string(road_extra_bad) + " without)");

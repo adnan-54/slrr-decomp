@@ -38,6 +38,8 @@ struct Cross {                  // ctCross 0x40e850
     float pos[3] = {}; uint32_t k30 = 0;
     float radius = 0;                 // +0x34 (cross_init 0x415650)
     uint32_t k38 = 0;                 // +0x38 (only zeroed, type unobserved)
+    // +0x44 ResRefLink. INVENTED: id of the bound object's instance, 0 = none.
+    uint32_t object = 0;
     std::vector<uint64_t> path_state; // +0x58, one zero per path (count +0x20)
     uint32_t cycle = 0;               // +0x5c (light_init 0x415700 zeroes it)
     float phase_time = 0;             // +0x6c (light only)
@@ -45,7 +47,9 @@ struct Cross {                  // ctCross 0x40e850
     int32_t phase_count = 0;          // +0x74 (light only)
 };
 
-struct Road { uint32_t node[3] = {}; float v10[3] = {}, v1c[3] = {}; uint32_t k64 = 0; Path path; };
+struct Road { uint32_t node[3] = {}; float v10[3] = {}, v1c[3] = {}; uint32_t k64 = 0; Path path;
+              // +0x68 ResRefLink. INVENTED: id of the bound object's instance, 0 = none.
+              uint32_t object = 0; };
 
 struct Lane {
     uint32_t road = 0, node14 = 0; uint8_t k18 = 0;       // +0x10 (parent road), +0x14, +0x18
@@ -135,6 +139,9 @@ struct Graph {
     // 0x416800: spawn on a lane of the nearest cross; the cross picks the road.
     uint32_t spawn_near(float x, float y, float z, float dist, float p1, float p2,
                         float p3, float p4);
+    // 0x41a3e0 Traffic__bindObject: params "<kind>;<graph>,<idx>" bind and link
+    // the object; returns the node id (0 = none / out of pool).
+    uint32_t bind_object(const std::string &params, uint32_t object);
     size_t node_count() const;  // eq + light + road + lane
     // INVENTED: node id -> lane with a bounds check (the exe dereferences it).
     const Lane *lane_by_node(uint32_t id) const;

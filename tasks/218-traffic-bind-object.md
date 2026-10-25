@@ -1,7 +1,7 @@
 ---
 id: 218
-status: todo
-branch:
+status: implemented
+branch: card/218
 depends: [217]
 ---
 # Traffic: Traffic__bindObject + ctRoad/ctCross bindObject (road object links), corpus-checked

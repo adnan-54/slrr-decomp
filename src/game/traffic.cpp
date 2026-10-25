@@ -1,4 +1,5 @@
 #include "game/traffic.h"
+#include "game/pedestrians.h"
 
 #include <algorithm>
 #include <math.h>
@@ -962,6 +963,49 @@ void lane_insert(Graph &g, size_t li, uint32_t ci)
     lane_attach(g, li, ci);
 }
 
+// 0x40ed30 ctRoad__bindObject.
+void road_bind_object(Graph &g, Road &road, uint32_t object)
+{
+    road.object = object;                       // +0x68 ResRefLink
+    Lane *l = lane_at(g, road.node[0]);
+    // INVENTED: cap the pointer walk with the lane count (the exe follows a cycle).
+    for (size_t guard = 0; l && guard < g.lanes.size(); guard++) {
+        for (uint32_t ci : l->cars) {
+            Car &car = g.cars[ci];
+            const uint32_t inst = car.inst_id;   // +0x138
+            if (car.type_id == 0) {              // +0x14c
+                if (inst) {
+                    // shortcut: 0x4ec210 reparent under (car.live && linked ? obj
+                    // : T+0x311c CarContainer) is not ported.
+                }
+            } else if (!car.live || object == 0) {   // obj+8 == 0: not linked
+                if (inst) {
+                    // shortcut: the car_rem event (T+0x3130) is not modelled.
+                    car.e8 = g.sim_time;
+                    // shortcut: Traffic__parkInstance 0x41a500 and the +0x130
+                    // type link unlink are not modelled.
+                    car.inst_id = 0;
+                    // shortcut: counters 0x5e64f4/0x5e64fc are not modelled.
+                }
+            } else if (inst) {
+                // shortcut: 0x4ec210 reparent under obj is not ported.
+            } else {
+                // shortcut: counters 0x5e64f4/0x5e64f8 and Traffic__queueSpawn
+                // 0x41a500 are not modelled.
+            }
+        }
+        l = lane_at(g, l->node14);
+    }
+}
+
+// 0x40ebb0 ctCross__bindObject.
+void cross_bind_object(Cross &cross, uint32_t object)
+{
+    cross.object = object;   // +0x44 ResRefLink
+    // shortcut: the exe walks cross+8 car links with the same per-car body as
+    // 0x40ed30; src keeps cars only on lanes (card 216), so the loop is empty.
+}
+
 }  // namespace
 
 // 0x419da0 Traffic__init.
@@ -1147,6 +1191,32 @@ uint32_t Graph::spawn_near(float x, float y, float z, float dist, float p1,
     size_t ri = lane->road - 1 - base;
     if (ri >= roads.size()) return 0;
     return spawn_on_road(ri, p1, p2, p3, p4);
+}
+
+// 0x41a3e0 Traffic__bindObject.
+uint32_t Graph::bind_object(const std::string &params, uint32_t object)
+{
+    int32_t kind = 0, graph = 0, idx = 0;
+    if (!ped::parse_road_params(params, &kind, &graph, &idx)) return 0;
+    if (graph != (int32_t)version) return 0;
+    // INVENTED: return 0 for idx outside the pool (the exe indexes unchecked).
+    if (idx < 0) return 0;
+    if (kind == 1) {
+        if ((size_t)idx >= roads.size()) return 0;
+        road_bind_object(*this, roads[(size_t)idx], object);
+        return (uint32_t)(cross_eq.size() + cross_light.size() + (size_t)idx + 1);
+    }
+    if (kind == 2) {
+        if ((size_t)idx >= cross_eq.size()) return 0;
+        cross_bind_object(cross_eq[(size_t)idx], object);
+        return (uint32_t)idx + 1;
+    }
+    if (kind == 3) {
+        if ((size_t)idx >= cross_light.size()) return 0;
+        cross_bind_object(cross_light[(size_t)idx], object);
+        return (uint32_t)(cross_eq.size() + (size_t)idx + 1);
+    }
+    return 0;
 }
 
 // 0x41a000 Traffic__load.
