@@ -131,6 +131,26 @@ struct Slot {
     std::vector<CfgAttach> compatibles;
 };
 
+// HUD gauge record G (0x48 bytes, type record M+0x1a44 + i*0x48; ctor 0x4909b0
+// leaves pos/ori 0, ref 0, kind 0, fmt "", offset 0, scale 1, min/max 0).
+struct OsdGauge {
+    float pos[3] = {};      // +0x00
+    float ori[3] = {};      // +0x0c (Ypr)
+    int32_t kind = 0;       // +0x18 0 none, 1 pin, 2 text, 5 lamp
+    // ResourceRef +0x1c (0x10); its id at +0x24 is the "set" test. A cfg osd_*
+    // line sets ref_id, the type defaults keep a (package, local id) pair from
+    // 0x5189e0(rpk, id, 0xe, 0).
+    int32_t ref_id = 0;
+    const char *ref_pkg = nullptr;
+    int32_t ref_local = 0;
+    int32_t color = 0;      // +0x2c
+    char fmt[9] = {};       // +0x30 (8 chars + NUL)
+    float offset = 0.0f;    // +0x38
+    float scale = 1.0f;     // +0x3c
+    float min = 0.0f;       // +0x40
+    float max = 0.0f;       // +0x44
+};
+
 struct PartData {
     std::vector<Slot> slots;
     float tear = 1.0f;           // +0xb4
@@ -157,6 +177,10 @@ struct CarData {
     std::vector<Runtime::Resource *> part_list;
 
     uint32_t flags = 0;          // +0x70
+    // Type record's HUD gauge block (0x49ab20 defaults): gear chars M+0x1a38,
+    // the 17 gauge records M+0x1a44 + i*0x48.
+    char gear_chars[9] = "N123456R";
+    OsdGauge osd[17];
     float throttle = 0.0f;       // +0x1de4
     float brake_input = 0.0f;    // +0x1de8
     float handbrake_input = 0.0f;   // +0x1df4

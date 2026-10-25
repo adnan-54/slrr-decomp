@@ -1,7 +1,7 @@
 ---
 id: 196
-status: todo
-branch:
+status: implemented
+branch: card/196
 depends: []
 ---
 # car HUD: osd_* type cfg gauges + Chassis.getOSD/setOSD/getAngvel natives

@@ -3572,6 +3572,95 @@ bool ch_get_shifting(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4b1fd0: HUD gauge value. Ids 0-3 are the spdpin offset/scale/min/max
+// (M+0x1b54..0x1b60), 5-8 the rpmpin ones (M+0x1b0c..0x1b18); 4 is the live
+// speed through the spdpin pair, 9 the live rpm through the rpmpin pair.
+bool ch_get_osd(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    int32_t id;
+    if (!want("Chassis.getOSD", a, 2, err) ||
+        !get_i("Chassis.getOSD", a[1], &id, err))
+        return false;
+    game::CarData *c = car_of(a);
+    float v = 0.0f;
+    if (c) {
+        // M+0x1b54.. = osd[3], M+0x1b0c.. = osd[2].
+        const game::OsdGauge &spd = c->osd[3];
+        const game::OsdGauge &rpm = c->osd[2];
+        switch (id) {
+        case 0: v = spd.offset; break;
+        case 1: v = spd.scale; break;
+        case 2: v = spd.min; break;
+        case 3: v = spd.max; break;
+        case 4: {
+            float speed = c->root_body ? vec_length(c->root_body->vel) : 0.0f;
+            v = speed * (1.0f / sched(vm).measure_per_hour) * spd.scale +
+                spd.offset;
+            break;
+        }
+        case 5: v = rpm.offset; break;
+        case 6: v = rpm.scale; break;
+        case 7: v = rpm.min; break;
+        case 8: v = rpm.max; break;
+        case 9:
+            v = fabsf(c->rpm_smoothed * 9.549296f) * rpm.scale + rpm.offset;
+            break;
+        default: break;
+        }
+    }
+    *out = Value::make_float(v);
+    return true;
+}
+
+// 0x4b4850: ids 0-3/5-8 rewrite the spdpin/rpmpin fields; 4 and 9 have no
+// setter (the live values are computed).
+bool ch_set_osd(Vm &, const Args &a, Value *out, std::string *err)
+{
+    int32_t id;
+    float v;
+    if (!want("Chassis.setOSD", a, 3, err) ||
+        !get_i("Chassis.setOSD", a[1], &id, err) ||
+        !get_f("Chassis.setOSD", a[2], &v, err))
+        return false;
+    game::CarData *c = car_of(a);
+    game::OsdGauge *g = nullptr;
+    int k = 0;
+    if (c) {
+        if (id >= 0 && id <= 3) {
+            g = &c->osd[3];
+            k = id;
+        } else if (id >= 5 && id <= 8) {
+            g = &c->osd[2];
+            k = id - 5;
+        }
+    }
+    if (g) {
+        float *field[4] = {&g->offset, &g->scale, &g->min, &g->max};
+        *field[k] = v;
+    }
+    *out = Value::make_null();
+    return true;
+}
+
+// 0x4b24f0: the root body's active-state angular velocity; no car -> a new
+// Vector3 (0,0,0).
+bool ch_get_angvel(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Chassis.getAngvel", a, 1, err)) return false;
+    game::CarData *c = car_of(a);
+    float v[3] = {0.0f, 0.0f, 0.0f};
+    if (c && c->root_body) {
+        Vec3 w = c->root_body->angular_velocity();
+        v[0] = w.x;
+        v[1] = w.y;
+        v[2] = w.z;
+    }
+    Object *o = new_point(vm, "java.lang.Vector3", v, false, err);
+    if (!o) return false;
+    *out = Value::make_obj(o);
+    return true;
+}
+
 bool ch_get_nitroing(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!want("Chassis.getNitroing", a, 1, err)) return false;
@@ -7703,7 +7792,7 @@ void advance_sim(Vm &vm, float dt)
 const std::vector<Entry> &table()
 {
     static const std::vector<Entry> rows = {
-    {"java.game.parts.bodypart.Chassis", "getAngvel", "()Ljava.lang.Vector3;", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "getAngvel", "()Ljava.lang.Vector3;", ch_get_angvel, false},
     {"java.game.parts.bodypart.Chassis", "getMaterialIndex", "()I", ch_get_material_index, false},
     {"java.game.parts.bodypart.Chassis", "getMaxSteer", "()F", ch_get_max_steer, false},
     {"java.game.parts.bodypart.Chassis", "setMaxSteer", "(F)V", ch_set_max_steer, false},
@@ -7779,8 +7868,8 @@ const std::vector<Entry> &table()
     {"java.game.parts.bodypart.Chassis", "getWheelPos", "(I)Ljava.lang.Vector3;", nullptr, true},
     {"java.game.parts.bodypart.Chassis", "getWheelDamage", "(I)Ljava.lang.String;", ch_get_wheel_damage, false},
     {"java.game.parts.bodypart.Chassis", "setWheelDamage", "(ILjava.lang.String;)V", ch_set_wheel_damage, false},
-    {"java.game.parts.bodypart.Chassis", "setOSD", "(IF)V", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getOSD", "(I)F", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "setOSD", "(IF)V", ch_set_osd, false},
+    {"java.game.parts.bodypart.Chassis", "getOSD", "(I)F", ch_get_osd, false},
     {"java.game.parts.bodypart.Chassis", "getNitro", "()F", ch_get_nitro, false},
     {"java.game.parts.Part", "getSlots", "()I", pt_get_slots, false},
     {"java.game.parts.Part", "getSlotID", "(I)I", pt_get_slot_id, false},
