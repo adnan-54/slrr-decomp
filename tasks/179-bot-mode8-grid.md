@@ -1,7 +1,7 @@
 ---
 id: 179
-status: todo
-branch:
+status: implemented
+branch: card/179
 depends: [178]
 ---
 # `native bot` mode 8 (grid, `AI_BeginRace`): 0x484ca0 random revving with the clutch in

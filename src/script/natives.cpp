@@ -43,6 +43,22 @@
 // 0x49a4f8 (Vehicle__createCar 0x49a4ef, see game::create_car_bodies).
 bool steam_neutralized = false;
 
+// MSVC CRT rand/srand state (0x571110/0x571131): state = state*214013+2531011,
+// result = (state >> 16) & 0x7fff. The CRT starts seeded with 1. Global so the
+// bot grid 0x484ca0 shares the state with java.lang.Math.random.
+uint32_t g_rand_state = 1;
+
+uint32_t msvc_rand()
+{
+    g_rand_state = g_rand_state * 214013u + 2531011u;
+    return (g_rand_state >> 16) & 0x7fffu;
+}
+
+void msvc_srand(uint32_t seed)
+{
+    g_rand_state = seed;
+}
+
 namespace {
 
 using Args = std::vector<Value>;
@@ -372,21 +388,6 @@ bool thread_set_daemon(Vm &vm, const Args &a, Value *out, std::string *err)
 }
 
 // ---- java.lang.Math --------------------------------------------------------
-
-// MSVC CRT rand/srand state (0x571110/0x571131): state = state*214013+2531011,
-// result = (state >> 16) & 0x7fff. The CRT starts seeded with 1.
-uint32_t g_rand_state = 1;
-
-uint32_t msvc_rand()
-{
-    g_rand_state = g_rand_state * 214013u + 2531011u;
-    return (g_rand_state >> 16) & 0x7fffu;
-}
-
-void msvc_srand(uint32_t seed)
-{
-    g_rand_state = seed;
-}
 
 // 0x569730: high-resolution clock in milliseconds. The exe subtracts a
 // process-lifetime baseline; ours starts at the first call, which is equivalent

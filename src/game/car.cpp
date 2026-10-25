@@ -27,6 +27,8 @@
 
 // 0x7a75df: Steam.neutralize flag; createCar 0x49a4ef reads it.
 extern bool steam_neutralized;
+// 0x571110 MSVC CRT rand, shared with java.lang.Math.random (natives.cpp).
+uint32_t msvc_rand();
 
 namespace game {
 namespace {
@@ -2487,6 +2489,27 @@ static void bot_launch(BotData &b, const BotSnapshot &s)
     b.launch = 0;
 }
 
+// 0x484ca0 grid (mode 8, AI_BeginRace): clutch in, 1st gear held, brakes off,
+// and rev the throttle at random: 0 or full, with +0x25dc as the odds of full.
+static void bot_grid(BotData &b, const BotSnapshot &s)
+{
+    float saved = b.axis[kBotThrottle];  // +0x224c
+    if (bot_gate(b, s, 0.0f, 0.0f)) {
+        b.axis[kBotThrottle] = saved;
+        float f = b.begin_race <= 0.1f ? 0.1f : b.begin_race;  // +0x25dc
+        uint32_t r = msvc_rand() & 0x7fffu;
+        b.axis[kBotThrottle] =
+            f <= (float)r * 3.0517578e-05f ? 0.0f : 127.0f;
+    }
+    bot_send(b, "transmission 2");  // every tick
+    b.axis[kBotGear] =
+        (s.gear > 0 || s.gear_axis >= 127.0f) ? 0.0f : 127.0f;  // +0x22a4
+    b.axis[kBotClutch] = 127.0f;    // +0x22a0
+    b.axis[kBotBrake] = 0.0f;       // +0x2250
+    b.axis[kBotHandbrake] = 0.0f;   // +0x229c
+    b.axis[kBotNitro] = 0.0f;       // +0x2258
+}
+
 // 0x482f50 reverse(S, steer): throttle backwards out of the stuck state.
 static void bot_reverse(BotData &b, const BotSnapshot &s, float steer)
 {
@@ -2928,10 +2951,11 @@ void control_bots(float dt)
         // 0x484b90 mode switch, then the steer slew +0x21e0.
         float old = b.axis[1];
         if (b.mode == 3) bot_mode3(b, b.snap, c);
+        else if (b.mode == 8) bot_grid(b, b.snap);  // 0x484ca0
         else if (b.mode < 1 || b.mode > 8)
             bot_controls(b, b.snap, c, 0.0f, 0.0f);  // 0x484b90 default
-        // shortcut: modes 2/4..8 (race/grid/traffic) are cards 176-179; they
-        // leave the new steer unchanged.
+        // shortcut: modes 2/4..7 (race/traffic) are cards 176-177; they leave
+        // the new steer unchanged.
         float r = b.steer_rate * b.snap.dt;
         b.axis[1] = std::clamp(b.axis[1], old - r, old + r);
     }
