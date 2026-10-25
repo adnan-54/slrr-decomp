@@ -1,7 +1,7 @@
 ---
 id: 186
-status: todo
-branch:
+status: implemented
+branch: card/186
 depends: [185]
 ---
 # `native bot` 0x483bd0 tail: match exe rounding, drop the INVENTED no-interval guard

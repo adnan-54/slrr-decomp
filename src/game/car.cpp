@@ -2684,22 +2684,23 @@ static void bot_steer(BotData &b, const BotSnapshot &s, const CarData &car,
     bot_avoid_obstacles(b, s, av, fx, fz);          // 0x483bd0 walk
     float rv[2];
     av.resolve(rv);  // 0x40a8a0
-    // INVENTED: with no intervals resolve() is the identity rotation and len*dir only adds float
-    // ulp noise to V (acosf below amplifies it into a different race); keep V exactly then.
-    if (!av.intervals.empty()) { vx = rv[0]; vz = rv[1]; }
+    vx = rv[0];
+    vz = rv[1];
     b.plan_aim[0] = vx;  // +0x269c
     b.plan_aim[1] = vz;  // +0x26a0
-    float len = sqrtf(vx * vx + vz * vz);
+    float len = sqrtf(vz * vz + vx * vx);
     float cx = 0.0f, cz = 0.0f;  // normalize(V), zero when |V| <= 1e-5
-    if (len > 1e-5f) {
-        cx = vx / len;
-        cz = vz / len;
+    // 0x483bd0: reciprocal multiply, double 1e-5 (0x593588)
+    if ((double)len > 1e-5) {
+        float k = 1.0f / len;
+        cx = vx * k;
+        cz = vz * k;
     }
     float g = s.fwd[0] * cx + s.fwd[2] * cz;   // 0x40a7d0
     float cr = cx * s.fwd[2] - s.fwd[0] * cz;
     float ang;
     if (cr <= 0.0f)
-        ang = g > 1.0f ? 0.0f : g < -1.0f ? -3.14159265f : -acosf(g);
+        ang = g > 1.0f ? -0.0f : g < -1.0f ? -3.14159265f : -acosf(g);
     else
         ang = g > 1.0f ? 0.0f : g < -1.0f ? 3.14159265f : acosf(g);
     b.plan_steer = -ang;                 // 0x482910(S, steer = -ang, ...)
