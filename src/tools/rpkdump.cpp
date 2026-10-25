@@ -9,6 +9,7 @@
 //                                            list database classes / resources
 //   rpkdump --selfcheck A.rpk A.rdb B.rpk B.rdb
 #include <errno.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -354,9 +355,20 @@ static const MapRow kMapRows[] = {
 struct MapTally {
     size_t instances = 0, phys_chunks = 0, faces = 0, verts = 0;
     size_t parse_failures = 0, multi_phys = 0, duplicate_ids = 0;
+    size_t no_bounds = 0;        // node with faces but no 48-byte block (0x51e6b0)
+    size_t verts_outside = 0;    // PHYS vertex out of the node box
+    size_t children_outside = 0; // type-1 child box out of the parent box
+    size_t max_node_faces = 0;   // vs the exe's 64-slot face cache 0x6029e4
     uint32_t max_mat = 0;
     std::set<uint32_t> child_ids;
 };
+
+// 0x51e6b0: record bounds = extra f32[0..2] centre, f32[3..5] half (little-endian).
+static void record_box(const RpkRecord &rec, float c[3], float h[3])
+{
+    memcpy(c, rec.extra, 3 * sizeof(float));
+    memcpy(h, rec.extra + 12, 3 * sizeof(float));
+}
 
 static void walk_map_instance(const RpkArchive &rpk, const RpkRecord &rec, MapTally &t)
 {
@@ -373,11 +385,36 @@ static void walk_map_instance(const RpkArchive &rpk, const RpkRecord &rec, MapTa
     if (inst.phys_chunks > 1) t.multi_phys++;
     t.faces += inst.faces.size();
     t.verts += inst.verts.size() / 3;
+    if (inst.faces.size() > t.max_node_faces) t.max_node_faces = inst.faces.size();
+    if (!inst.faces.empty() && !rec.has_extra) t.no_bounds++;
+    float c[3] = {0.0f, 0.0f, 0.0f}, h[3] = {0.0f, 0.0f, 0.0f};
+    if (rec.has_extra) record_box(rec, c, h);
     for (const RpkPhysFace &f : inst.faces)
         if (f.mat > t.max_mat) t.max_mat = f.mat;
+    if (rec.has_extra) {
+        for (const RpkPhysFace &f : inst.faces)
+            for (int k = 0; k < 3; k++) {
+                const float *v = &inst.verts[(size_t)f.v[k] * 3];
+                if (fabsf(v[0] - c[0]) > h[0] + 1e-3f ||
+                    fabsf(v[1] - c[1]) > h[1] + 1e-3f ||
+                    fabsf(v[2] - c[2]) > h[2] + 1e-3f)
+                    t.verts_outside++;
+            }
+    }
     for (const RpkRecord &child : inst.children) {
         if (!t.child_ids.insert(child.id).second) t.duplicate_ids++;
-        if (child.type == 1) walk_map_instance(rpk, child, t);
+        if (child.type == 1) {
+            if (rec.has_extra && child.has_extra) {
+                float cc[3], ch[3];
+                record_box(child, cc, ch);
+                for (int k = 0; k < 3; k++)
+                    if (fabsf(cc[k] - c[k]) + ch[k] > h[k] + 1e-3f) {
+                        t.children_outside++;
+                        break;
+                    }
+            }
+            walk_map_instance(rpk, child, t);
+        }
     }
 }
 
@@ -410,6 +447,9 @@ static void selfcheck_maps(Checker &c)
             if (rec.type == 1) walk_map_instance(rpk, rec, t);
         std::printf("  map %-9s type-1 %6zu, PHYS %5zu, faces %7zu, verts %7zu\n",
                     row.name, t.instances, t.phys_chunks, t.faces, t.verts);
+        std::printf("      nodes: %zu without bounds, %zu vert(s) out of box, %zu child box(es) "
+                    "out, max %zu faces/node\n",
+                    t.no_bounds, t.verts_outside, t.children_outside, t.max_node_faces);
         c.check(t.parse_failures == 0,
                 std::string(row.name) + ": every type-1 blob parses (" +
                     std::to_string(t.parse_failures) + " failure(s))");
@@ -423,6 +463,17 @@ static void selfcheck_maps(Checker &c)
                 std::string(row.name) + ": embedded child ids are unique per map");
         c.check(t.multi_phys == 0,
                 std::string(row.name) + ": no blob has more than one PHYS chunk");
+        c.check(t.no_bounds == 0,
+                std::string(row.name) +
+                    ": every node with PHYS faces has the 48-byte bounds block (0x51e6b0)");
+        c.check(t.verts_outside == 0,
+                std::string(row.name) + ": every PHYS vertex lies inside its node box +- 1 mm");
+        c.check(t.children_outside == 0,
+                std::string(row.name) +
+                    ": every type-1 child box lies inside its parent box + 1 mm");
+        c.check(t.max_node_faces <= 64,
+                std::string(row.name) +
+                    ": at most 64 faces per node (exe face cache 0x6029e4)");
         if (row.scm_path) {
             unsigned materials = scm_materials(row.scm_path);
             c.check(materials > 0 && t.max_mat < materials,

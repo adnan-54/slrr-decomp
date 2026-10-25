@@ -1,7 +1,7 @@
 ---
 id: 207
-status: todo
-branch:
+status: implemented
+branch: card/207
 depends: []
 ---
 # Ground soup: keep the map node table (bounds + face range) on the merged mesh

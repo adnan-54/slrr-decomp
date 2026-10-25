@@ -195,11 +195,13 @@ static bool native_ground_type(Runtime &rt, uint32_t gametype, const Package *ba
 
 // 0x519940 / 0x4ff6b0: the map record and every embedded type-1 child carry a
 // PHYS triangle soup in world-frame metres (notes/19 §7). The exe walks the
-// resident nodes per body (Collide__groundTree 0x4fe6f0); src merges them.
+// resident nodes per body (Collide__groundTree 0x4fe6f0); src merges them but
+// keeps each node's bounds box (0x51e6b0) and face range, in walk order.
 static void gather_ground_soup(const RpkArchive &rpk, const RpkRecord &rec,
                                std::vector<Vec3> *verts,
                                std::vector<CollisionMesh::Triangle> *tris,
-                               std::vector<Vec3> *normals)
+                               std::vector<Vec3> *normals,
+                               std::vector<CollisionMesh::MapNode> *nodes)
 {
     RpkInstanceData inst;
     std::string err;
@@ -207,14 +209,29 @@ static void gather_ground_soup(const RpkArchive &rpk, const RpkRecord &rec,
     uint32_t base = static_cast<uint32_t>(verts->size());
     for (size_t i = 0; i + 2 < inst.verts.size(); i += 3)
         verts->push_back(vec3(inst.verts[i], inst.verts[i + 1], inst.verts[i + 2]));
+    CollisionMesh::MapNode node;
+    node.first = static_cast<uint32_t>(tris->size());
     for (const RpkPhysFace &f : inst.faces) {
         tris->push_back(
             CollisionMesh::Triangle{{base + f.v[0], base + f.v[1], base + f.v[2]}});
         // 0x4fd110 tests the face against the stored PHYS normal, so keep it.
         normals->push_back(vec3(f.n[0], f.n[1], f.n[2]));
     }
+    node.count = static_cast<uint32_t>(tris->size()) - node.first;
+    if (rec.has_extra) {
+        // 0x51e6b0: extra f32[0..2] centre, f32[3..5] half; file is little-endian.
+        float box[6];
+        memcpy(box, rec.extra, sizeof box);
+        node.centre = vec3(box[0], box[1], box[2]);
+        node.half = vec3(box[3], box[4], box[5]);
+    } else {
+        // INVENTED: half = 1e30 (never culled); no shipped PHYS node lacks the
+        // block (notes/24).
+        node.half = vec3(1e30f, 1e30f, 1e30f);
+    }
+    nodes->push_back(node);
     for (const RpkRecord &child : inst.children)
-        if (child.type == 1) gather_ground_soup(rpk, child, verts, tris, normals);
+        if (child.type == 1) gather_ground_soup(rpk, child, verts, tris, normals, nodes);
 }
 
 // 0x4bade0 type_ground vf3, body part: mass-0 kind-0 box with flag 4 (static,
@@ -276,9 +293,10 @@ static void create_ground_body(Runtime &rt, Runtime::Resource *r)
     std::vector<Vec3> verts;
     std::vector<CollisionMesh::Triangle> tris;
     std::vector<Vec3> normals;
+    std::vector<CollisionMesh::MapNode> nodes;
     if (r->package && r->record)
-        gather_ground_soup(r->package->rpk, *r->record, &verts, &tris, &normals);
-    b->def.shape.mesh = build_collision_mesh(verts, tris, normals);
+        gather_ground_soup(r->package->rpk, *r->record, &verts, &tris, &normals, &nodes);
+    b->def.shape.mesh = build_collision_mesh(verts, tris, normals, nodes);
     if (b->def.shape.mesh) b->def.shape.type = SHAPE_MESH;
     w.add_body(b.get());
     r->ground_body = std::move(b);

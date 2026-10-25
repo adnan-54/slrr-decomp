@@ -611,11 +611,30 @@ std::shared_ptr<const CollisionMesh> build_collision_mesh(
     const std::vector<Vec3> &verts, const std::vector<CollisionMesh::Triangle> &tris,
     const std::vector<Vec3> &normals)
 {
+    return build_collision_mesh(verts, tris, normals, std::vector<CollisionMesh::MapNode>());
+}
+
+std::shared_ptr<const CollisionMesh> build_collision_mesh(
+    const std::vector<Vec3> &verts, const std::vector<CollisionMesh::Triangle> &tris,
+    const std::vector<Vec3> &normals, const std::vector<CollisionMesh::MapNode> &map_nodes)
+{
     std::shared_ptr<CollisionMesh> out = std::make_shared<CollisionMesh>();
     out->vertices = verts;
     bool have_normals = normals.size() == tris.size();
     out->triangles.reserve(tris.size());
+    // 0x4fe6f0: node ranges are contiguous and in walk order, so a node's
+    // output range starts at the first of its input tris that survives.
+    std::vector<CollisionMesh::MapNode> nodes;
+    nodes.reserve(map_nodes.size());
+    size_t next_node = 0;
+    uint32_t node_end = 0;
     for (size_t i = 0; i < tris.size(); i++) {
+        while (next_node < map_nodes.size() && i >= map_nodes[next_node].first) {
+            nodes.push_back(map_nodes[next_node++]);
+            node_end = nodes.back().first + nodes.back().count;
+            nodes.back().first = static_cast<uint32_t>(out->triangles.size());
+            nodes.back().count = 0;
+        }
         const CollisionMesh::Triangle &t = tris[i];
         if (t.v[0] >= verts.size() || t.v[1] >= verts.size() || t.v[2] >= verts.size())
             continue;
@@ -624,9 +643,17 @@ std::shared_ptr<const CollisionMesh> build_collision_mesh(
         if (vec_dot(cr, cr) <= 1e-16f)
             continue; // degenerate face
         out->triangles.push_back(t);
+        if (!nodes.empty() && i < node_end)
+            nodes.back().count++;
         if (have_normals)
             out->face_normals.push_back(normals[i]);
     }
+    for (; next_node < map_nodes.size(); next_node++) {
+        nodes.push_back(map_nodes[next_node]);
+        nodes.back().first = static_cast<uint32_t>(out->triangles.size());
+        nodes.back().count = 0;
+    }
+    out->map_nodes = std::move(nodes);
     if (out->triangles.empty())
         return std::shared_ptr<const CollisionMesh>();
 

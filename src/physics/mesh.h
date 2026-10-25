@@ -25,9 +25,18 @@ struct CollisionMesh {
         int32_t left = -1, right = -1;
     };
 
+    // One map node (type-1 record) of a ground soup: record bounds box (0x51e6b0)
+    // and its faces' range in `triangles`, in Collide__groundTree 0x4fe6f0 walk
+    // order. Empty for SCX.
+    struct MapNode {
+        Vec3 centre{0.0f, 0.0f, 0.0f}, half{0.0f, 0.0f, 0.0f};
+        uint32_t first = 0, count = 0;
+    };
+
     std::vector<Vec3> vertices;       // local body frame, metres
     std::vector<Triangle> triangles;
     std::vector<Vec3> face_normals;   // stored PHYS normal per triangle; empty for SCX
+    std::vector<MapNode> map_nodes;   // ground soup nodes; empty for SCX
     std::vector<Node> nodes;
     std::vector<uint32_t> order;      // triangle indices, leaf order
     Vec3 bounds_min{0.0f, 0.0f, 0.0f};
@@ -52,6 +61,12 @@ std::shared_ptr<const CollisionMesh> build_collision_mesh(
 std::shared_ptr<const CollisionMesh> build_collision_mesh(
     const std::vector<Vec3> &verts, const std::vector<CollisionMesh::Triangle> &tris,
     const std::vector<Vec3> &normals);
+
+// Same tree plus the ground-soup map node table. `first/count` in `map_nodes`
+// index the INPUT `tris`; the built mesh holds the matching `triangles` range.
+std::shared_ptr<const CollisionMesh> build_collision_mesh(
+    const std::vector<Vec3> &verts, const std::vector<CollisionMesh::Triangle> &tris,
+    const std::vector<Vec3> &normals, const std::vector<CollisionMesh::MapNode> &map_nodes);
 
 struct MeshRayHit {
     Vec3 point{0.0f, 0.0f, 0.0f};  // world
