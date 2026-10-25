@@ -530,7 +530,7 @@ The card plan above (174 planner / 175 controls / 176 race start) is **supersede
 once per physics tick before the sub-steps, dt = ctrlAcc (same list and dt as `Vehicle__updateControls`
 0x498300). The list is in creation order: bot cars (Gamemode.createBotCars) are created before their brains
 (Bot.enterCar), so each car reads the bot axes written on the **previous** tick. (`0x47f980` is not a camera
-function; names.json `Camera__chaseAndDebugHud` is wrong; its tail only moves the bot's own debug object +0x26f8
+function; names.json now `type_BOT__vf11_tick` (was the wrong `Camera__chaseAndDebugHud`); its tail only moves the bot's own debug object +0x26f8
 and debug HUD texts +0x2460.., not needed.)
 
 **How the car reads the bot (no new car code).** The bot is the car's slot player (0x4d2ab0 `activate`), so

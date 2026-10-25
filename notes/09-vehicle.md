@@ -560,6 +560,16 @@ Career-map drive failures after the placement port (card 164 finish, 2026-10-24)
 - Open: the used car is picked by a time-seeded rand (Math.randomize 0x4dee90); other picks (Axis 200S,
   Einvagen 110 GTK) fail vmboot checks that assume the SunStrip (D18V slot 401, getWheelID) and the
   Axis 200S hull 15 sits ~8 cm below its tyre plane at rest.
+- Resolved (card 178, 2026-10-25): those low hulls are the `_phys_chassis_water_object.scx` buoyancy bodies.
+  In the car type cfg the body line is followed by modifier lines `noclick` / `buoy` / `nocollision`
+  (type keyword table 0x5daba8: `bone` 0x4bfb30 record flag 0x400, `noclick` 0x4bfb70 0x200, `nocollision`
+  0x4bfba0 0x100 + def+0xb4 |= 8, `buoy` 0x4bfbe0 def+0xb4 |= 0x800; record flags at record+0x44).
+  0x4c1f90 gives the child body flag 0x20 for record flag 0x100 (0x4000 for 0x200), and the 0x4feb20 child
+  recursion skips children with body flag 0x20, def+0xb4 & 0x20 or flag 0x20000, so the water hull never
+  touches the soup. src ignored the modifier lines: the water hull rested on the road (bot stalled with all
+  wheel rays at max length) or caught a wall top's down-facing face and was pushed 0.5 m through the road
+  by the 0x4fc7e0 deep branch (player fell out of the world). Deep-branch contacts per race: ~30000 -> 4.
+  Part cfgs use another table (0x5dab10, `nocollision` 0x4bc940: def+0xb4 |= 8 only), not ported.
 
 ## Wheel steer frame: 0x4aa830 -> sensor body matrix -> tyre/spring pass (2026-10-24, card 170 RE)
 `0x4aa830(car)` (ECX = manager, called from updateControls 0x498300 when `|steer − steer_copy| > 0.001`, and from

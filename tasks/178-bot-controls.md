@@ -1,6 +1,6 @@
 ---
 id: 178
-status: blocked
+status: implemented
 branch: card/178
 depends: [177]
 ---
@@ -132,21 +132,22 @@ with `bot_gate` 0x482da0, `bot_drive` 0x483220, `bot_launch` 0x4830a0, `bot_reve
 177) and from both 0x484b90/0x485e10 fallbacks. Everything works far enough that 3 of 4 bots drive and the
 race-position triggers fire.
 
-**BLOCKED after 2 failed runs.** `make -C src check` -> vmboot --race FAILED (166 checks, 5 failures):
-
-1. Bot 2 does not drive: 7.91 m from the grid, max |v| 1.31 m/s; at the sampled tick its four wheel loads are
-   exactly 0 with `asleep 0`, roll -0.01, `throttle 64 / steer 29` (i.e. it sits in the reverse states). Bot 1
-   is the same at that tick (4 zero loads) but later drives 155 m. With no wheel contact the drive force never
-   applies; the controls path itself is running (thr from 0x482f50). Bots 0 and 3 drive 673.48 m / 107.57 m.
-2. The scripted player now falls off the world during the 40000-frame window: frame 3485 pos.y -8.73 (spawn
-   -3.72), |v| 9.67, **nearest bot 45.21 m** (so not a collision at the fall), then y -142953.66 / |v| 250.
-   Cascades into `cp2 not reached`, `max |vel| < 60` and `min pos.y` failures, and the downstream forced-drag
-   v_top check (239.50 vs 43.86 m/s) fails on the same blown-up state.
-
-Passing (new): `rpTotal[1..4]` = 61 / 2 / 15 / 315 (> 0); bot axes wired in control_cars; snapshots, planner,
-look-ahead and limit checks 0 bad. Existing card-175 checks relaxed only where bots now legitimately drive:
-dropped `load_sum > 0` from the snapshot check (airborne/rolled cars) and the zero-input requirement from the
-wiring check (now `control_ticks > 0`).
+Finish (Claude, 2026-10-25): both blockers had one root cause, not the controls. The car type cfg body line
+`_phys_chassis_water_object.scx` is followed by `noclick` / `buoy` / `nocollision`; src ignored the modifier
+lines, so the buoyancy hull collided with the map soup. Exe: `nocollision` 0x4bfba0 sets record flag 0x100,
+0x4c1f90 turns it into child body flag 0x20, and the 0x4feb20 child recursion skips flag-0x20 children.
+(1) Bot 2 (Codrac) rested on that hull: it hangs 3-8 cm below the at-rest tyre plane, so the rear wheel rays
+stayed at max length (loads 0), and with load 0 0x483220 capped the throttle at 40 (mode 3). (2) The player's
+water hull reached a wall top's down-facing face at frame 3425 (the player line moved ~0.1 m because it had
+passed close to stalled bot 2; no contact with a bot at the fall); the 0x4fc7e0 deep branch pushed the car
+0.5 m down through the road. Fix: CfgBody.flags (`nocollision` -> 0x100) and type body records with it give no
+soup hull (src/parts/cfg.*, src/game/car.cpp). Deep-branch hull contacts per race ~30000 -> 4. notes/09.
+Card-175 checks: `load_sum > 0` restored in the snapshot check; the wiring check stays `control_ticks > 0`
+(equality inputs == axes/127 fails because the bot tick rewrites the axes after the car's control pass).
+names.json: 0x47f980 = `type_BOT__vf11_tick` (was Camera__chaseAndDebugHud).
+Final: --selfcheck PASSED (166 checks), --race PASSED (156 checks); race: bots drove 87/968/66/102 m from the
+grid at the window end (all lapping), rpTotal[1..4] = 238/252/266/228, player finished lap 2 (fWindow set,
+min y -5.23, max |v| 30.83); `make -C src clean check` green.
 
 INVENTED:
 - `driven_layout()` for getInfo(car, 0x34): src has no case-52 field; counts `wheels[i].drive` front/rear ->

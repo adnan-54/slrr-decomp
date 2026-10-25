@@ -619,7 +619,7 @@
   "0x47e890": "gametype__vf4",
   "0x47e9e0": "gametype__vf15",
   "0x47f930": "cBodyList__vf0",
-  "0x47f980": "Camera__chaseAndDebugHud",
+  "0x47f980": "type_BOT__vf11_tick",
   "0x4803a0": "type_BOT__vf3",
   "0x4805a0": "type_BOT__vf4",
   "0x480720": "type_BOT__vf15",

@@ -1638,12 +1638,13 @@ void game_init_check(Boot &boot, Checker &c)
                 }
                 const game::BotSnapshot &s = bd->snap;
                 const RigidBody *rb = cp->root_body;
-                // Card 178: a bot may now be airborne at the sample, so the
-                // wheel loads are not required to be positive.
+                float load_sum = 0.0f;
+                for (int w = 0; w < s.wheels; w++) load_sum += s.wheel[w][1];
                 bool snap_ok = bd->snap_valid && s.wheels == 4 &&
                                s.pos[0] == rb->pos.x && s.pos[2] == rb->pos.z &&
                                s.speed == vec_length(rb->vel) &&
-                               s.dt == kTickDt && s.gear == cp->gear;
+                               s.dt == kTickDt && load_sum > 0.0f &&
+                               s.gear == cp->gear;
                 if (!snap_ok) bad_snap++;
                 float d = 0.0f, lat = 0.0f;
                 bool proj = traffic::path_project(bd->spline, s.pos[0],
@@ -1693,7 +1694,8 @@ void game_init_check(Boot &boot, Checker &c)
                               bd->max_grip > 0.0f;
                 if (!lim_ok) bad_lim++;
                 // Card 178 writes the axes, so the car inputs are no longer 0;
-                // the counter proves the car's control pass read the table.
+                // the bot tick rewrites them after the car's control pass, so
+                // only the counter proves the pass read the table.
                 bool ctrl_ok = bd->control_ticks > 0;
                 if (!ctrl_ok) bad_ctrl++;
                 std::printf("    bot %zu tick (0x47f980): pos %.3f %.3f, speed "

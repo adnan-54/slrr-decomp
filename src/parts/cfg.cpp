@@ -311,6 +311,8 @@ struct Parser {
                         cfg->has_eof = true;
                         cfg->eof_line = number;
                         after_eof = true;
+                    } else if (ln.key == "nocollision" && !cfg->bodies.empty()) {
+                        cfg->bodies.back().flags |= 0x100u;  // 0x4bfba0
                     } else if (ln.known && !parse_known(ln)) {
                         return false;
                     }

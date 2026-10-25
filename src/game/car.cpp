@@ -564,6 +564,7 @@ struct CompoundChild {
     Mat34 rot{};                 // child -> car frame
     Mat34 inertia{};             // about the child's own COM, child frame
     Shape shape;
+    bool no_soup = false;        // body flag 0x20: skipped by 0x4feb20
 };
 
 // 0x5032d0 child: the body's mass and I_c (def+0x60 = inverse of its inv
@@ -586,8 +587,12 @@ void add_compound_child(std::vector<CompoundChild> &out, float mass, const Shape
 }
 
 // Every `body` line of cfg, whose frame sits at (rot, pos) in the car frame.
+// type_records: the car type's own body records (0x4c1f90), whose
+// `nocollision` (record flag 0x100) gives the child body flag 0x20, which the
+// 0x4feb20 child recursion skips. Part cfgs use another handler (0x4bc940:
+// def+0xb4 |= 8 only), so their bodies keep colliding.
 void add_body_lines(std::vector<CompoundChild> &out, const CfgFile &cfg,
-                    const Mat34 &rot, Vec3 pos)
+                    const Mat34 &rot, Vec3 pos, bool type_records)
 {
     for (const CfgBody &b : cfg.bodies) {
         if (!(b.mass > 0.0f)) continue;
@@ -600,6 +605,7 @@ void add_body_lines(std::vector<CompoundChild> &out, const CfgFile &cfg,
         Shape shape;
         body_line_shape(b, &shape);
         add_compound_child(out, b.mass, shape, cr, cp);
+        if (type_records && (b.flags & 0x100u)) out.back().no_soup = true;
     }
 }
 
@@ -650,7 +656,7 @@ void rebuild_compound(Runtime &rt, Runtime::Resource *carres)
     std::vector<CompoundChild> children;
     CfgFile car_cfg;
     if (load_car_cfg(rt, carres, &car_cfg, nullptr))
-        add_body_lines(children, car_cfg, identity_rot(), Vec3{0.0f, 0.0f, 0.0f});
+        add_body_lines(children, car_cfg, identity_rot(), Vec3{0.0f, 0.0f, 0.0f}, true);
     for (const WheelData &w : car->wheels) {
         Vec3 hub{w.hub[0], w.hub[1], w.hub[2]};
         // cfg `type`: "<bone mass> sphere <radius>" (fill_car reads the 3rd value).
@@ -681,7 +687,7 @@ void rebuild_compound(Runtime &rt, Runtime::Resource *carres)
         Mat34 rot;
         Vec3 pos;
         part_pose(rt, r, &rot, &pos, 0);
-        add_body_lines(children, part_cfg, rot, pos);
+        add_body_lines(children, part_cfg, rot, pos, false);
     }
 
     float mass = 0.0f;
@@ -724,7 +730,7 @@ void rebuild_compound(Runtime &rt, Runtime::Resource *carres)
     // instead of real child bodies; car_root's own shape stays SHAPE_NONE.
     root->collision_children.clear();
     for (const CompoundChild &c : children) {
-        if (c.shape.type != SHAPE_MESH || !c.shape.mesh) continue;
+        if (c.shape.type != SHAPE_MESH || !c.shape.mesh || c.no_soup) continue;
         RigidBody::CollisionChild child;
         child.shape = c.shape;
         child.pose.pos = c.pos - com;

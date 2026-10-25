@@ -89,6 +89,9 @@ struct CfgBody {
     std::string shape;              // resource id text, primitive name or .scx path
     int tail_count = 0;             // optional 1 or 3 trailing floats
     float tail[3] = {0, 0, 0};      // primitive dimensions / mesh scale (createBox args)
+    // Record +0x44 bits set by the modifier lines after the body (type table
+    // 0x5daba8): `nocollision` 0x4bfba0 -> 0x100.
+    uint32_t flags = 0;
 };
 
 struct CfgSlot {
