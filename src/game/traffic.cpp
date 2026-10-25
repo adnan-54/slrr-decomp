@@ -978,7 +978,7 @@ void road_bind_object(Graph &g, Road &road, uint32_t object)
                     // shortcut: 0x4ec210 reparent under (car.live && linked ? obj
                     // : T+0x311c CarContainer) is not ported.
                 }
-            } else if (!car.live || object == 0) {   // obj+8 == 0: not linked
+            } else if (!car.live || object == 0) {   // exe: obj+8 == 0 (not linked). INVENTED: object id 0 stands in for it
                 if (inst) {
                     // shortcut: the car_rem event (T+0x3130) is not modelled.
                     car.e8 = g.sim_time;
