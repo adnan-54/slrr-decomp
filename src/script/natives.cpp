@@ -3661,6 +3661,53 @@ bool ch_get_angvel(Vm &vm, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4b3220 Chassis.getMin: part_comp bounds + 0.1; no car -> (0,0,0).
+bool ch_get_min(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Chassis.getMin", a, 1, err)) return false;
+    game::CarData *c = car_of(a);
+    float v[3] = {0.0f, 0.0f, 0.0f};
+    // lo stays 0: part_comp's Poly has no vertices (0x50e5e0).
+    if (c && c->chassis_body)
+        for (int k = 0; k < 3; k++) v[k] = c->center[k] + 0.1f;
+    Object *o = new_point(vm, "java.lang.Vector3", v, false, err);
+    if (!o) return false;
+    *out = Value::make_obj(o);
+    return true;
+}
+
+// 0x4b2dc0 Chassis.getMax: same, minus 0.1 (min > max for a mesh-less part).
+bool ch_get_max(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Chassis.getMax", a, 1, err)) return false;
+    game::CarData *c = car_of(a);
+    float v[3] = {0.0f, 0.0f, 0.0f};
+    if (c && c->chassis_body)
+        for (int k = 0; k < 3; k++) v[k] = c->center[k] - 0.1f;
+    Object *o = new_point(vm, "java.lang.Vector3", v, false, err);
+    if (!o) return false;
+    *out = Value::make_obj(o);
+    return true;
+}
+
+// 0x4b3e40 Chassis.getWheelPos(i): center + WheelData::hub (+0x78).
+bool ch_get_wheel_pos(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    int32_t i;
+    if (!want("Chassis.getWheelPos", a, 2, err) ||
+        !get_i("Chassis.getWheelPos", a[1], &i, err))
+        return false;
+    game::CarData *c = car_of(a);
+    float v[3] = {0.0f, 0.0f, 0.0f};
+    // INVENTED: exe has no bounds check; i out of range -> (0,0,0)
+    if (c && c->chassis_body && i >= 0 && (size_t)i < c->wheels.size())
+        for (int k = 0; k < 3; k++) v[k] = c->center[k] + c->wheels[(size_t)i].hub[k];
+    Object *o = new_point(vm, "java.lang.Vector3", v, false, err);
+    if (!o) return false;
+    *out = Value::make_obj(o);
+    return true;
+}
+
 bool ch_get_nitroing(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!want("Chassis.getNitroing", a, 1, err)) return false;
@@ -7812,8 +7859,8 @@ const std::vector<Entry> &table()
     {"java.game.parts.bodypart.Chassis", "setTorque", "(F)V", ch_set_torque, false},
     {"java.game.parts.bodypart.Chassis", "getMass", "()F", ch_get_mass, false},
     {"java.game.parts.bodypart.Chassis", "getCM", "()Ljava.lang.Vector3;", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getMin", "()Ljava.lang.Vector3;", nullptr, true},
-    {"java.game.parts.bodypart.Chassis", "getMax", "()Ljava.lang.Vector3;", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "getMin", "()Ljava.lang.Vector3;", ch_get_min, false},
+    {"java.game.parts.bodypart.Chassis", "getMax", "()Ljava.lang.Vector3;", ch_get_max, false},
     {"java.game.Vehicle", "getHorn", "()I", veh_get_horn, false},
     {"java.game.parts.bodypart.Chassis", "setHornSFX", "(Ljava.util.resource.ResourceRef;FI)V", nullptr, true},
     {"java.game.parts.bodypart.Chassis", "setNitroSFX", "(Ljava.util.resource.ResourceRef;F)V", nullptr, true},
@@ -7868,7 +7915,7 @@ const std::vector<Entry> &table()
     {"java.game.parts.WheelRef", "setHub", "(FFFFFFFFFF)V", wr_set_hub, false},
     {"java.game.parts.WheelRef", "setInstantCenter", "(FFFFFF)V", wr_set_instant_center, false},
     {"java.game.parts.WheelRef", "setOppWheel", "(I)V", wr_set_opp_wheel, false},
-    {"java.game.parts.bodypart.Chassis", "getWheelPos", "(I)Ljava.lang.Vector3;", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "getWheelPos", "(I)Ljava.lang.Vector3;", ch_get_wheel_pos, false},
     {"java.game.parts.bodypart.Chassis", "getWheelDamage", "(I)Ljava.lang.String;", ch_get_wheel_damage, false},
     {"java.game.parts.bodypart.Chassis", "setWheelDamage", "(ILjava.lang.String;)V", ch_set_wheel_damage, false},
     {"java.game.parts.bodypart.Chassis", "setOSD", "(IF)V", ch_set_osd, false},

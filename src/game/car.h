@@ -252,6 +252,7 @@ struct CarData {
     float sh_slip_gain = 0.0f;   // +0x1338
     float sh_slip_max = 3.15f;   // +0x133c
     float sh_yaw_gain = 0.01f;   // +0x1340
+    float center[3] = {};        // M+0x1f1c, cfg `center` (0x48de60)
     float torque_base = 1.0f;    // +0xd4
     float nitro_torque_base = 1.0f;  // +0xd8
     float max_rpm = 6500.0f;     // +0x18   INVENTED default (template not traced)
