@@ -1,7 +1,7 @@
 ---
 id: 203
-status: todo
-branch:
+status: implemented
+branch: card/203
 depends: []
 ---
 # GameLogic.kismajomCheck: cheat words against the lastKey ring

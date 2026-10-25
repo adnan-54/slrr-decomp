@@ -5589,6 +5589,43 @@ bool in_last_key(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4debd0 GameLogic.kismajomCheck(String[] words): each word is compared
+// backwards against the recent-key ring (chars stored +1), newest first; a full
+// match clears the newest ring byte and returns the word index, else -1.
+bool gl_kismajom_check(Vm &, const Args &a, Value *out, std::string *err)
+{
+    if (!want("GameLogic.kismajomCheck", a, 1, err)) return false;
+    input::HotkeyTable &h = input::hotkeys();
+    int n = (a[0].kind == Value::Array && a[0].arr)
+                ? (int)a[0].arr->elems.size()
+                : 0;
+    while (n != 0) {
+        n--;
+        const Value &e = a[0].arr->elems[(size_t)n];
+        // INVENTED: the exe dereferences a non-String/null element (strlen on
+        // null); treat it as no match.
+        if (e.kind != Value::Str) continue;
+        int p = h.last_pos, i = (int)e.s.size();
+        bool ok = true;
+        for (; i > 0; i--) {
+            p = p - 1 >= 0 ? p - 1 : p + 15;
+            if ((int)(signed char)e.s[(size_t)(i - 1)] - 1 !=
+                (int)(signed char)h.last_ring[p]) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) {
+            int q = h.last_pos - 1 >= 0 ? h.last_pos - 1 : h.last_pos + 15;
+            h.last_ring[q] = 0;
+            *out = Value::make_int(n);
+            return true;
+        }
+    }
+    *out = Value::make_int(-1);
+    return true;
+}
+
 // ---- java.io.MouseCursor ---------------------------------------------------
 
 // The exe reads the object's "cursor" field (a GameRef to the cursor resource);
@@ -8003,7 +8040,7 @@ const std::vector<Entry> &table()
     {"java.io.Controller", "user_Reset", "()V", ctl_user_reset, false},
     {"java.io.Controller", "user_GetAxisVal", "(I)F", ctl_user_get_axis_val, false},
     {"java.io.Controller", "user_SetAxisForce", "(IFF)V", ctl_user_set_axis_force, false},
-    {"java.game.GameLogic", "kismajomCheck", "([Ljava.lang.String;)I", nullptr, true},
+    {"java.game.GameLogic", "kismajomCheck", "([Ljava.lang.String;)I", gl_kismajom_check, false},
     {"java.lang.System", "exit", "()V", system_exit, false},
     {"java.lang.System", "exit", "(Ljava.lang.String;)V", noop_void, false},
     {"java.lang.System", "log", "(Ljava.lang.String;)V", system_log, false},
