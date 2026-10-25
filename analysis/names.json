@@ -2004,5 +2004,11 @@
   "0x481d20": "cBodyList__addEdge",
   "0x484990": "type_BOT__managerCtor",
   "0x483bd0": "BotAI__steerAvoid",
-  "0x486020": "BotAI__plan"
+  "0x486020": "BotAI__plan",
+  "0x51e6b0": "Rpk__readRecord",
+  "0x516640": "Bounds__testSphere",
+  "0x516450": "Bounds__testBox",
+  "0x4edf80": "IntervalMgr__touchObject",
+  "0x4fe550": "Collide__groundPrefetch",
+  "0x504440": "Collide__setPassFlags"
 }
