@@ -483,11 +483,41 @@ is the player's GPS/minimap, not a driver.
 itself (src `create_*` dispatch only knows `native car`/`native trigger`, so `GameRef(world, sl:0x6E)` makes a
 plain instance and every `AI_*` command is dropped), then the 0x2730 object, the command parser, the spline
 class (~10 functions at 0x411fb0-0x418b40) and the planner/obstacle path (0x486020, 0x483bd0, 0x40a7d0..).
-Not checked: whether the vmboot career event has `racers > 0` (bot cars on the grid). Stopgap: card 169 =
+Checked 2026-10-24: the vmboot career event has `racers` 4 (see below). Stopgap: card 169 =
 vmboot-only INVENTED pure-pursuit harness on the same `.spl` (reverse order like 0x486020) that drives
 the player car to cp0. Bot cards later, in this order: (a) native bot create + `controllable`/`AI_spline`
 parse + spline loader 0x482630/0x4122b0, (b) spline queries 0x414830/0x412ed0/0x4133f0/0x414a80,
 (c) 0x485e10/0x486020 planner without opponents -> 0x482910 controls, (d) bot_trigger obstacle path.
+
+**Probe + parser detail (2026-10-24, card 173).** Scratch vmboot probe: career event `JuniorCurcuit`, `racers` 4,
+`gBot.length` 4, all 4 bot cars exist with bodies; each `brain` is a plain instance named BOTBRAIN, event mask 0, so
+every command is dropped today. 0x480850 code 0x10 compares (stricmp 0x57c11e) 31 words in this order: device
+viewport osd renderinstance camera controllable leave control lost team AI_suspend AI_NightRace AI_race
+AI_BeginRace AI_spline AI_follow AI_GoToTraffic AI_GoToTrafficSlow AI_GoToTarget AI_stop AI_level AI_smooth AI_horn
+AI_params AI_throttle AI_turn AI_brake AI_handbrake AI_clutch AI_gear AI_nitro; returns 1 for every code.
+`ai_cheat` (joinBotCars) goes to the Bot script object, not the brain. Corrections to the list above:
+- `controllable` does **not** append; it calls 0x4d2ab0 (shared with the native player, notes/09): car gets
+  `activate 0x<bot> ..` + `damage_multiplier`, the bot gets `control 0x<car>`; the `control` branch appends the ref
+  at `+0x2310 + n*0x10` and sets `+0x2424 = n` when getInfo(7) == 5.
+- `AI_suspend` 0x4877a0: reset 0x484a40, mode 1. `AI_BeginRace f` 0x4828e0: reset, mode 8, `+0x25dc = clamp01(f)`.
+  `AI_spline` format `"%*s %f %s %d"`; 0x482630 width base = `+0x2594 + width`, per-line width wins when >= 0;
+  opponent ref `+0x25e0`; `"transmission 0"` goes to the active controlled car. Script order -> mode 1, 8, 8, 3.
+- `AI_level f`: `+0x26a8 = ((clamp01(f) - 0.5) + 1) * 0.5` (same formula as create).
+- 0x4122b0 segment record is 0x54 bytes: 0x414fe0 builds it from (prev pos, prev dir, pos, dir), `+0x30` length
+  (summed into spline `+0x38`), `+0x3c` width, `+0x40..+0x50` the 5 optional fields (defaults 1.0, 1, 10000, 10000, 1).
+
+**Card plan.** 173 (todo): create + command state + .spl rows, no driving (task card). Sketches:
+- 174 planner: spline build 0x414fe0 (Hermite from pos/dir, length) + queries 0x414830/0x412ed0/0x4133f0/0x414a80,
+  then 0x47f980 -> 0x484b90 mode 3 -> 0x485e10/0x486020 target + speed limit, opponents ignored (INVENTED: none
+  yet). Hard check (real data): each bot car's grid pose projects onto its spline within the segment width, and
+  the param of the cp0 trigger position lies at route point 28 (s8 direction note).
+- 175 controls: 0x482910 writes throttle/brake/steer/gear/clutch of `controlled[active]` (CarData inputs, the same
+  fields player input fills). Hard check: in --race the bot cars leave the grid and the script's race-position
+  triggers (handleRacePos, CircuitRacing:262) fire for bot cars; no failed thread.
+- 176 race start + obstacles: mode 8 (`+0x25dc` rev level) and mode 1 (suspended) in 0x484b90 so bots stay on the
+  grid until beginRace, then 0x483bd0 `bot_trigger` sphere (r 100, 0x523c80) + 0x480850 codes 0x20/0x40 obstacle
+  list `+0x26d4` and opponent avoidance in 0x486020. Hard check: bot cars do not move before raceActive, the
+  script's `bot_laps` counts laps for all 4 bots by the player's finish.
 
 ## 9. Career circuit race: laps, finish and exit (script side, CircuitRacing.java; RE 2026-10-24, cards 171/172)
 Exe provides only triggers/timers/OSD/controls; the rules are script (memory: exe is a shell).
