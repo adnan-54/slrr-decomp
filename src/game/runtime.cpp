@@ -229,9 +229,24 @@ static void gather_ground_soup(const RpkArchive &rpk, const RpkRecord &rec,
         // block (notes/24).
         node.half = vec3(1e30f, 1e30f, 1e30f);
     }
+    const size_t idx = nodes->size();
     nodes->push_back(node);
     for (const RpkRecord &child : inst.children)
         if (child.type == 1) gather_ground_soup(rpk, child, verts, tris, normals, nodes);
+    // Subtree range + union box (speed only: a sphere that misses the union
+    // misses every node in it, so the 0x4feb20 per-node result is unchanged).
+    CollisionMesh::MapNode &n = (*nodes)[idx];
+    n.end = static_cast<uint32_t>(nodes->size());
+    Vec3 lo = n.centre - n.half, hi = n.centre + n.half;
+    for (size_t k = idx + 1; k < n.end; k++) {
+        const CollisionMesh::MapNode &d = (*nodes)[k];
+        lo = vec3(fminf(lo.x, d.centre.x - d.half.x), fminf(lo.y, d.centre.y - d.half.y),
+                  fminf(lo.z, d.centre.z - d.half.z));
+        hi = vec3(fmaxf(hi.x, d.centre.x + d.half.x), fmaxf(hi.y, d.centre.y + d.half.y),
+                  fmaxf(hi.z, d.centre.z + d.half.z));
+    }
+    n.sub_centre = (lo + hi) * 0.5f;
+    n.sub_half = (hi - lo) * 0.5f;
 }
 
 // 0x4bade0 type_ground vf3, body part: mass-0 kind-0 box with flag 4 (static,
@@ -285,9 +300,10 @@ static void create_ground_body(Runtime &rt, Runtime::Resource *r)
     b->def.shape.rolling_resistance = 0.01f; // shape +0x54
     b->def.shape.restitution = 0.2f;         // shape +0x58
     b->pos = vec3(x, y, z);
-    // INVENTED: one merged collider built at create instead of the exe's
-    // per-node streaming walk (Collide__groundTree 0x4fe6f0) and its kind-0
-    // groundbody + 0x4feb20/0x4fc7e0 TOI narrow phase.
+    // INVENTED: one merged collider: faces merged in groundTree walk order
+    // (0x4fe6f0) with the node table (cards 207/208). Streaming/unload not
+    // modelled: for cars the exe loads nodes synchronously (0x518a80 prio 0,
+    // notes/24), so only residency differs.
     // shortcut: no streaming/unload of map nodes, upgrade when 0x4feb20 /
     // 0x4fd110 / 0x4fc7e0 are traced.
     std::vector<Vec3> verts;

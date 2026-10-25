@@ -896,14 +896,49 @@ static bool hull_approaching(const HullCandidate &c, const RigidBody &a,
     return vec_dot(c.nn, cp.pos - c.pb) < 0.0f;
 }
 
-// 0x4feb20 broad phase over the merged soup: node AABB and the
-// 0x4f9860/0x4fc450 filters run on the step sweep (start pose -> integrated
-// pose). INVENTED: merged soup instead of the streamed resource nodes.
+// One soup face: world vertices and normal, then the 0x4f9860 swept-sphere
+// and 0x4fc450 OBB filters. Shared by the map-node and BVH walks.
+static void collect_face_candidate(const CollisionMesh &gm, const Pose &gp,
+                                   const Mat34 &gr, bool stored_normals, int child,
+                                   uint32_t ti, const Pose &cp0, const Pose &cp1,
+                                   const Mat34 &cr1, float br, const Vec3 &half,
+                                   std::vector<HullCandidate> &out)
+{
+    const CollisionMesh::Triangle &tri = gm.triangles[ti];
+    HullCandidate c;
+    for (int i = 0; i < 3; i++)
+        c.vw[i] = gp.pos + mat_vec(gr, gm.vertices[tri.v[i]]);
+    Vec3 n = stored_normals ? mat_vec(gr, gm.face_normals[ti])
+                            : vec_cross(c.vw[1] - c.vw[0], c.vw[2] - c.vw[0]);
+    c.n = vec_normalize(n, Vec3{0.0f, 1.0f, 0.0f});
+    if (!swept_sphere_face(cp0.pos, cp1.pos, br, c.vw[0], c.vw[1], c.vw[2], c.n))
+        return;
+    Vec3 tv[3];
+    for (int i = 0; i < 3; i++)
+        tv[i] = mat_tvec(cr1, c.vw[i] - cp1.pos);
+    if (!box_triangle(half, mat_tvec(cr1, c.n), tv))
+        return;
+    // INVENTED side gate (card 164): the merged soup stores road
+    // faces twice (normals up and down); keep the face the hull
+    // started in front of.
+    if (!(vec_dot(c.n, cp0.pos - c.vw[0]) > 0.0f))
+        return;
+    c.child = child;
+    c.tri = (int)ti;
+    c.face = poly_triangle(c.vw[0], c.vw[1], c.vw[2], c.n);
+    out.push_back(c);
+}
+
+// 0x4feb20 broad phase: map nodes (0x4fe6f0 walk order) gate the step-start
+// sphere against the node's record box; meshes without a node table (SCX)
+// keep the BVH walk with the 0x4f9860/0x4fc450 filters on the step sweep.
+// INVENTED: map nodes per 0x4feb20; streaming not modelled (no collision
+// effect for cars, notes/24).
 static void collect_hull_candidates(const RigidBody &a, const BodyState &start,
                                     const RigidBody &g, std::vector<HullCandidate> &out)
 {
     const CollisionMesh &gm = *g.def.shape.mesh;
-    if (gm.nodes.empty())
+    if (gm.empty())
         return;
     const Pose gp = g.pose();
     const Mat34 gr = g.rotation();
@@ -926,6 +961,34 @@ static void collect_hull_candidates(const RigidBody &a, const BodyState &start,
                             fabsf(lm.y) * 1.5f,
                         fmaxf(fabsf(cm.bounds_min.z), fabsf(cm.bounds_max.z)) + 0.05f +
                             fabsf(lm.z) * 1.5f};
+        if (!gm.map_nodes.empty()) {
+            // 0x4feb20 node gate: step-start sphere vs the map node's record
+            // box (no sweep).
+            // INVENTED: boxes are not rotated (shipped grounds have identity
+            // rotation).
+            auto misses = [&](const Vec3 &centre, const Vec3 &h) {
+                const Vec3 c = gp.pos + mat_vec(gr, centre);
+                return fabsf(cp0.pos.y - c.y) > h.y + br ||
+                       fabsf(cp0.pos.x - c.x) > h.x + br ||
+                       fabsf(cp0.pos.z - c.z) > h.z + br;
+            };
+            for (size_t ni = 0; ni < gm.map_nodes.size();) {
+                const CollisionMesh::MapNode &mn = gm.map_nodes[ni];
+                // Speed only: the subtree's union box encloses every node box
+                // in it, so a miss here is a miss for each of them.
+                if (mn.end > ni && misses(mn.sub_centre, mn.sub_half)) {
+                    ni = mn.end;
+                    continue;
+                }
+                ni++;
+                if (misses(mn.centre, mn.half))
+                    continue;
+                for (uint32_t ti = mn.first; ti < mn.first + mn.count; ti++)
+                    collect_face_candidate(gm, gp, gr, stored_normals, (int)ci, ti,
+                                           cp0, cp1, cr1, br, half, out);
+            }
+            continue;
+        }
         uint32_t stack[64];
         int sp = 0;
         stack[sp++] = 0;
@@ -945,33 +1008,10 @@ static void collect_hull_candidates(const RigidBody &a, const BodyState &start,
                 if (node.right >= 0 && sp < 64) stack[sp++] = (uint32_t)node.right;
                 continue;
             }
-            for (uint32_t k = 0; k < node.count; k++) {
-                const uint32_t ti = gm.order[node.first + k];
-                const CollisionMesh::Triangle &tri = gm.triangles[ti];
-                HullCandidate c;
-                for (int i = 0; i < 3; i++)
-                    c.vw[i] = gp.pos + mat_vec(gr, gm.vertices[tri.v[i]]);
-                Vec3 n = stored_normals ? mat_vec(gr, gm.face_normals[ti])
-                                        : vec_cross(c.vw[1] - c.vw[0], c.vw[2] - c.vw[0]);
-                c.n = vec_normalize(n, Vec3{0.0f, 1.0f, 0.0f});
-                if (!swept_sphere_face(cp0.pos, cp1.pos, br, c.vw[0], c.vw[1], c.vw[2],
-                                       c.n))
-                    continue;
-                Vec3 tv[3];
-                for (int i = 0; i < 3; i++)
-                    tv[i] = mat_tvec(cr1, c.vw[i] - cp1.pos);
-                if (!box_triangle(half, mat_tvec(cr1, c.n), tv))
-                    continue;
-                // INVENTED side gate (card 164): the merged soup stores road
-                // faces twice (normals up and down); keep the face the hull
-                // started in front of.
-                if (!(vec_dot(c.n, cp0.pos - c.vw[0]) > 0.0f))
-                    continue;
-                c.child = (int)ci;
-                c.tri = (int)ti;
-                c.face = poly_triangle(c.vw[0], c.vw[1], c.vw[2], c.n);
-                out.push_back(c);
-            }
+            for (uint32_t k = 0; k < node.count; k++)
+                collect_face_candidate(gm, gp, gr, stored_normals, (int)ci,
+                                       gm.order[node.first + k], cp0, cp1, cr1, br,
+                                       half, out);
         }
     }
 }
@@ -1218,8 +1258,9 @@ static void update_contacts(World &w, bool add_new, const std::vector<StepState>
         // Collide__bodyVsTriangles 0x4feb20: a compound root's child hulls
         // collide with a static triangle soup. Existing pairs are refreshed
         // here (0x4f9af0); new ones are created in the step's event phase.
-        // INVENTED: merged soup instead of the streamed resource nodes
-        // (notes/19).
+        // INVENTED: merged soup built in groundTree walk order with the node
+        // table; streaming not modelled (no collision effect for cars,
+        // notes/24).
         if (is_dynamic(a) && !a.collision_children.empty())
             for (RigidBody *g : w.statics) {
                 if (g->def.shape.type != SHAPE_MESH || !g->def.shape.mesh)

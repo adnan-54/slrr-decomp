@@ -31,6 +31,10 @@ struct CollisionMesh {
     struct MapNode {
         Vec3 centre{0.0f, 0.0f, 0.0f}, half{0.0f, 0.0f, 0.0f};
         uint32_t first = 0, count = 0;
+        // Index past the last descendant (DFS) and the box of node + all
+        // descendants: lets the 0x4feb20 gate skip a whole subtree at once.
+        uint32_t end = 0;
+        Vec3 sub_centre{0.0f, 0.0f, 0.0f}, sub_half{0.0f, 0.0f, 0.0f};
     };
 
     std::vector<Vec3> vertices;       // local body frame, metres

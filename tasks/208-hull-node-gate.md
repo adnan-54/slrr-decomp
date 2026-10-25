@@ -1,7 +1,7 @@
 ---
 id: 208
-status: todo
-branch:
+status: implemented
+branch: card/208
 depends: [207]
 ---
 # Hull vs ground soup: per-map-node gate of 0x4feb20 instead of the swept BVH gate
