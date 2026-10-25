@@ -1,6 +1,6 @@
 ---
 id: 188
-status: blocked  # port done; 3 vmboot player checks still assert raw steering, see Result
+status: done
 branch: card/188
 depends: []
 ---
@@ -71,11 +71,14 @@ if (!(flags & 0x200) && e+0xa34 > 0 && hi > 0) {
 - no new tests or hand-made expected values; card frontmatter status/branch filled.
 
 ## Result
-Port is complete (0x48fa30 cfg, 0x4a2e60 command, 0x498a6e..0x498d44 block); `make -C src clean check`
-fails 3 old vmboot player checks that assert raw steering (`main` is green, 166/166):
-- `FAIL Left (axis 1) gives steer > 0.9 (got 0.756091)`
-- `FAIL Right (axis 1) gives steer < -0.9 (got -0.631610)`
-- `FAIL auto clutch slips at launch (0x4977a0): max clutch_input 0.000000`
-The numbers match the ported formula (SunStrip `1.0 30.0 0.5 0.0 1.57 1.0`: keep term `1-0.5*f`);
-the checks' `>0.9` bounds predate steer help. Not updated: no exe-run value available, and a value from
-this port would be a hand-made expectation. Needs a card to re-derive them from the exe.
+Port re-checked against asm 0x498a6e..0x498d44 (gates 0x498a79/0x498a8d/0x498aa1/0x498b59, lat/fwd from
+state rows +0xa4/+0xb4/+0xc4, yaw from omega +0xd4, +0x1fbc, clamp, dt*10 rate limit, sign-flip halving):
+matches. The 3 failures were not port bugs:
+- Left/Right `> 0.9`/`< -0.9` came from card 148, written while steer help was `not ported`; the exe helps
+  above lo = 1 m/s (SunStrip f ~0.24 at 8 m/s, keep term 1-0.5f, yaw damper yawGain 1.0), so the helped
+  value is below 0.9. Fix: vmboot sends `steerhelp 0` (0x4a2e60, flag 0x200 -> 0x498a79 skips the block)
+  for the Left/Right phase, so the checks test the raw axis again, then restores the previous e+0xa34.
+- auto clutch: harness knock-on. The helped Right phase left an upshift in flight at `reset`
+  (shift_end > now), so 0x497930 delayed engage, rpm_smoothed decayed, engage came with the clutch locked.
+  With help off in the steering phase the launch state is as on main; the launch drive runs with help on.
+`make -C src clean check` green (166 + 156).
