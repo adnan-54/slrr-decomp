@@ -375,10 +375,12 @@ void EngineModel::setup_rpm_point()
 }
 
 // 0x4f5ab0 EngineModel__boostGauge: the turbo g of setupRpmPoint, normalised by
-// the wastegate pressure. Caller guarantees turbo_mul, turbo_range, p_turbo_max > 0.
+// the wastegate pressure. Returns 0 unless turbo_mul, turbo_range, p_turbo_max
+// and p_turbo_waste (+0xdc/+0xe8/+0xec/+0xf0) are all > 0.
 // Denominator is sqrt(P), not sqrt(P+1): the exe quirk.
 float EngineModel::boost_gauge(float rpm) const
 {
+    if (!(turbo_mul > 0.0f && turbo_range > 0.0f && p_turbo_max > 0.0f && p_turbo_waste > 0.0f)) return 0.0f;  // 0x4f5ab0
     float g;
     const float x = fabsf(rpm * turbo_mul - turbo_opt);
     if (turbo_band <= x) {
