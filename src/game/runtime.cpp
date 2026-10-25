@@ -342,6 +342,33 @@ static void create_trigger_body(Runtime &rt, Runtime::Resource *r,
     r->trigger_body = std::move(b);
 }
 
+// 0x4d4af0 type_trigger vf7 (params "fffffff" = x,y,z,yaw,pitch,roll,r, scan
+// 0x56a1a0): place the sensor, resize a sphere when r > 0, clear velocities.
+void move_trigger(Runtime::Resource *r, const std::string &params)
+{
+    if (!r || !r->trigger_body) return;
+    RigidBody &b = *r->trigger_body;
+    float pos[3] = {0.0f, 0.0f, 0.0f}, ypr[3] = {0.0f, 0.0f, 0.0f}, rad = -1.0f;
+    size_t i = 0;
+    bool ok = true;
+    for (int k = 0; k < 3 && ok; k++)
+        ok = scan_float(params, &i, &pos[k]) && scan_char(params, &i, ',');
+    for (int k = 0; k < 3 && ok; k++)
+        ok = scan_float(params, &i, &ypr[k]) && scan_char(params, &i, ',');
+    if (ok) scan_float(params, &i, &rad);
+    Mat34 m;
+    euler_to_mat(&m, ypr);  // Math__eulerToMat 0x5666d0
+    if (rad > 0.0f && b.def.shape.type == SHAPE_SPHERE)
+        b.def.shape.radius = rad;  // shape+0xb4 = r, +0x10 = r; bound +0xc = r+0.05 is bounding_radius()
+    // 0x4eac50 places the body at pos with rotation R.
+    // shortcut: pos is world-space here, as in create_trigger_body (no parent pose).
+    b.pos = Vec3{pos[0], pos[1], pos[2]};
+    mat_to_quat(&b.rot, &m);
+    b.vel = Vec3{0.0f, 0.0f, 0.0f};              // state vel = 0
+    b.angular_momentum = Vec3{0.0f, 0.0f, 0.0f}; // 0x506ce0(&zero)
+    // INVENTED: the +0xa0 &= ~2 "moved" bit has no src field; nothing to clear.
+}
+
 // 0x4bade0 type_ground vf3 create: check the type is a native ground, then
 // load the named .trc (File__readAll 0x565610, Traffic__load 0x41a000).
 // INVENTED: lazy creation at the first lookup and the failure log; the exe
