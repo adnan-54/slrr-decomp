@@ -72,3 +72,21 @@ Any failure -> Vector3 (0,0,0) (locals pre-zeroed).
   `out = -(R^T d) - pb.shape.com(+0x40..0x48)` with `R^T d = (a4*dx + b4*dy + c4*dz, a8.., ac..)` -> ≈ center.
 - `center` cfg keyword 0x48de60 (gated M+0x120 == 0): `Str__scan(values, "%f %f %f")` into zero-initialised
   locals, then all three stored (missing values -> 0, not kept). No shipped cfg uses it.
+
+## 4. Correction (2026-10-25): pb of the geometry natives is the first `body` child, not part_comp
+§3's premise "pb == car+0x13ec" is wrong. Asm: 0x4b3336/0x4b2ed6/0x4b3f61 `LEA ECX,[car+0x2c]; CALL 0x4eabc0`
+(getCM: `ADD ECX,0x2c` at 0x4b27a2). Two different ref nodes on P (16 bytes {prev,next,id,RI}):
+- `P+0x1c` = "part_comp" resource (0x4c1f90 at 0x4c21e8 `0x4e8a50(ECX=P+0x1c, ..., "part_comp")`);
+  createCar 0x499362 `car+0x13ec = getPhysBody(P+0x1c)->+0xb4` = part_comp.
+- `P+0x2c` = the "bbone" child: in the 0x4c1f90 body-record loop, for record index `== M+0xff0`
+  (first `body` line) `0x4c23e3 bind(P+0x2c, child+0x54)`; only if still unbound (`P+0x34 == 0`)
+  at the end `0x4c261e bind(P+0x2c, P+0x28)` (= part_comp). Cars with body lines -> first body child.
+Child link record `X = child+0x1c` (0x50 bytes, 0x4f7990 at attach): `X+4..0xc t = R_pc^T (pos_child -
+pos_pc)`, `X+0x10` relative quat, `X+0x20/0x30/0x40` rows of `R_pc^T R_child` (0x5665c0). Child world
+pose from 0x4c1f90: `pos = P.pos + R_P (rec.pos + rec.R * shape.com(+0x40))`, `R = R_P rec.R`, so
+`X.t = rec.pos + rec.R*com`, `X.R = rec.R` (exact up to float rounding).
+Effect: getMin/getMax/getWheelPos walk one step: `p = X.t + X.R*center`, then stop at part_comp (its
+Poly has 0 vertices, so lo/hi stay 0). getCM: `pb = bbone`: `out = -(R_pc^T (R_bb(-c) + pos_bb - pos_pc))
+- com_bb = X.R*c - X.t - com_bb`. Shipped data: the first body line is a 0.001 kg sphere/box at the
+origin with rot 0 on all but 5 car cfgs, so results only change for Peterbild/_2/_3 (sphere at y 0.9),
+Focer_WRC (`_phys_chassis_water.scx`) and Police_V3 (`_phys_chassis_cockpit.scx`, com != 0). Card 205.

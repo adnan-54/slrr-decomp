@@ -1,6 +1,6 @@
 ---
 id: 055
-status: blocked  # needs untraced helpers or a missing service (physics body / collision / type manager); see UNRESOLVED
+status: rejected  # 2026-10-25: getInfo already ported (natives.cpp gr_get_info); kismajomCheck -> card 203 (table is the lastKey ring, notes/23 §1); setActiveCollision has no shipped .java caller
 branch:
 depends: []
 ---

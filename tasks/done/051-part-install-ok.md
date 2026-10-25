@@ -1,6 +1,6 @@
 ---
 id: 051
-status: blocked  # needs untraced helpers or a missing service (physics body / collision / type manager); see UNRESOLVED
+status: rejected  # 2026-10-25: superseded by card 206 (src install_search exists now; out-arg xpart = found target, notes/23 §3)
 branch:
 depends: []
 ---

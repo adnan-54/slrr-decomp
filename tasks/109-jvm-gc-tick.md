@@ -1,6 +1,6 @@
 ---
 id: 109
-status: draft
+status: draft  # 2026-10-25: still worth doing (47 shipped scripts define finalize(), e.g. multibot track_data lights, Chassis, DynoData) but 406 lines: split into mark/sweep, finalizer pump, GC natives before handing to Flash
 branch:
 depends: [102]
 ---
