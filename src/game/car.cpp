@@ -3043,6 +3043,97 @@ Runtime::Resource *bot_of_trigger(Runtime::Resource *trigger)
     return it != g_bots.end() && it->second.trigger == trigger ? trigger->parent : nullptr;
 }
 
+// Builds the obstacle sub-record chain (0x480850 code 0x20 shape part).
+static void bot_build_subs(BotData::BotObstacle &rec, const BotData &b)
+{
+    auto &subs = rec.subs;
+    auto xf = [&](Vec3 p) { return mat_vec(rec.body->rotation(), p) + rec.body->pos; };
+    auto xr = [&](Vec3 v) { return mat_vec(rec.body->rotation(), v); };
+    // 0x482350 point(p, r, h)
+    auto point = [&](Vec3 p, float r, float h) {
+        BotData::BotObstacle::Sub s;
+        s.P = rec.type == 2 ? p : xf(p);
+        s.r = r;
+        s.h = h;
+        s.ang = -1.0f;
+        subs.insert(subs.begin(), s);  // pushed at the chain head
+    };
+    float margin = b.half_width;  // +0x2594
+    // 0x481d20 edge(C, d, h, E, s, margin)
+    auto edge = [&](Vec3 C, float d, float h, Vec3 E, float s_, float mg) {
+        BotData::BotObstacle::Sub s;
+        Vec3 u = C - E;
+        float inv = 1.0f / vec_length(u);
+        Vec3 nn = u * inv;
+        s.ang = asinf((s_ - d) * inv);  // 0x570ac1
+        float k = (d + mg) / (s_ - d);
+        Vec3 A = C + u * k;
+        Vec3 B = E + nn * (s_ + mg);
+        if (rec.type == 2) {
+            s.P = C; s.A = A; s.B = B; s.n = nn;
+        } else {
+            s.P = xf(C); s.A = xf(A); s.B = xf(B); s.n = xr(nn);
+        }
+        s.n.y = 0.0f;
+        float l = vec_length(s.n);
+        if (l != 0.0f) s.n = s.n * (1.0f / l);
+        s.r = d;
+        s.h = h;
+        subs.insert(subs.begin(), s);
+    };
+    // INVENTED: the exe reads the shape at def+0x90 and builds nothing for kinds other
+    // than 1/5/6. Here car_root's own shape is SHAPE_NONE (compound hulls live in
+    // collision_children, see the Card 160 storage), so use the first child hull.
+    const Shape *sh = &rec.body->def.shape;
+    if (sh->type != SHAPE_SPHERE && sh->type != SHAPE_BOX && sh->type != SHAPE_MESH &&
+        !rec.body->collision_children.empty())
+        sh = &rec.body->collision_children[0].shape;
+    float X, Y, Z;
+    if (sh->type == SHAPE_SPHERE) {
+        float r = sh->bounding_radius();  // shape+0xc = r + 0.05
+        point(Vec3{0, 0, 0}, r, r);
+        return;
+    } else if (sh->type == SHAPE_BOX) {
+        X = sh->half_extents.x; Y = sh->half_extents.y; Z = sh->half_extents.z;
+    } else if (sh->type == SHAPE_MESH && sh->mesh) {
+        // shape+0x14..0x1c (0x480850 case 6): max(|min|,|max|) + 0.05 per axis, as in
+        // physics/world.cpp's face-cache half extents.
+        const CollisionMesh &cm = *sh->mesh;
+        X = fmaxf(fabsf(cm.bounds_min.x), fabsf(cm.bounds_max.x)) + 0.05f;
+        Y = fmaxf(fabsf(cm.bounds_min.y), fabsf(cm.bounds_max.y)) + 0.05f;
+        Z = fmaxf(fabsf(cm.bounds_min.z), fabsf(cm.bounds_max.z)) + 0.05f;
+    } else {
+        return;
+    }
+    if (fabsf(X - Z) < 0.5f) {
+        point(Vec3{0, 0, 0}, Z <= X ? X : Z, Y);
+        return;
+    }
+    Vec3 ax;
+    float s, L;
+    if (Z <= X) { ax = Vec3{1, 0, 0}; s = Z; L = X; }
+    else { ax = Vec3{0, 0, 1}; s = X; L = Z; }
+    float e = L - s;
+    Vec3 P1{e * ax.x, 0, e * ax.z}, P2{-e * ax.x, 0, -e * ax.z};
+    point(P1, s, Y);
+    point(P2, s, Y);
+    if (s > 0.5f) {
+        edge(Vec3{X, 0, Z}, 0.1f, Y, P1, s, margin);
+        edge(Vec3{-X, 0, Z}, 0.1f, Y, ax.x <= 0 ? P1 : P2, s, margin);
+        edge(Vec3{X, 0, -Z}, 0.1f, Y, ax.x <= 0 ? P2 : P1, s, margin);
+        edge(Vec3{-X, 0, -Z}, 0.1f, Y, P2, s, margin);
+    }
+    float f = (L + L) - (s + s);
+    int n = (int)floor((double)(f / (margin + margin + s + s)));
+    if (n != 0) {
+        float step = f / (float)(n + 1), t = s - L;
+        for (int i = 0; i < n; i++) {
+            t += step;
+            point(Vec3{t * ax.x, 0, t * ax.z}, s, Y);
+        }
+    }
+}
+
 // 0x480850 type_bot vf14 codes 0x20 / 0x40 (param record +0x50 = body B).
 void bot_trigger_event(Runtime::Resource *bot, RigidBody *other, uint32_t code)
 {
@@ -3066,7 +3157,8 @@ void bot_trigger_event(Runtime::Resource *bot, RigidBody *other, uint32_t code)
     if (b.active >= 0 && b.active < (int)b.controlled.size() && b.controlled[(size_t)b.active] &&
         root->owner_id == b.controlled[(size_t)b.active]->id)
         return;  // own car
-    b.obstacles.push_back({other, type});  // sub-records: card 184
+    b.obstacles.push_back({other, type, {}});
+    bot_build_subs(b.obstacles.back(), b);  // 0x480850 0x20 shape
 }
 
 // 0x47f980 native bot vf11: runs on the mode-8 control list (0x47bc20) after

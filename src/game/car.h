@@ -365,7 +365,15 @@ struct BotData {
     struct BotObstacle {
         RigidBody *body;  // cBodyList +0x24
         int type;         // +0x2c: 1 static, 2 heavy dynamic, 0 other
-        // sub-records (+0x30 chain): card 184
+        // Sub-records (+0x30 chain, 0x40 bytes each). Index 0 = chain head =
+        // newest (the exe pushes every new record at the head).
+        struct Sub {
+            Vec3 P{0, 0, 0}, A{0, 0, 0}, B{0, 0, 0}, n{0, 0, 0};  // [1..3] [4..6] [7..9] [10..12]
+            float ang = -1.0f;  // [0xd], -1 = point record
+            float r = 0.0f;     // [0xe]
+            float h = 0.0f;     // [0xf]
+        };
+        std::vector<Sub> subs;
     };
     std::vector<BotObstacle> obstacles;    // +0x26ac list, append order
 };
