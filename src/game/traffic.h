@@ -126,7 +126,12 @@ struct Graph {
     void step(float t);   // 0x41b290: sim_time = t (+0x84); car pool not ported
     // 0x40ce00: spawn an abstract car on a free lane of road; returns index + 1 (0 = none).
     uint32_t spawn_on_road(size_t road, float p1, float p2, float p3, float p4);
+    // 0x416800: spawn on a lane of the nearest cross; the cross picks the road.
+    uint32_t spawn_near(float x, float y, float z, float dist, float p1, float p2,
+                        float p3, float p4);
     size_t node_count() const;  // eq + light + road + lane
+    // INVENTED: node id -> lane with a bounds check (the exe dereferences it).
+    const Lane *lane_by_node(uint32_t id) const;
     // 0x419050: cross_eq first, then cross_light; first strict minimum wins.
     const Cross *nearest_cross(float x, float y, float z, float dist, bool yflag) const;
     void clear_halts();   // 0x417c50: every lane's halt flag (+0xc4) = 0

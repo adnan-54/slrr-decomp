@@ -582,6 +582,14 @@ size_t Graph::node_count() const
     return cross_eq.size() + cross_light.size() + roads.size() + lanes.size();
 }
 
+const Lane *Graph::lane_by_node(uint32_t id) const
+{
+    size_t base = cross_eq.size() + cross_light.size() + roads.size();
+    if (id <= base) return nullptr;
+    size_t i = id - 1 - base;
+    return i < lanes.size() ? &lanes[i] : nullptr;
+}
+
 // 0x419050 Traffic__nearestCross.
 const Cross *Graph::nearest_cross(float x, float y, float z, float dist, bool yflag) const
 {
@@ -680,10 +688,7 @@ namespace {
 // non-lane id yields null here.
 Lane *lane_at(Graph &g, uint32_t id)
 {
-    size_t base = g.cross_eq.size() + g.cross_light.size() + g.roads.size();
-    if (id <= base) return nullptr;
-    size_t i = id - 1 - base;
-    return i < g.lanes.size() ? &g.lanes[i] : nullptr;
+    return const_cast<Lane *>(g.lane_by_node(id));
 }
 
 // 0x415650 ctCross init (0x40e0d0 inlined).
@@ -1026,6 +1031,55 @@ uint32_t Graph::spawn_on_road(size_t road, float p1, float p2, float p3, float p
     car.front_z = p[2] + car.k18 * v[2];
     lane_insert(*this, li, ci);
     return ci + 1;
+}
+
+// 0x416800 Traffic__spawnCarNear: a link lane of the nearest cross picks the
+// road; the lane itself only selects it.
+uint32_t Graph::spawn_near(float x, float y, float z, float dist, float p1,
+                           float p2, float p3, float p4)
+{
+    const Cross *cross = nearest_cross(x, y, z, dist, false);
+    if (!cross) return 0;
+
+    const size_t n = cross->links.size();
+    size_t free = 0, live = 0;
+    for (const CrossLink &link : cross->links) {
+        const Lane *l = lane_by_node(link.node);
+        // INVENTED: a link that is not a lane is neither free nor live (the exe
+        // dereferences it).
+        if (!l || l->halted) continue;
+        free++;
+        if (l->live) live++;
+    }
+    if (free == 0) return 0;
+
+    const uint32_t pick = msvc_rand();   // rand15, one call per selection
+    const Lane *lane = nullptr;
+    if (free == n && (live == 0 || live == n)) {
+        lane = lane_by_node(cross->links[pick % n].node);   // may be halted
+    } else if (live == 0) {
+        size_t k = pick % free;
+        for (const CrossLink &link : cross->links) {
+            const Lane *l = lane_by_node(link.node);
+            if (!l || l->halted) continue;
+            if (k-- == 0) { lane = l; break; }
+        }
+    } else {
+        size_t k = pick % live;
+        for (const CrossLink &link : cross->links) {
+            const Lane *l = lane_by_node(link.node);
+            if (!l || l->halted || !l->live) continue;
+            if (k-- == 0) { lane = l; break; }
+        }
+    }
+    // INVENTED: a selection that yields no lane, or a road id outside the road
+    // table, returns 0 (the exe dereferences both).
+    if (!lane) return 0;
+    size_t base = cross_eq.size() + cross_light.size();
+    if (lane->road < 1 + base) return 0;
+    size_t ri = lane->road - 1 - base;
+    if (ri >= roads.size()) return 0;
+    return spawn_on_road(ri, p1, p2, p3, p4);
 }
 
 // 0x41a000 Traffic__load.

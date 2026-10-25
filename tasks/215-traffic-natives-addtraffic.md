@@ -1,7 +1,7 @@
 ---
 id: 215
-status: todo
-branch:
+status: implemented
+branch: card/215
 depends: [214]
 ---
 # GroundRef: addTraffic / addTrafficCar / Traffic__spawnCarNear on the car pool

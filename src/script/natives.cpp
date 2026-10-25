@@ -7280,15 +7280,79 @@ bool gr_add_water_limit(Vm &, const Args &a, Value *out, std::string *err)
 }
 
 // 0x4dd090 GroundRef.addTrafficCar(GameRef,Vector3)I: if (inst == 0) log, return 0;
-// if (!getInfo(h, 0x39)) return 0.
-// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+// if (!getInfo(h, 0x39)) return 0; spawn on a road whose first lane is not live,
+// or on the road of a lane near pos; then link the instance and set the car fields.
 // INVENTED: the exe appends in "<file>" at line <n>; a NativeFn has no frame.
-bool gr_add_traffic_car(Vm &, const Args &a, Value *out, std::string *err)
+// INVENTED: instance/type links keep the resource id (the exe stores pointers);
+// a null handle target is treated as the null instance.
+bool gr_add_traffic_car(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     if (!want("GroundRef.addTrafficCar", a, 3, err)) return false;
-    if (a[1].kind == Value::Null || (a[1].kind == Value::Obj && !a[1].obj))
-        std::fprintf(stderr, "vm_ground_addtrafficcar: Traffic car instance is null\n");
     *out = Value::make_int(0);
+    Runtime::Resource *inst = value_resource(a[1]);
+    Runtime::Handle *inst_h = value_handle(a[1]);
+    if (!inst) {
+        std::fprintf(stderr, "vm_ground_addtrafficcar: Traffic car instance is null\n");
+        return true;
+    }
+    Runtime *rt = game_rt();
+    traffic::Graph *t = rt ? rt->ground_traffic(value_handle(a[0])) : nullptr;
+    if (!t) return true;
+
+    uint32_t handle = 0;
+    if (a[2].kind == Value::Null) {
+        // 0x4dd090: m = roads whose first lane is not live; pick the r-th.
+        size_t m = 0;
+        for (const traffic::Road &road : t->roads) {
+            const traffic::Lane *l = t->lane_by_node(road.node[0]);
+            if (l && !l->live) m++;   // INVENTED: a missing first lane is skipped
+        }
+        if (m) {
+            size_t r = (size_t)((float)msvc_rand() * 3.0517578e-05f * (float)m) % m;
+            size_t seen = 0;
+            for (size_t i = 0; i < t->roads.size(); i++) {
+                const traffic::Lane *l = t->lane_by_node(t->roads[i].node[0]);
+                if (!l || l->live) continue;
+                if (seen++ == r) {
+                    handle = t->spawn_on_road(i, 1.0f, 2.0f, 4.0f, 1.0f);
+                    break;
+                }
+            }
+        } else {
+            // Last road never chosen; the rand is drawn even with no road (0x4dd090).
+            int32_t r = (int32_t)((float)msvc_rand() * 3.0517578e-05f *
+                                  (float)((int32_t)t->roads.size() - 1));
+            if (!t->roads.empty())   // INVENTED: the exe checks the slot address only
+                handle = t->spawn_on_road((size_t)r, 1.0f, 2.0f, 4.0f, 1.0f);
+        }
+    } else {
+        Object *o;
+        float pos[3];
+        if (!get_o("GroundRef.addTrafficCar", a[2], &o, err) ||
+            !vec_read(vm, o, pos, err))
+            return false;
+        handle = t->spawn_near(pos[0], pos[1], pos[2], 0.0f, 1.0f, 2.0f, 4.0f,
+                               1.0f);
+    }
+
+    if (handle) {
+        // INVENTED: handle bounds check; the exe returns a raw pointer.
+        if (handle > t->cars.size()) return true;
+        traffic::Car &car = t->cars[handle - 1];
+        car.inst_id = inst_h ? inst_h->id : 0;   // +0x130 instance link (id +0x138)
+        // shortcut: getInfo(inst, 0x38, &car) type_car take-over is not ported
+        // (it freezes the car, notes/27 §3)
+        // shortcut: 0x4ec210 reparent is not ported (ECX not asm-checked)
+        game::CarData *cd = game::car_data(*rt, inst);
+        car.notify = cd && cd->notify ? 1 : 0;
+        car.max_speed = (float)msvc_rand() * 0.00033908422f + 19.444445f;
+        car.accel = (float)msvc_rand() * 1.2207031e-05f + 0.7f;
+        car.lateral = (float)msvc_rand() * 3.0517578e-05f * 2.0f - 1.0f;
+        car.seed = 0;
+        // shortcut: TrafficCar__refreshInstance 0x4107a0 needs the instance side
+        // (notes/29 §5)
+    }
+    *out = Value::make_int((int32_t)handle);
     return true;
 }
 
@@ -7311,12 +7375,85 @@ bool gr_notify_traffic_car(Vm &, const Args &a, Value *out, std::string *err)
     return true;
 }
 
-// 0x4dc9e0 GroundRef.addTrafficN(GameRef,IFFF)I: if (n < 1 || !getInfo(h, 0x39)) return 0.
-// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
+// 0x4dc9e0 GroundRef.addTrafficN(GameRef,IFFF)I: if (n < 1 || !getInfo(h, 0x39))
+// return 0; make the type resident; take c/d from the type's wheel mounts, and
+// notify from the type; spawn n abstract cars on random roads (last road never
+// chosen).
+// INVENTED: the type link keeps the resource id (the exe stores a pointer).
 bool gr_add_traffic_n(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!want("GroundRef.addTrafficN", a, 6, err)) return false;
+    int32_t n;
+    float p[3];
+    if (!get_i("GroundRef.addTrafficN", a[2], &n, err) ||
+        !get_f("GroundRef.addTrafficN", a[3], &p[0], err) ||
+        !get_f("GroundRef.addTrafficN", a[4], &p[1], err) ||
+        !get_f("GroundRef.addTrafficN", a[5], &p[2], err))
+        return false;
     *out = Value::make_int(0);
+    Runtime *rt = game_rt();
+    traffic::Graph *t = rt ? rt->ground_traffic(value_handle(a[0])) : nullptr;
+    if (n < 1 || !t) return true;
+
+    // 0x47c080 Config("trafficDensity"). INVENTED: Config.java's 1.0 default.
+    float density = 1.0f;
+    if (rt->vm()) {
+        Value v;
+        std::string e;
+        if (rt->vm()->get_static_field("java.util.Config", "trafficDensity", &v, &e) &&
+            v.kind == Value::Float)
+            density = v.f;
+    }
+    // shortcut: the min(n, density * 20) pre-created "traffic_car" instances and
+    // Traffic__parkInstance 0x417080 are not ported (notes/29 §5); this pass is
+    // the only user of density, so k is computed for parity only.
+    [[maybe_unused]] int32_t k = (int32_t)(density * 20.0f);
+    if (n < k) k = n;
+
+    // Make the type resident (car_data loads its cfg).
+    game::CarData *cd = game::car_data(*rt, value_resource(a[1]));
+    // 0x4dc9e0 locals: c = 2.0, d = 0.5; getInfo 0x40/0x46 overwrite both only when the type answers.
+    float c = 2.0f, d = 0.5f;
+    if (cd && cd->wheels.empty()) d = 2.0f;
+    if (cd && !cd->wheels.empty()) {
+        // getInfo(type, 0x40) / (type, 0x46): wheel template mount z, i = 0..3.
+        float z[4] = {};
+        // INVENTED: a missing wheel record reads as 0 (the exe reads all four).
+        for (size_t i = 0; i < 4 && i < cd->wheels.size(); i++)
+            z[i] = cd->wheels[i].template_pos[2];
+        c = ((z[2] + z[3]) - (z[0] + z[1])) * 0.5f;
+        d = (z[2] + z[3]) / ((z[2] + z[3]) - (z[0] + z[1]));
+    }
+    const bool notify = cd && cd->notify;
+    Runtime::Handle *type_h = value_handle(a[1]);
+    const uint32_t type_id = type_h ? type_h->id : 0;   // +0x14c
+
+    int32_t spawned = 0;
+    for (int32_t i = 0; i < n; i++) {
+        // Last road never chosen: rand15 / 32768 * (nRoads - 1) truncates.
+        int32_t r = (int32_t)((float)msvc_rand() * 3.0517578e-05f *
+                              (float)((int32_t)t->roads.size() - 1));
+        uint32_t handle = t->spawn_on_road((size_t)r, 1.0f, 2.0f, 4.0f, 1.0f);
+        if (!handle) continue;
+        // INVENTED: handle bounds check; the exe returns a raw pointer.
+        if (handle > t->cars.size()) continue;
+        traffic::Car &car = t->cars[handle - 1];
+        car.type_id = type_id;   // +0x144 type link (id +0x14c)
+        car.seed = (msvc_rand() * 0xffffu) >> 15;
+        car.max_speed = (float)msvc_rand() * 0.00023735895f + 13.611111f;
+        car.accel = (float)msvc_rand() * 1.2207031e-05f + 0.7f;
+        car.k18 = c;
+        car.k1c = d;
+        car.k14 = p[0];
+        car.k20 = p[1];
+        car.k24 = 1.0f;
+        car.notify = notify ? 1 : 0;
+        car.lateral = (float)msvc_rand() * 3.0517578e-05f * 2.0f - 1.0f;
+        // shortcut: TrafficCar__refreshInstance 0x4107a0 needs the instance side
+        // (notes/29 §5)
+        spawned++;
+    }
+    *out = Value::make_int(spawned);
     return true;
 }
 

@@ -720,6 +720,45 @@ void city_checks(Boot &boot, Checker &c, Object *state, FrameLoop &loop)
                 std::to_string((double)graph->sim_time) + " vs " +
                 std::to_string((double)process_world().time) + ")");
 
+    // Card 215: Valocity's addTraffic/addTrafficCar only put abstract cars into
+    // lane lists (no instance side); check the pool, the lane lists and the heap.
+    bool lists_ok = true, heap_ok = true;
+    size_t with_cars = 0, events = 0;
+    for (const traffic::Lane &l : graph->lanes) {
+        for (size_t i = 1; i < l.cars.size(); i++) {
+            uint32_t a = l.cars[i - 1], b = l.cars[i];
+            if (a >= graph->cars.size() || b >= graph->cars.size() ||
+                !(graph->cars[a].pos <= graph->cars[b].pos))
+                lists_ok = false;
+        }
+        for (uint32_t ci : l.cars) {
+            if (ci >= graph->cars.size()) {
+                lists_ok = false;
+                continue;
+            }
+            float pos = graph->cars[ci].pos;
+            if (!(pos >= 0.0f && pos <= l.path.length)) lists_ok = false;
+        }
+        if (!l.cars.empty()) {
+            with_cars++;
+            if (l.pending_events == 1) events++;
+        }
+    }
+    for (size_t i = 1; i < graph->heap.size(); i++)
+        if (!(graph->heap[(i - 1) / 2].time <= graph->heap[i].time)) heap_ok = false;
+    c.check(!graph->cars.empty() && with_cars > 0,
+            "city: the traffic car pool and lane lists hold cars after Valocity's "
+            "addTraffic calls (0x40ce00)");
+    c.check(lists_ok,
+            "city: every lane's car list is ascending in pos and every pos is in "
+            "[0, path length] (0x40ce00/0x40d1e0)");
+    c.check(heap_ok,
+            "city: the lane event heap is a min-heap by time (0x41a950)");
+    c.check(graph->heap.size() == events,
+            "city: one pending event per non-empty lane (0x40cbd0, got " +
+                std::to_string(graph->heap.size()) + " heap entries for " +
+                std::to_string(events) + " non-empty lanes)");
+
     int failed = 0;
     for (const natives::ThreadInfo &t : natives::thread_report(*boot.vm()))
         if (!t.error.empty()) failed++;
