@@ -1335,6 +1335,10 @@ void game_init_check(Boot &boot, Checker &c)
                     n_spl = sz.i;
             }
             int bad_state = 0, bad_spline = 0, printed = 0;
+            int spline_build_bad = 0, spline_proj_bad = 0;
+            bool strict_tried = false, strict_ok = false;
+            int strict_seg = -1;
+            float strict_lat = 0.0f, strict_width = 0.0f;
             Runtime::Resource *prev_car = nullptr;
             for (int i = 0; have_list && i < racers; i++) {
                 const Value &biv = bv.arr->elems[(size_t)i];
@@ -1416,6 +1420,55 @@ void game_init_check(Boot &boot, Checker &c)
                                                         : bd->spline_file.c_str(),
                                 bd->spline_points.size(), bd->segments, bd->mode,
                                 bd->opponent);
+                if (bd) {  // card 174: the built ctPath behind +0x2604
+                    const traffic::Path &sp = bd->spline;
+                    float chord = 0.0f;
+                    for (size_t k = 1; k < bd->spline_points.size(); k++)
+                        chord += vec_length(bd->spline_points[k].pos -
+                                            bd->spline_points[k - 1].pos);
+                    bool build_ok =
+                        sp.segs.size() + 1 == bd->spline_points.size();
+                    if (!build_ok || !(sp.length >= chord)) spline_build_bad++;
+                    // Every point k = 1..n-2 sits at the joint after segments
+                    // 0..k-1; the closed .spl repeats point 0 as its last line.
+                    int proj_bad = 0;
+                    float cum = 0.0f;
+                    for (size_t k = 1; build_ok && k + 1 < bd->spline_points.size();
+                         k++) {
+                        cum += sp.segs[k - 1].len;
+                        const Vec3 &pt = bd->spline_points[k].pos;
+                        float sd = 0, sl = 0;
+                        if (!traffic::path_project(sp, pt.x, pt.z, &sd, &sl) ||
+                            std::fabs(sl) >= 0.05f ||
+                            std::fabs(sd - cum) >= 0.05f)
+                            proj_bad++;
+                    }
+                    if (proj_bad) spline_proj_bad++;
+                    std::printf(
+                        "    bot %d spline: %zu segment(s), length %.2f (chord "
+                        "%.2f), width(0) %.3f, i2(0) %d, lerp(0) %.0f\n",
+                        i, sp.segs.size(), (double)sp.length, (double)chord,
+                        (double)traffic::path_width_at(sp, 0.0f),
+                        traffic::path_i2_at(sp, 0.0f),
+                        (double)traffic::path_lerp_at(sp, 0.0f));
+                    if (i == 0 && !trig_start.empty()) {
+                        float sd = 0, sl = 0;
+                        strict_tried = true;
+                        if (traffic::path_project_strict(
+                                sp, trig_start[0].x, trig_start[0].z, &sd, &sl)) {
+                            float acc = 0.0f;
+                            for (size_t k = 0; k + 1 < sp.segs.size(); k++) {
+                                if (sd < acc + sp.segs[k].len) break;
+                                acc += sp.segs[k].len;
+                                strict_seg = (int)k + 1;
+                            }
+                            if (strict_seg < 0) strict_seg = 0;
+                            strict_lat = sl;
+                            strict_width = traffic::path_width_at(sp, sd);
+                            strict_ok = std::fabs(sl) < strict_width;
+                        }
+                    }
+                }
                 prev_car = car;
             }
             c.check(have_list && bad_state == 0,
@@ -1425,6 +1478,21 @@ void game_init_check(Boot &boot, Checker &c)
                     "every gBot brain holds the AI_spline state (mode 3, "
                     "beginRace 1.0, 38 points/37 segments, width 2.0, opponent "
                     "id; 0x482630, " + std::to_string(bad_spline) + " bad)");
+            c.check(have_list && spline_build_bad == 0,
+                    "every AI_spline path has one segment per point pair and "
+                    "length >= the chord sum of its points (0x4122b0/0x414fe0, " +
+                        std::to_string(spline_build_bad) + " bad)");
+            c.check(have_list && spline_proj_bad == 0,
+                    "every .spl point projects onto its path at the joint "
+                    "parameter (|lat| < 0.05, |d - sum(seg.len)| < 0.05; "
+                    "0x414830, " + std::to_string(spline_proj_bad) + " bad)");
+            c.check(strict_tried && strict_ok && strict_seg >= 27 &&
+                        strict_seg <= 28,
+                    "the cp0 trigger position projects strictly onto bot 0's "
+                    "route_1 in segment 27 or 28 with |lat| < width (segment " +
+                        std::to_string(strict_seg) + ", lat " +
+                        std::to_string((double)strict_lat) + ", width " +
+                        std::to_string((double)strict_width) + "; 0x414050)");
         }
         // Floor = highest soup surface under the car's start (x,z): a downward
         // ray against the merged map collider (card 144).

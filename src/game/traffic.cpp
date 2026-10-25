@@ -85,6 +85,31 @@ void normalize(float v[3])
     }
 }
 
+// 0x4124d0 ctSegment__arcLength: 101 Hermite samples at t = 0, 0.01 .. 1.00,
+// chord sum in two float accumulators. segment_pos maps d to t = d/len, so the
+// probe runs with len = 1.
+void segment_arc_length(traffic::Segment &s)
+{
+    s.len = 1.0f;
+    float prev[3];
+    traffic::segment_pos(s, 0.0f, prev);
+    float sum1 = 0.0f, sum2 = 0.0f;
+    for (int i = 1; i <= 100; i++) {
+        float p[3];
+        traffic::segment_pos(s, (float)i * 0.01f, p);
+        float dx = p[0] - prev[0], dy = p[1] - prev[1], dz = p[2] - prev[2];
+        float chord = sqrtf(dx * dx + dy * dy + dz * dz);
+        if (i <= 50)
+            sum1 = sum1 + chord;
+        else
+            sum2 = sum2 + chord;
+        prev[0] = p[0];
+        prev[1] = p[1];
+        prev[2] = p[2];
+    }
+    s.len = sum2 + sum1;
+}
+
 // 0x414b80 ctPath__load — 0x3c-byte Path.
 bool read_path(Reader &r, traffic::Path &p)
 {
@@ -173,8 +198,12 @@ bool read_lane(Reader &r, traffic::Lane &lane)
     return read_path(r, lane.path);
 }
 
-// 0x413360/0x412ed0 share this segment walk.
-size_t path_seg(const traffic::Path &p, float *d)
+}  // namespace
+
+namespace traffic {
+
+// 0x413360/0x412ed0 and the segment getters share this walk.
+size_t path_seg_at(const Path &p, float *d, float *local)
 {
     if (*d < 0) {
         float L = p.length;
@@ -187,12 +216,9 @@ size_t path_seg(const traffic::Path &p, float *d)
         *d = *d - p.segs[i].len;
         i++;
     }
+    if (local) *local = *d;
     return i;
 }
-
-}  // namespace
-
-namespace traffic {
 
 // 0x4134e0 ctSegment__pos.
 void segment_pos(const Segment &s, float d, float out[3])
@@ -268,7 +294,7 @@ void path_pos_at(const Path &p, float d, float out[3])
         out[0] = out[1] = out[2] = 0.0f;
         return;
     }
-    size_t i = path_seg(p, &d);
+    size_t i = path_seg_at(p, &d, nullptr);
     segment_pos(p.segs[i], d, out);
 }
 
@@ -280,7 +306,7 @@ void path_dir_at(const Path &p, float d, float out[3])
         out[0] = out[1] = out[2] = 0.0f;
         return;
     }
-    size_t i = path_seg(p, &d);
+    size_t i = path_seg_at(p, &d, nullptr);
     segment_dir(p.segs[i], d, out);
 }
 
@@ -372,6 +398,180 @@ bool path_project(const Path &p, float x, float z, float *d, float *lat)
         acc = s.len + acc;
     }
     return best != -1;
+}
+
+// 0x414fe0 ctSegment__buildHermite + 0x4124d0 arc length iteration.
+void segment_build_hermite(Segment &s, const float p0[3], const float d0[3],
+                           const float p1[3], const float d1[3])
+{
+    for (int i = 0; i < 3; i++) {
+        s.p0[i] = p0[i];
+        s.p1[i] = p1[i];
+        s.m0[i] = d0[i];
+        s.m1[i] = d1[i];
+    }
+    s.curved = true;
+    float c[3] = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+    float L = sqrtf(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+    normalize(c);
+    normalize(s.m0);
+    normalize(s.m1);
+    // |m| is 1 after normalize, except for a zero input direction.
+    float l0 = sqrtf(s.m0[0] * s.m0[0] + s.m0[1] * s.m0[1] + s.m0[2] * s.m0[2]);
+    float l1 = sqrtf(s.m1[0] * s.m1[0] + s.m1[1] * s.m1[1] + s.m1[2] * s.m1[2]);
+    float f0 = sqrtf(l0 / L), f1 = sqrtf(l1 / L);
+    float a = (s.m0[0] * c[0] + s.m0[1] * c[1] + s.m0[2] * c[2] + 1.0f) * 0.5f;
+    float b = (s.m1[0] * c[0] + s.m1[1] * c[1] + s.m1[2] * c[2] + 1.0f) * 0.5f;
+    float s0 = a <= 0.0f ? 0.0f : sqrtf(a);
+    float s1 = b <= 0.0f ? 0.0f : sqrtf(b);
+    float len = L / ((s1 * f1 + 1.0f - f1) * (s0 * f0 + 1.0f - f0));
+    for (int i = 0; i < 3; i++) {
+        s.m0[i] = s.m0[i] * len;
+        s.m1[i] = s.m1[i] * len;
+    }
+    s.len = len;
+    float old = len, ch;
+    do {
+        segment_arc_length(s);
+        float k = s.len / old;
+        for (int i = 0; i < 3; i++) {
+            s.m0[i] = s.m0[i] * k;
+            s.m1[i] = s.m1[i] * k;
+        }
+        ch = (s.len - old) / old;
+        old = s.len;
+    } while (fabsf(ch) > 0.01f);
+    s.flat_len = s.len;   // +0x34
+    s.k40 = 1.0f;         // overwritten by path_add_segment
+    s.i1 = 1;
+    s.f2 = 10000.0f;
+    s.f3 = 10000.0f;
+    s.i2 = 0;
+}
+
+// 0x4122b0 ctPath__addSegment.
+void path_add_segment(Path &p, const float p0[3], const float d0[3],
+                      const float p1[3], const float d1[3], float w, float f1,
+                      int32_t i1, float f2, float f3, int32_t i2)
+{
+    Segment s;
+    segment_build_hermite(s, p0, d0, p1, d1);
+    s.width = w;
+    s.k40 = f1;
+    s.i1 = i1;
+    s.f2 = f2;
+    s.f3 = f3;
+    s.i2 = i2;
+    p.segs.push_back(s);
+    p.length = s.len + p.length;
+    if (p.segs.size() == 1) {
+        for (int i = 0; i < 3; i++) {
+            p.start[i] = p0[i];
+            p.start_dir[i] = s.m0[i];
+        }
+        normalize(p.start_dir);
+    }
+    for (int i = 0; i < 3; i++) {
+        p.end[i] = p1[i];
+        p.end_dir[i] = s.m1[i];
+    }
+    normalize(p.end_dir);
+}
+
+// 0x414050 ctPath__projectStrict — no endpoint fallback.
+bool path_project_strict(const Path &p, float x, float z, float *d, float *lat)
+{
+    int best = -1;
+    float acc = 0;
+    for (size_t i = 0; i < p.segs.size(); i++) {
+        const Segment &s = p.segs[i];
+        float sd = 0, sl = 0;
+        if (segment_project(s, x, z, &sd, &sl) &&
+            (best == -1 || fabsf(sl) < fabsf(*lat))) {
+            *lat = sl;
+            *d = sd + acc;
+            best = (int)i;
+        }
+        acc = s.len + acc;
+    }
+    return best != -1;
+}
+
+// 0x4133f0 ctPath__posOffsetAt.
+void path_pos_offset_at(const Path &p, float d, float off, float out[3])
+{
+    float local = 0;
+    size_t i = path_seg_at(p, &d, &local);
+    // INVENTED: the exe reads segs[0] out of bounds when n == 0.
+    if (i >= p.segs.size()) {
+        out[0] = out[1] = out[2] = 0.0f;
+        return;
+    }
+    float side[3];
+    segment_pos(p.segs[i], local, out);
+    segment_side(p.segs[i], local, side);
+    for (int k = 0; k < 3; k++) out[k] = side[k] * off + out[k];
+}
+
+// 0x413110 ctPath__sideAt.
+void path_side_at(const Path &p, float d, float out[3])
+{
+    float local = 0;
+    size_t i = path_seg_at(p, &d, &local);
+    // INVENTED: the exe reads segs[0] out of bounds when n == 0.
+    if (i >= p.segs.size()) {
+        out[0] = out[1] = out[2] = 0.0f;
+        return;
+    }
+    segment_side(p.segs[i], local, out);
+}
+
+// 0x414a80 ctPath__width.
+float path_width_at(const Path &p, float d)
+{
+    float local = 0;
+    size_t i = path_seg_at(p, &d, &local);
+    // INVENTED: the exe reads segs[0] out of bounds when n == 0.
+    return i < p.segs.size() ? p.segs[i].width : 0.0f;
+}
+
+// 0x414980 ctPath__f1.
+float path_f1_at(const Path &p, float d)
+{
+    float local = 0;
+    size_t i = path_seg_at(p, &d, &local);
+    // INVENTED: the exe reads segs[0] out of bounds when n == 0.
+    return i < p.segs.size() ? p.segs[i].k40 : 0.0f;
+}
+
+// 0x414a00 ctPath__i1.
+int32_t path_i1_at(const Path &p, float d)
+{
+    float local = 0;
+    size_t i = path_seg_at(p, &d, &local);
+    // INVENTED: the exe reads segs[0] out of bounds when n == 0.
+    return i < p.segs.size() ? p.segs[i].i1 : 0;
+}
+
+// 0x413fd0 ctPath__i2.
+int32_t path_i2_at(const Path &p, float d)
+{
+    float local = 0;
+    size_t i = path_seg_at(p, &d, &local);
+    // INVENTED: the exe reads segs[0] out of bounds when n == 0.
+    return i < p.segs.size() ? p.segs[i].i2 : 0;
+}
+
+// 0x413f30 ctPath__lerp: (1 - t) * f3 + t * f2 with t = local / seg.len.
+float path_lerp_at(const Path &p, float d)
+{
+    float local = 0;
+    size_t i = path_seg_at(p, &d, &local);
+    // INVENTED: the exe reads segs[0] out of bounds when n == 0.
+    if (i >= p.segs.size()) return 0.0f;
+    const Segment &s = p.segs[i];
+    float t = local / s.len;
+    return (1.0f - t) * s.f3 + t * s.f2;
 }
 
 size_t Graph::node_count() const

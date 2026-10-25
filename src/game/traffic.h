@@ -12,7 +12,12 @@ struct Segment {                // 0x414d50, 0x54 bytes in the exe
     float p0[3], p1[3], m0[3], m1[3];
     float len = 0, flat_len = 0;  // +0x30, +0x34
     bool curved = false;          // +0x38
-    float k40 = 1.0f;             // +0x40, set by the loader, use unknown
+    float width = 0.0f;           // +0x3c
+    float k40 = 1.0f;             // +0x40 (f1), set by the loader, use unknown
+    int32_t i1 = 0;               // +0x44
+    float f2 = 0.0f;              // +0x48
+    float f3 = 0.0f;              // +0x4c
+    int32_t i2 = 0;               // +0x50
 };
 
 struct Path {                   // 0x414b80, 0x3c bytes in the exe
@@ -65,5 +70,23 @@ void path_pos_at(const Path &p, float d, float out[3]);      // 0x413360
 void path_dir_at(const Path &p, float d, float out[3]);      // 0x412ed0
 bool segment_project(const Segment &s, float x, float z, float *d, float *lat);  // 0x414480
 bool path_project(const Path &p, float x, float z, float *d, float *lat);        // 0x414830
+// 0x414fe0 (with 0x4124d0): Hermite arc from the two (pos, dir) pairs.
+void segment_build_hermite(Segment &s, const float p0[3], const float d0[3],
+                           const float p1[3], const float d1[3]);
+// 0x4122b0: append one built segment and its per-row fields to the path.
+void path_add_segment(Path &p, const float p0[3], const float d0[3],
+                      const float p1[3], const float d1[3], float w, float f1,
+                      int32_t i1, float f2, float f3, int32_t i2);
+// 0x414050: like path_project without the endpoint fallback.
+bool path_project_strict(const Path &p, float x, float z, float *d, float *lat);
+void path_pos_offset_at(const Path &p, float d, float off, float out[3]);  // 0x4133f0
+// Shared wrap/segment walk; returns the segment index, *local = d within it.
+size_t path_seg_at(const Path &p, float *d, float *local);
+void path_side_at(const Path &p, float d, float out[3]);   // 0x413110
+float path_width_at(const Path &p, float d);               // 0x414a80
+float path_f1_at(const Path &p, float d);                  // 0x414980
+int32_t path_i1_at(const Path &p, float d);                // 0x414a00
+int32_t path_i2_at(const Path &p, float d);                // 0x413fd0
+float path_lerp_at(const Path &p, float d);                // 0x413f30
 
 }  // namespace traffic

@@ -16,6 +16,7 @@
 #include "audio/sfx.h"
 #include "engine/math.h"
 #include "game/runtime.h"
+#include "game/traffic.h"
 #include "parts/cfg.h"
 #include "physics/physics.h"
 #include "vehicle/vehicle.h"
@@ -261,9 +262,11 @@ struct CarData {
 struct BotData {
     struct SplinePoint {
         Vec3 pos = {}, dir = {};
-        float w = 0.0f, f1 = 0.0f;
-        int32_t i1 = 0;
-        float f2 = 0.0f, f3 = 0.0f;
+        // Rows without the optional fields keep the 0x414fe0 defaults
+        // (+0x40 1.0, +0x44 1, +0x48 10000, +0x4c 10000, +0x50 0).
+        float w = 0.0f, f1 = 1.0f;
+        int32_t i1 = 1;
+        float f2 = 10000.0f, f3 = 10000.0f;
         int32_t i2 = 0;
     };
     int flag = 0;             // +0x2690 create "%d"
@@ -276,6 +279,7 @@ struct BotData {
     std::string spline_file;  // command arg, for diagnostics only
     float spline_width = 0.0f;  // command arg of 0x482630
     std::vector<SplinePoint> spline_points;  // +0x2604
+    traffic::Path spline;     // +0x2604 ctPath built from the points (0x4122b0)
     int segments = 0;
 };
 

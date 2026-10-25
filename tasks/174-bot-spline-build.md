@@ -1,6 +1,6 @@
 ---
 id: 174
-status: todo
+status: implemented
 branch: card/174
 depends: [173]
 ---
@@ -78,3 +78,26 @@ Stop and report after 2 failed vmboot runs (status `blocked`, Result names the f
 Bot tick 0x47f980 (175), planner 0x486020 (176/177), controls 0x482910 (178).
 
 ## Result
+Implemented. `src/game/traffic.{h,cpp}`: Segment +0x3c..+0x50 fields, `segment_build_hermite`
+(0x414fe0 + arc length 0x4124d0), `path_add_segment` (0x4122b0), `path_project_strict` (0x414050),
+`path_pos_offset_at` (0x4133f0), `path_side_at` (0x413110), `path_seg_at` walk + width/f1/i1/i2/lerp
+getters. `src/game/car.{h,cpp}`: `BotData::spline` built per row after the first, width base
+1.4 + cmd width (+0x2594 from ctor 0x47ed10), SplinePoint optional-field defaults follow the
+0x414fe0 values (f1 1, i1 1, f2/f3 10000, i2 0); `bot_reset` drops the path. `.trc` loader untouched.
+
+vmboot: route_1 path length 2431.41 (chord sum 2427.42), 37 segments, width(0) 2.0, i2(0) 0,
+lerp(0) 10000; route_2 2432.23/2427.98, route_3 2432.22/2427.96. Every point 1..36 projects at
+the joint parameter (0 bad); cp0 trigger (48.8,-542.4) projects strictly into bot 0's route_1
+segment 27 at lat -0.494 (< width 2.0). `make -C src clean check` green; `--selfcheck` PASSED
+158 checks, `--race` PASSED 148 checks, 0 failures.
+
+Changed check vs the card: the projection loop covers k = 1..n-2 (36 points): the .spl closes
+the loop by repeating point 0 as the last line, so its joint parameter is 0 on the path start,
+not the total length.
+
+INVENTED: empty-path guards in the getters (the exe indexes segs[0] unchecked), as in the
+existing path_pos_at/path_dir_at. No other gap logic.
+
+Doubts: `path_add_segment` takes the per-row width/fields of the row that closes the segment
+(the just-parsed line, as the card's call lists `w, f1, i1, f2, f3, i2` unqualified); shipped rows
+are 7-field so all candidates are 2.0 for width and the 0x414fe0 defaults for the rest.

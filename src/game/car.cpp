@@ -60,6 +60,7 @@ float clamp01(float v)
 void bot_reset(BotData &b)
 {
     b.spline_points.clear();
+    b.spline = traffic::Path();
     b.segments = 0;
 }
 
@@ -1618,6 +1619,7 @@ int bot_command(Runtime &rt, Runtime::Resource *bot, uint32_t code,
             std::string text(buf.begin(), buf.end());
             size_t at = 0;
             bool first = true;
+            BotData::SplinePoint prev;
             while (at < text.size()) {
                 size_t nl = text.find('\n', at);
                 std::string line = text.substr(
@@ -1625,6 +1627,7 @@ int bot_command(Runtime &rt, Runtime::Resource *bot, uint32_t code,
                 at = nl == std::string::npos ? text.size() : nl + 1;
                 double x, y, z, dx, dy, dz;
                 BotData::SplinePoint p;
+                p.w = 1.4f + width;   // +0x2594 (ctor 0x47ed10) + cmd width
                 int n = sscanf(
                     line.c_str(), "%lf %lf %lf %lf %lf %lf %f %f %d %f %f %d", &x,
                     &y, &z, &dx, &dy, &dz, &p.w, &p.f1, &p.i1, &p.f2, &p.f3,
@@ -1632,14 +1635,19 @@ int bot_command(Runtime &rt, Runtime::Resource *bot, uint32_t code,
                 if (n <= 5) continue;
                 p.pos = Vec3{(float)x, (float)y, (float)z};
                 p.dir = Vec3{(float)dx, (float)dy, (float)dz};
-                // The exe starts the field at `base = this+0x2594 + width` and
-                // keeps it when the row has no 7th field; +0x2594 is not traced,
-                // so the base is treated as 0 (INVENTED, shipped rows have 7).
-                if (p.w < 0.0f) p.w = width;
-                if (first)
+                if (p.w < 0.0f) p.w = 1.4f + width;
+                if (first) {
                     first = false;
-                else
+                } else {
+                    float a0[3] = {prev.pos.x, prev.pos.y, prev.pos.z};
+                    float d0[3] = {prev.dir.x, prev.dir.y, prev.dir.z};
+                    float a1[3] = {p.pos.x, p.pos.y, p.pos.z};
+                    float d1[3] = {p.dir.x, p.dir.y, p.dir.z};
+                    traffic::path_add_segment(b.spline, a0, d0, a1, d1, p.w, p.f1,
+                                              p.i1, p.f2, p.f3, p.i2);
                     b.segments += 1;
+                }
+                prev = p;
                 b.spline_points.push_back(p);
             }
         }
