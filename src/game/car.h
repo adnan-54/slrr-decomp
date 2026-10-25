@@ -403,6 +403,9 @@ bool load_part_cfg(Runtime &rt, Runtime::Resource *r, CfgFile *cfg,
 // (0x4bf4e0 sets M+0xff0; -1 = no body line).
 void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
                        Runtime::Resource *type, const std::string &params);
+// 0x49beb0 type_car vf4 / 0x4805a0 type_BOT vf4 / 0x4c3a50 type_part vf4:
+// the "+0x154 native instance dtor" step of Runtime::unload 0x51a1b0.
+void instance_dtor(Runtime &rt, Runtime::Resource *r);
 // 0x4a99b0 type_car vf7 (reached from GameRef.setMatrix 0x4db950 -> 0x4eb3f0):
 // place the car so its tyres touch `pos` with orientation `ypr` (yaw, pitch,
 // roll), zero its velocities and put it to sleep (0x506d90). Returns false when

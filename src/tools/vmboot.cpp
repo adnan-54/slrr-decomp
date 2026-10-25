@@ -3416,6 +3416,22 @@ void game_init_check(Boot &boot, Checker &c)
         c.check(fin_failed == 0,
                 "no failed thread after the finish key (got " +
                     std::to_string(fin_failed) + ")");
+        // Card 193: Gamemode.destroyBots -> Bot.deleteCar -> Car.destroy runs
+        // type_car vf4 0x49beb0, which removes the bot car's root body.
+        std::set<uint32_t> bot_ids;
+        for (Runtime::Resource *bcr : bot_cars) bot_ids.insert(bcr->id);
+        int bot_roots = 0;
+        for (RigidBody *b : process_world().bodies)
+            if (bot_ids.count(b->owner_id)) bot_roots++;
+        for (RigidBody *b : process_world().sleeping)
+            if (bot_ids.count(b->owner_id)) bot_roots++;
+        std::printf("  world roots after the finish key: active %zu, sleeping %zu\n",
+                    process_world().bodies.size(),
+                    process_world().sleeping.size());
+        c.check(bot_roots == 0,
+                "after the finish key no world body belongs to a destroyed bot "
+                "car (Bot.deleteCar, 0x49beb0; got " +
+                    std::to_string(bot_roots) + ")");
         }
     }
 

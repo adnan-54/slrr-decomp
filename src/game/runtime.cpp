@@ -978,6 +978,9 @@ void Runtime::unload(Resource *r)
         process_world().remove_body(r->trigger_body.get());
         r->trigger_body.reset();
     }
+    // type_car vf4 0x49beb0 / type_BOT vf4 0x4805a0: the car's world bodies and
+    // the bot payload go.
+    game::instance_dtor(*this, r);
     // U2: 0x54c600 unroots the script object then the slot is zeroed.
     // shortcut: the src VM has no root list; dropping the pointer is the whole effect.
     r->script = nullptr;
@@ -988,9 +991,9 @@ void Runtime::unload(Resource *r)
     // `instance` stands in for the runtime-created 0xffff prefix.
     for (Resource *c : children)
         if (c->instance || (c->package && c->package == r->package)) destroy(c);
-    // shortcut: other +0x154 native instance dtors, "Undefined GameType Destructor"
-    // log, arrays +0x11c/+0x124/+0x13c/+0x150, handles +0x128/+0x140 and the
-    // loaded bit (0x51f790) have no src counterpart.
+    // shortcut: other native instance dtors, the "Undefined GameType
+    // Destructor" log, arrays +0x11c/+0x124/+0x13c/+0x150, handles
+    // +0x128/+0x140 and the loaded bit (0x51f790) have no src counterpart.
 }
 
 // vf0(1) common part: 0x519500 / 0x51b5a0 / 0x526bd0 -> 0x51ebe0 -> 0x569890.

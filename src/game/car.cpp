@@ -1419,6 +1419,37 @@ bool car_set_matrix(Runtime &rt, Runtime::Resource *carres, const float pos[3],
     return true;
 }
 
+// 0x49beb0 type_car vf4 / 0x4805a0 type_BOT vf4 / 0x4c3a50 type_part vf4:
+// the "+0x154 native instance dtor" step of Runtime::unload 0x51a1b0.
+void instance_dtor(Runtime &rt, Runtime::Resource *r)
+{
+    if (!r || g_rt != &rt) return;
+    auto it = g_cars.find(r);
+    if (it != g_cars.end()) {
+        CarData *c = it->second.get();
+        if (c->chassis_body || c->root_body) {
+            World &w = process_world();
+            // 0x49beb0 walks part_comp to its parent car_root and removes it;
+            // 0x4fadf0 dies children first-in-list, so the chassis goes first.
+            if (c->chassis_body) w.remove_body(c->chassis_body);
+            if (c->root_body) w.remove_body(c->root_body);
+            // INVENTED: the exe frees the 0x2284-byte typed car; the src payload
+            // stays allocated because WheelData::car points at it. The null
+            // bodies make drive_cars / control_bots skip it (they test root_body).
+            c->chassis_body = c->root_body = nullptr;
+        }
+    }
+    // 0x4805a0 releases the handles and frees the 0x2730-byte typed bot.
+    // INVENTED: erasing the src payload stands in for that (0x47f280's per-tick
+    // list handling is not traced).
+    g_bots.erase(r);
+    // 0x4c3a50 type_part vf4 removes getPhysBody(handle)->+0xb4; src parts own
+    // no root body (installed parts are compound children of the car), so
+    // nothing to port.
+    // 0x49beb0's traffic branch (queue "car_rem %d %d", id>>16 == 0xffff) is
+    // not ported.
+}
+
 int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
                 const Value &param)
 {
@@ -2806,8 +2837,10 @@ static void bot_plan(BotData &b, BotSnapshot &s, const CarData &car, float look,
     // ahead on the spline. Its car getInfo 2/3/4 is root body pos/vel/-Rcol2.
     if ((b.mode == 2 || b.mode == 3) && b.opponent != 0) {
         const CarData *opp = nullptr;
+        // A destroyed car's ref resolves to nothing in the exe (getInfo fails);
+        // payloads whose bodies left the world are skipped here.
         for (const auto &e : g_cars)
-            if (e.first->id == b.opponent) {
+            if (e.second->root_body && e.first->id == b.opponent) {
                 opp = e.second.get();
                 break;
             }

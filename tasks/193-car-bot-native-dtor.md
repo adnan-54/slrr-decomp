@@ -1,7 +1,7 @@
 ---
 id: 193
-status: todo
-branch:
+status: implemented
+branch: card/193
 depends: []
 ---
 # runtime: type_car / type_BOT native dtors on unload (destroyed cars leave the physics world)
