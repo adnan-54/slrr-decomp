@@ -1,7 +1,7 @@
 ---
 id: 202
-status: todo
-branch:
+status: implemented
+branch: card/202
 depends: [201]
 ---
 # Chassis native: getCM

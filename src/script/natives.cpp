@@ -3708,6 +3708,36 @@ bool ch_get_wheel_pos(Vm &vm, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4b2680 Chassis.getCM: -M.center moved into the part_comp body state
+// (localToWorld 0x5060d0) and rotated back (R^T d); no car -> (0,0,0).
+// INVENTED: src part_comp pose (child of car_root) may lag the exe's state;
+// the result cancels it.
+bool ch_get_cm(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    if (!want("Chassis.getCM", a, 1, err)) return false;
+    game::CarData *c = car_of(a);
+    float v[3] = {0.0f, 0.0f, 0.0f};
+    if (c && c->chassis_body) {
+        RigidBody *b = c->chassis_body; // car+0x13ec, not walked to the root
+        Mat34 R = b->rotation();
+        Vec3 q = mat_vec(R, Vec3{-c->center[0], -c->center[1], -c->center[2]}) +
+                 b->pos; // 0x5060d0
+        Vec3 d = q - b->pos;
+        // R^T d (rows +0xa4/+0xb4/+0xc4)
+        float lx = R.m[0] * d.x + R.m[4] * d.y + R.m[8] * d.z;
+        float ly = R.m[1] * d.x + R.m[5] * d.y + R.m[9] * d.z;
+        float lz = R.m[2] * d.x + R.m[6] * d.y + R.m[10] * d.z;
+        // part_comp shape com +0x40 is 0 (0x4ba8c0)
+        v[0] = -lx;
+        v[1] = -ly;
+        v[2] = -lz;
+    }
+    Object *o = new_point(vm, "java.lang.Vector3", v, false, err);
+    if (!o) return false;
+    *out = Value::make_obj(o);
+    return true;
+}
+
 bool ch_get_nitroing(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!want("Chassis.getNitroing", a, 1, err)) return false;
@@ -7858,7 +7888,7 @@ const std::vector<Entry> &table()
     {"java.game.parts.bodypart.Chassis", "getTorque", "(FF)F", ch_get_torque, false},
     {"java.game.parts.bodypart.Chassis", "setTorque", "(F)V", ch_set_torque, false},
     {"java.game.parts.bodypart.Chassis", "getMass", "()F", ch_get_mass, false},
-    {"java.game.parts.bodypart.Chassis", "getCM", "()Ljava.lang.Vector3;", nullptr, true},
+    {"java.game.parts.bodypart.Chassis", "getCM", "()Ljava.lang.Vector3;", ch_get_cm, false},
     {"java.game.parts.bodypart.Chassis", "getMin", "()Ljava.lang.Vector3;", ch_get_min, false},
     {"java.game.parts.bodypart.Chassis", "getMax", "()Ljava.lang.Vector3;", ch_get_max, false},
     {"java.game.Vehicle", "getHorn", "()I", veh_get_horn, false},
