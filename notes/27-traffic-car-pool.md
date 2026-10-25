@@ -7,7 +7,7 @@ Follow-up of notes/19 §2 and notes/25 §2.4. Ghidra session with analysis/names
 |---|---|---|
 | addTrafficN 0x4dc9e0 (`map.addTraffic`) | Gamemode.setupCity:295-336, Valocity.java:95-110 | City / Valocity only (`Integrator.isCity`, Track.java:1057) |
 | addTrafficP 0x4dcdc0 | City.java:818 (police scout) | City only |
-| addTrafficCar 0x4dd090 | Bot.joinTraffic (Bot.java:373) | **never**: no shipped script calls `joinTraffic` |
+| addTrafficCar 0x4dd090 | Valocity.java:163 (career day, speedymen dummycars); Bot.joinTraffic (Bot.java:373, uncalled) | City career (corrected in notes/28 §2: 45 calls in a vmboot City run) |
 | remTrafficCar 0x4de520 | City.java:889, Bot.leaveTraffic | City only |
 | notifyTrafficCar / setTrafficCarBehaviour | Bot.java:299 (on `ai_info_entertraffic`), City.java:2311/2337 | City only, and gated by `traffic_id != 0` |
 
@@ -113,7 +113,7 @@ type_car vf15 0x4a15c0:
   `obs_add <T.id>`, rebind, T+0x58 = old tc+0x154, re-register callbacks 8 and 9 (physics/drive on).
   current 0 -> tc != 0 (take over): 0x4ae5a0, zero wheel states, unregister callbacks 8/9 (car
   becomes kinematic, driven by the traffic step), restore links, T+0x2054 = tc. Returns T+0x2054.
-Not carded: no shipped script reaches addTrafficCar, and the take-over needs the traffic per-frame
+Not carded: (correction, notes/28 §2: Valocity.java:163 does reach addTrafficCar in a City career run) and the take-over needs the traffic per-frame
 step to drive the frozen car; porting it alone would freeze a car that nothing moves.
 
 ## 4. (c) car_rem / car_add senders (all to the Traffic+0x3130 sink = City)
