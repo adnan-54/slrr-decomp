@@ -281,3 +281,7 @@ class Runtime {
     Resource *game_root_ = nullptr;   // DAT_005fde50
     static Runtime *active_;
 };
+
+// 0x4d4af0 type_trigger vf7: move/resize a trigger sensor body from
+// "x,y,z,yaw,pitch,roll,r" (no-op when r has no trigger body).
+void move_trigger(Runtime::Resource *r, const std::string &params);

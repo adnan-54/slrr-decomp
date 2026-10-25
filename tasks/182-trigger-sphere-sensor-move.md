@@ -1,7 +1,7 @@
 ---
 id: 182
-status: todo
-branch:
+status: implemented
+branch: card/182
 depends: []
 ---
 # Trigger sensors: sphere sensors in the trigger pass + `type_trigger` vf7 0x4d4af0 move/resize

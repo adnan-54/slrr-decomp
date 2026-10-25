@@ -1318,16 +1318,27 @@ static void sweep_triggers(World &w)
 // kind-6 hull) -> 0x502d60.
 // shortcut: the exe runs this inside the contact generation of every
 // sub-iteration; src tests the final pose once per step after the event phase.
-// Sphere/rod sensors are skipped (the race scripts only build box triggers).
+// Sphere sensors (0x4fd910 sphere): contact when d < r (rB = 0 for hulls);
+// rod sensors are skipped.
 static void trigger_pass(World &w)
 {
     for (RigidBody *b : w.bodies) {
         if (b->asleep || !is_dynamic(*b) || b->collision_children.empty()) continue;
         for (RigidBody *a : w.bodies) {
             if (!(a->body_flags & 0x40u) || a == b) continue;
-            if (a->def.shape.type != SHAPE_BOX) continue;
-            if (!a->sensor_poly)
-                a->sensor_poly = box_poly(a->def.shape.half_extents);
+            const bool sphere = a->def.shape.type == SHAPE_SPHERE;
+            if (!sphere && a->def.shape.type != SHAPE_BOX) continue;
+            if (!a->sensor_poly) {
+                if (sphere) {
+                    // Poly__buildPoint: one vertex at the body origin.
+                    Poly pt;
+                    pt.verts = {Vec3{0.0f, 0.0f, 0.0f}};
+                    pt.features.emplace_back();  // POLY_V, vertex 0, no planes
+                    a->sensor_poly = std::make_shared<const Poly>(std::move(pt));
+                } else {
+                    a->sensor_poly = box_poly(a->def.shape.half_extents);
+                }
+            }
             const Pose ap = a->pose();
             for (const RigidBody::CollisionChild &cc : b->collision_children) {
                 if (!cc.poly) continue;
@@ -1340,7 +1351,7 @@ static void trigger_pass(World &w)
                 Vec3 pa{0.0f, 0.0f, 0.0f}, pb{0.0f, 0.0f, 0.0f};
                 Vec3 n{0.0f, 1.0f, 0.0f};
                 if (vclip_closest(ap, *a->sensor_poly, cp, *cc.poly, &fa, &fb, &pa, &pb,
-                                  &n) < 0.0f)
+                                  &n) < (sphere ? a->def.shape.radius : 0.0f))
                     add_trigger_contact(w, *a, *b);
             }
         }
