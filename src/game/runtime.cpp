@@ -11,6 +11,7 @@
 #include "physics/mesh.h"
 #include "physics/physics.h"
 #include "platform/fs.h"
+#include "render/device.h"
 #include "script/natives.h"
 #include "script/vm.h"
 
@@ -1306,6 +1307,148 @@ bool Runtime::raycast(Resource *root, const float from[3], const float to[3],
         hit->point[1] = p.y;
         hit->point[2] = p.z;
         return true;
+    }
+    return false;
+}
+
+// ---- screen pick (0x4eb000) -----------------------------------------------
+
+// 0x567630: general 4x4 inverse (row-major); identity when singular.
+static render::Mat4 mat4_inverse(const render::Mat4 &a)
+{
+    const float *m = a.m;
+    float inv[16];
+    inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] +
+             m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+    inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] -
+             m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+    inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] +
+             m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+    inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] -
+              m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+    inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] -
+             m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+    inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] +
+             m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+    inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] -
+             m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+    inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] +
+              m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+    inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] +
+             m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+    inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] -
+             m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+    inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] +
+              m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+    inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] -
+              m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+    inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] -
+             m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+    inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] +
+             m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+    inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] -
+              m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+    inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] +
+              m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+    float det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+    if (det == 0.0f) return render::mat4_identity();
+    det = 1.0f / det;
+    render::Mat4 o;
+    for (int i = 0; i < 16; i++) o.m[i] = inv[i] * det;
+    return o;
+}
+
+// 0x461c20: unproject a clip-space point through IP (cam+0x45c) and CM (cam+0x39c).
+static void camera_unproject(const render::Mat4 &ip, const render::Mat4 &cm,
+                             const float p[3], float out[3])
+{
+    const float *m = ip.m;
+    float w = 1.0f / (p[0] * m[3] + p[1] * m[7] + p[2] * m[11] + m[15]);
+    float q[3];
+    for (int c = 0; c < 3; c++)
+        q[c] = (p[0] * m[c] + p[1] * m[4 + c] + p[2] * m[8 + c] + m[12 + c]) * w;
+    for (int c = 0; c < 3; c++)
+        out[c] = q[0] * cm.m[c] + q[1] * cm.m[4 + c] + q[2] * cm.m[8 + c] +
+                 cm.m[12 + c];
+}
+
+// 0x461dd0 tail: cam+0x39c = the instance's first bone matrix, identity if none.
+// INVENTED CM source: a pose written by GameRef.setMatrix lives on the Resource
+// in src (not in the bone), so it replaces the bone matrix when present.
+static render::Mat4 camera_matrix(const Runtime::Resource *cam)
+{
+    render::Mat4 cm = render::mat4_identity();
+    if (!cam->matrix_pose) {
+        if (!cam->bones.empty())
+            for (int i = 0; i < 16; i++) cm.m[i] = cam->bones.front().local[i];
+        return cm;
+    }
+    Mat34 r;
+    euler_to_mat(&r, cam->ori);  // Ypr, same mapping as GameRef.getOri users
+    // 0x567570: transposed 3x3 rotation, translation pos*10.
+    cm.m[0] = r.m[0]; cm.m[1] = r.m[4]; cm.m[2] = r.m[8];
+    cm.m[4] = r.m[1]; cm.m[5] = r.m[5]; cm.m[6] = r.m[9];
+    cm.m[8] = r.m[2]; cm.m[9] = r.m[6]; cm.m[10] = r.m[10];
+    cm.m[12] = cam->pos[0] * 10.0f;
+    cm.m[13] = cam->pos[1] * 10.0f;
+    cm.m[14] = cam->pos[2] * 10.0f;
+    cm.m[15] = 1.0f;
+    return cm;
+}
+
+// 0x4eb000: the exe clears all outputs first (index = -1, t = 0); PickHit's
+// defaults are null/0, and raycast resets it again.
+bool Runtime::screen_pick(float cx, float cy, PickHit *hit, float far_out[3],
+                          float near_out[3])
+{
+    if (hit) *hit = PickHit{};
+    if (far_out) far_out[0] = far_out[1] = far_out[2] = 0.0f;
+    if (near_out) near_out[0] = near_out[1] = near_out[2] = 0.0f;
+    // INVENTED order: drawn viewports by creation id ascending (the exe walks
+    // game+0x174 in list order), a viewport's cameras in creation order.
+    for (const auto &vup : instances_) {
+        Resource *vp = vup.get();
+        if (vp->type != 0x12 || !vp->viewport_active) continue;
+        const float *rc = vp->viewport_rect;                    // +0x10..+0x1c
+        float u = (cx - (2.0f * rc[0] - 1.0f)) / rc[2] - 1.0f;  // 0x4eb000
+        float v = (cy - (2.0f * rc[1] - 1.0f)) / rc[3] - 1.0f;
+        if (u < -1.0f || u > 1.0f || v < -1.0f || v > 1.0f) continue;
+        v = -v;
+        for (const auto &cup : instances_) {
+            Resource *cam = cup.get();
+            if (cam->type != 3 || cam->camera_viewport != vp) continue;
+            // 0x461dd0: P from fov/near/far, IP = P^-1, CM from the bone.
+            const float deg = cam->camera_fov * 0.017453292f;
+            const float rad = cam->camera_fov * (3.14159265f / 360.0f);
+            const float k = sqrtf(sqrtf(cosf(rad) / sinf(rad)));
+            const float zn = cam->camera_near;             // type+0x14 (already x10)
+            const float zf = cam->camera_far * k;          // type+0x18 * k
+            // type+0xc, else the viewport aspect vp_get_aspect returns (1.0f).
+            const float aspect =
+                cam->camera_aspect != 0.0f ? cam->camera_aspect : 1.0f;
+            const render::Mat4 ip = mat4_inverse(
+                render::mat4_perspective_fov_rh(deg, aspect, zn, zf));
+            const render::Mat4 cm = camera_matrix(cam);
+            const float pf[3] = {u, v, 1.0f};  // 0x421e20 far point
+            const float pn[3] = {u, v, 0.0f};  // near point
+            float far[3], near[3];
+            camera_unproject(ip, cm, pf, far);
+            camera_unproject(ip, cm, pn, near);
+            for (int i = 0; i < 3; i++) {
+                far[i] *= 0.1f;
+                near[i] *= 0.1f;
+            }
+            // 0x4fe1a0 root = cam+0xac0 (the instance's parent node), from=far.
+            PickHit h;
+            if (raycast(cam->parent, far, near, &h)) {
+                if (hit) *hit = h;
+                if (far_out)
+                    for (int i = 0; i < 3; i++) far_out[i] = far[i];
+                if (near_out)
+                    for (int i = 0; i < 3; i++) near_out[i] = near[i];
+                return true;
+            }
+        }
     }
     return false;
 }

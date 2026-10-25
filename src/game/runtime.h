@@ -66,6 +66,10 @@ class Runtime {
         std::vector<Notification> notifications;  // typed+0x5c, index 0 = list head
         float pos[3] = {};
         float ori[3] = {};
+        // INVENTED: GameRef.setMatrix wrote pos/ori on this resource; the exe
+        // writes the pose into the typed object's bone instead. Used by
+        // camera_matrix (screen_pick).
+        bool matrix_pose = false;
         float vel[3] = {};
         float ang[3] = {};
         float detail = 0.0f;
@@ -126,7 +130,8 @@ class Runtime {
         int32_t camera_i1 = 0;           // +0x30
         float camera_f4 = 0.0f;          // +0x34
         float camera_f5 = 0.0f;          // +0x38
-        int32_t camera_viewport_id = 0;  // arg2 -> 0x420080/FUN_00464f60; INVENTED storage
+        int32_t camera_pri = 0;          // arg3 -> 0x420080/FUN_00464f60; INVENTED storage
+        Resource *camera_viewport = nullptr; // arg2 Viewport; INVENTED storage
         float fog_start = 0.0f;          // +0x1c
         float fog_end = 0.0f;            // +0x20
         bool fog_enabled = false;        // +0x24 (exe stores 1.0f); INVENTED bool
@@ -271,6 +276,11 @@ class Runtime {
     // 0x4fc140 body hit, 0x5007c0 sphere and 0x500580 box tests. hit == null
     // means first-only (the exe's t_out == NULL). Returns whether anything hit.
     bool raycast(Resource *root, const float from[3], const float to[3], PickHit *hit);
+    // 0x4eb000 pick: cursor position in [-1,1]^2 (y up) against the drawn
+    // viewports' cameras. far_out/near_out are the unprojected world points
+    // (see 0x421e20/0x461c20); the raycast runs far -> near.
+    bool screen_pick(float cx, float cy, PickHit *hit, float far_out[3],
+                     float near_out[3]);
     // 0x55aca0 -> 0x55bec0: load "<dir>\<base>.class" on demand for a record's
     // `script <dir>\<Name>.class` ref; returns the fresh ClassState, null on
     // failure.

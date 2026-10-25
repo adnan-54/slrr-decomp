@@ -2426,6 +2426,7 @@ bool gr_set_matrix(Vm &vm, const Args &a, Value *out, std::string *err)
             r->pos[i] = pos[i];
             r->ori[i] = ori[i];
         }
+        r->matrix_pose = true;  // INVENTED: camera CM source (screen_pick)
         // 0x4eb3f0: the typed object's vf7 gets the formatted "ffffff" pose.
         // For a car that is type_car__vf7 0x4a99b0, which moves the compound
         // root (0x4eac50) and sleeps it. shortcut: vf7 of non-car typed objects
@@ -6720,7 +6721,8 @@ bool vp_unproject(Vm &, const Args &a, Value *out, std::string *err)
 // 1.0f/[0x593598] when the viewport pixel size is unavailable; same as
 // vp_get_aspect, card 061). The aspect itself is vp+0xec/vp+0xf0 from FUN_00422320.
 // shortcut: the ResourceRef parent/package placement, the local type link and the
-// viewport attach (0x420900 / 0x420080) are not modelled; a[1]/a[2] are unread.
+// viewport attach (0x420900 / 0x420080) are only stored as pointers on the camera
+// resource; a[1]/a[2] are otherwise unread.
 // UNRESOLVED: 0x524dc0/0x524840 internals (DAT_005fde70+8/+0xc, bounds, +0x11c).
 bool cam_create(Vm &, const Args &a, Value *out, std::string *err)
 {
@@ -6754,7 +6756,11 @@ bool cam_create(Vm &, const Args &a, Value *out, std::string *err)
     r->camera_f5 = f5;              // +0x38
     r->camera_i1 = i1;              // +0x30
     r->camera_i2 = i2;              // +0x2c
-    r->camera_viewport_id = id;     // a[3] -> 0x420080 FUN_00464f60; INVENTED storage
+    r->camera_pri = id;             // a[3] -> 0x420080 FUN_00464f60; INVENTED storage
+    // INVENTED placement: 0x461dd0 walks cam+0xac0 to the instance's parent node
+    // (raycast root) and 0x4210d0 pairs cameras with their viewport.
+    r->camera_viewport = value_resource(a[2]);
+    r->parent = value_resource(a[1]);
     game_rt()->bind(h, r);          // 0x40cac0
     const float p[3] = {0.0f, 0.0f, 3.0f};
     ri_set_bone_pos(h, ri_get_bone_id(h, "bone00"), p);  // 0x4e77f0/0x4ec470
