@@ -44,6 +44,16 @@ End every session by telling the user which mode the next session should use and
 | Mechanical side jobs (grep/list/rename, apply names.json) | Claude | haiku | low | |
 | Large rework found in review | → new card | — | — | goes to the next DeepSeek phase |
 
+Model ladder (summary): **cards = opus 5.5 medium; implementation = DeepSeek; verification = sonnet,
+re-verify with opus only if it finds issues; fix = DeepSeek or sonnet, opus only after 2 failed fixes.**
+
+## 2b. Agent communication rules (keep the orchestrator context small)
+- **Send paths, not summaries.** Tell an agent which file to read (card path, note path, branch name,
+  `CHECKPOINT.md`), never a paraphrase of its content: summaries drift and cost orchestrator tokens.
+- **Agents return small reports** (<= ~15 lines): e.g. `PASS/FAIL` + a short problem list, or
+  branch, commit, what changed, `INVENTED:` items, doubts. Put long detail in the card/notes file
+  and return its path. Put this limit in every agent prompt.
+
 Claude effort rules (current models): **Opus 5.5 never above `medium`** (its default;
 higher costs plan usage without paying off here). Sonnet 5.5 at `medium` (its levels
 were recalibrated; `medium` is the recommended start for agentic coding). Haiku 5.5 at `low`.
@@ -117,7 +127,7 @@ the files the card lists, in order. Do not use rea/Ghidra tools; all exe evidenc
 in the card. Steps: git switch -c card/<id> main; implement; make -C src clean check;
 set the card's status to implemented and branch to card/<id>; commit (message ends
 with "Co-Authored-By: DeepSeek V4 Flash <noreply@deepseek.com>"); git switch main. Do not push.
-Report: branch, commit, what you changed, anything marked INVENTED, doubts.
+Report (max 15 lines): branch, commit, what you changed, anything marked INVENTED, doubts.
 Card: <card>
 ```
 
