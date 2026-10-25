@@ -1,7 +1,7 @@
 ---
 id: 187
-status: todo
-branch:
+status: implemented
+branch: card/187
 depends: []
 ---
 # part cfg `nocollision` (0x4bc940): part bodies get body flag 0x20 too

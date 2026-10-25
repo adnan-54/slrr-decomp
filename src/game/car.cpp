@@ -590,12 +590,11 @@ void add_compound_child(std::vector<CompoundChild> &out, float mass, const Shape
 }
 
 // Every `body` line of cfg, whose frame sits at (rot, pos) in the car frame.
-// type_records: the car type's own body records (0x4c1f90), whose
-// `nocollision` (record flag 0x100) gives the child body flag 0x20, which the
-// 0x4feb20 child recursion skips. Part cfgs use another handler (0x4bc940:
-// def+0xb4 |= 8 only), so their bodies keep colliding.
+// `nocollision` (0x4bfba0 type / 0x4bc940 part) sets def+0xb4 |= 8, which
+// 0x501f30 turns into body flag 0x20, skipped by 0x4fb370 and the 0x4feb20
+// child recursion.
 void add_body_lines(std::vector<CompoundChild> &out, const CfgFile &cfg,
-                    const Mat34 &rot, Vec3 pos, bool type_records)
+                    const Mat34 &rot, Vec3 pos)
 {
     for (const CfgBody &b : cfg.bodies) {
         if (!(b.mass > 0.0f)) continue;
@@ -608,7 +607,7 @@ void add_body_lines(std::vector<CompoundChild> &out, const CfgFile &cfg,
         Shape shape;
         body_line_shape(b, &shape);
         add_compound_child(out, b.mass, shape, cr, cp);
-        if (type_records && (b.flags & 0x100u)) out.back().no_soup = true;
+        if (b.flags & 0x100u) out.back().no_soup = true;
     }
 }
 
@@ -659,7 +658,7 @@ void rebuild_compound(Runtime &rt, Runtime::Resource *carres)
     std::vector<CompoundChild> children;
     CfgFile car_cfg;
     if (load_car_cfg(rt, carres, &car_cfg, nullptr))
-        add_body_lines(children, car_cfg, identity_rot(), Vec3{0.0f, 0.0f, 0.0f}, true);
+        add_body_lines(children, car_cfg, identity_rot(), Vec3{0.0f, 0.0f, 0.0f});
     for (const WheelData &w : car->wheels) {
         Vec3 hub{w.hub[0], w.hub[1], w.hub[2]};
         // cfg `type`: "<bone mass> sphere <radius>" (fill_car reads the 3rd value).
@@ -690,7 +689,7 @@ void rebuild_compound(Runtime &rt, Runtime::Resource *carres)
         Mat34 rot;
         Vec3 pos;
         part_pose(rt, r, &rot, &pos, 0);
-        add_body_lines(children, part_cfg, rot, pos, false);
+        add_body_lines(children, part_cfg, rot, pos);
     }
 
     float mass = 0.0f;
