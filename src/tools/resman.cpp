@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -520,49 +521,31 @@ static int selfcheck(const char *game_dir)
                      << (8 * j);
             return v;
         };
-        auto is_hex = [](char c) -> int {
-            if (c >= '0' && c <= '9') return c - '0';
-            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-            return -1;
-        };
-        // The scene nodes live in the data area but outside every resource
-        // record's [offset, offset+size): only the ground node is a record.
-        // INVENTED: scan the data area for "gametype 0x..\r\nparams .." pairs;
-        // the exe walks the spatial node tree instead.
-        std::vector<uint8_t> raw;
-        std::string rerr;
-        bool raw_ok = fs::read_file(city_rpk, &raw, &rerr);
-        c.check(raw_ok, "read " + city_rpk + (raw_ok ? "" : ": " + rerr));
-        for (size_t i = city.rpk.table_end; raw_ok && i + 9 < raw.size(); i++) {
-            if (memcmp(&raw[i], "gametype ", 9) != 0) continue;
-            size_t j = i + 9;
-            if (j + 1 < raw.size() && raw[j] == '0' &&
-                (raw[j + 1] == 'x' || raw[j + 1] == 'X'))
-                j += 2;
-            uint32_t gametype = 0;
-            bool valid = false;
-            while (j < raw.size() && raw[j] != '\r' && raw[j] != '\n') {
-                int d = is_hex((char)raw[j]);
-                if (d < 0) break;
-                gametype = gametype * 16 + (uint32_t)d;
-                j++;
-                valid = true;
+        // 0x519940: the nodes are embedded type-1 child records, so walk the
+        // instance trees instead of scanning the file data area.
+        std::vector<RpkMapObject> objects;
+        bool map_ok = true;
+        std::string map_err;
+        for (const RpkRecord &rec : city.rpk.records) {
+            if (rec.type != 1) continue;
+            std::string e;
+            if (!city.rpk.map_objects(rec, &objects, &e)) {
+                map_ok = false;
+                map_err = e;
+                break;
             }
-            if (!valid) continue;
-            if (j < raw.size() && raw[j] == '\r') j++;
-            if (j >= raw.size() || raw[j] != '\n') continue;
-            j++;
-            if (j + 7 > raw.size() || memcmp(&raw[j], "params ", 7) != 0) continue;
-            size_t ps = j + 7, pe = ps;
-            while (pe < raw.size() && raw[pe] != '\r' && raw[pe] != '\n') pe++;
-            std::string value((const char *)&raw[ps], pe - ps);
-            std::string at = "at byte " + std::to_string(ps);
-            if (gametype == 0x352) {
+        }
+        c.check(map_ok,
+                "every type-1 city.rpk record parses" + (map_ok ? "" : ": " + map_err));
+        size_t road_extra_bad = 0, road_phys_bad = 0, road_child_bad = 0;
+        std::set<std::string> road_values;
+        for (const RpkMapObject &obj : objects) {
+            std::string at = obj.rec.name;
+            if (obj.gametype == 0x352) {
                 walk_params++;
                 int32_t index = 0;
                 std::string text;
-                if (!ped::split_walk_params(value, &index, &text)) {
+                if (!ped::split_walk_params(obj.params, &index, &text)) {
                     walk_bad++;
                     walk_why = at + ": no ';'";
                     continue;
@@ -588,10 +571,14 @@ static int selfcheck(const char *game_dir)
                     continue;
                 }
                 peds.add_area(index, text.c_str());
-            } else if (gametype == 0x15) {
+            } else if (obj.gametype == 0x15) {
                 road_params++;
+                road_values.insert(obj.params);
+                if (!obj.rec.has_extra) road_extra_bad++;
+                if (obj.phys) road_phys_bad++;
+                if (obj.children != 0) road_child_bad++;
                 int32_t kind = 0, gv = 0, idx = 0;
-                if (!ped::parse_road_params(value, &kind, &gv, &idx)) {
+                if (!ped::parse_road_params(obj.params, &kind, &gv, &idx)) {
                     road_bad++;
                     road_why = at + ": parse failed";
                     continue;
@@ -629,6 +616,16 @@ static int selfcheck(const char *game_dir)
         c.check(kinds[1] == 484 && kinds[2] == 53 && kinds[3] == 218,
                 "road kinds 484/53/218 = city.trc pools (got " + std::to_string(kinds[1]) +
                     "/" + std::to_string(kinds[2]) + "/" + std::to_string(kinds[3]) + ")");
+        c.check(road_extra_bad == 0,
+                "every road object has the 48-byte bounds block (got " +
+                    std::to_string(road_extra_bad) + " without)");
+        c.check(road_phys_bad == 0,
+                "no road object has PHYS faces (got " + std::to_string(road_phys_bad) + ")");
+        c.check(road_child_bad == 0,
+                "no road object has children (got " + std::to_string(road_child_bad) + ")");
+        c.check(road_values.size() == 755,
+                "the 755 road params strings are pairwise distinct (got " +
+                    std::to_string(road_values.size()) + ")");
         std::printf("walk/road: %zu walk areas, %zu road objects (%zu/%zu/%zu)\n",
                     peds.areas.size(), road_params, kinds[1], kinds[2], kinds[3]);
     }

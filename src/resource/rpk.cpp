@@ -1,6 +1,7 @@
 #include "resource/rpk.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <fstream>
@@ -257,6 +258,60 @@ bool RpkArchive::parse_instance(const RpkRecord &rec, RpkInstanceData *out,
     if (p != size)
         return fail(err, "instance walk ended at " + std::to_string(p) + ", blob is " +
                              std::to_string(size));
+    return true;
+}
+
+// 0x519940: RSD descriptor line rule. The key runs to the first whitespace;
+// `gametype` is hex, `params` is the rest of the line.
+static bool rsd_ws(char c) { return c == ' ' || (c >= 9 && c <= 13); }
+
+bool rpk_rsd_fields(const std::string &rsd, uint32_t *gametype, std::string *params)
+{
+    bool has_type = false;
+    size_t pos = 0;
+    while (pos < rsd.size()) {
+        size_t end = rsd.find('\n', pos);
+        if (end == std::string::npos) end = rsd.size();
+        std::string line = rsd.substr(pos, end - pos);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        size_t k = 0;
+        while (k < line.size() && !rsd_ws(line[k])) k++;
+        std::string key = line.substr(0, k);
+        while (k < line.size() && rsd_ws(line[k])) k++;
+        if (key == "gametype") {
+            *gametype = (uint32_t)strtoul(line.c_str() + k, nullptr, 16);
+            has_type = true;
+        } else if (key == "params") {
+            *params = line.substr(k);
+        }
+        pos = end + 1;
+    }
+    return has_type;
+}
+
+// 0x519940: child records are embedded in a type-1 blob in record order;
+// 0x4fe6f0 then recurses into the type-1 ones depth first.
+bool RpkArchive::map_objects(const RpkRecord &rec, std::vector<RpkMapObject> *out,
+                             std::string *err) const
+{
+    if (!out) return fail(err, "map_objects: no output");
+    RpkInstanceData inst;
+    std::string e;
+    if (!parse_instance(rec, &inst, &e))
+        return fail(err, "record " + rec.name + ": " + e);
+    uint32_t gametype = 0;
+    std::string params;
+    if (rpk_rsd_fields(inst.rsd, &gametype, &params)) {
+        RpkMapObject obj;
+        obj.rec = rec;
+        obj.gametype = gametype;
+        obj.params = std::move(params);
+        obj.phys = !inst.faces.empty();
+        obj.children = inst.children.size();
+        out->push_back(std::move(obj));
+    }
+    for (const RpkRecord &child : inst.children)
+        if (child.type == 1 && !map_objects(child, out, err)) return false;
     return true;
 }
 

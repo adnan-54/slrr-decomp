@@ -54,6 +54,19 @@ struct RpkInstanceData {
     int phys_chunks = 0;
 };
 
+// Descriptor lines of an RSD text chunk (0x519940): `gametype <hex id>` and
+// `params <text>`. Returns true when a gametype line was found.
+bool rpk_rsd_fields(const std::string &rsd, uint32_t *gametype, std::string *params);
+
+// One map-placed node found by RpkArchive::map_objects.
+struct RpkMapObject {
+    RpkRecord rec;
+    uint32_t gametype = 0;
+    std::string params;
+    bool phys = false;     // the blob has PHYS faces
+    size_t children = 0;   // embedded child records
+};
+
 class RpkArchive {
 public:
     // Strict parse: header, version, sub-package table, record table and every
@@ -76,6 +89,12 @@ public:
     // triangle soup, EXTP ids and RSD text of a type-1 record's data.
     bool parse_instance(const RpkRecord &rec, RpkInstanceData *out,
                         std::string *err) const;
+
+    // 0x519940 / 0x4fe6f0: every type-1 record reachable from rec (rec first,
+    // then its type-1 children in record order, depth first) that has an RSD
+    // gametype line. false only when parse_instance fails.
+    bool map_objects(const RpkRecord &rec, std::vector<RpkMapObject> *out,
+                     std::string *err) const;
 
     size_t size() const { return bytes_.size(); }
     const RpkRecord *find(uint32_t id) const;

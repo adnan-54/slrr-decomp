@@ -1,7 +1,7 @@
 ---
 id: 217
-status: todo
-branch:
+status: implemented
+branch: card/217
 depends: []
 ---
 # Resource: identity of map-placed objects (embedded type-1 nodes), replace resman's raw byte scan
