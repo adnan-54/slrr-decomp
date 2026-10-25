@@ -462,6 +462,11 @@ int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
 // suppressed), 0 for anything else.
 int part_command(Runtime &rt, Runtime::Resource *part, uint32_t code,
                  const Value &param);
+// 0x4cd3a0 Part.install_OK: the 0x4c96c0 search with no explicit target part
+// (goes straight to the dest fallback). Returns the mate slot or 0; *used is
+// the target part actually used.
+int32_t part_install_ok(Runtime &rt, Runtime::Resource *P, Runtime::Resource *dest,
+                        Runtime::Resource **used, int32_t *slot2, const float *pos);
 // 0x4d2d20 type_player__vf14 EVENT_COMMAND: "controllable <car id>" queues the
 // "activate ..." bind to the car. Returns 1 for every code on a native player
 // (the Controller script never gets commands), 0 otherwise.

@@ -1808,6 +1808,15 @@ int part_command(Runtime &rt, Runtime::Resource *part, uint32_t code,
     return 1;
 }
 
+// 0x4cd3a0 Part.install_OK search step. The exe's P+0x60 stored dest is not
+// modelled (INVENTED): the script passes dest directly, as part_command does.
+int32_t part_install_ok(Runtime &rt, Runtime::Resource *P, Runtime::Resource *dest,
+                        Runtime::Resource **used, int32_t *slot2, const float *pos)
+{
+    if (g_rt != &rt || !P || !g_parts.count(P)) return 0;
+    return install_search(rt, P, nullptr, dest, used, slot2, pos);
+}
+
 // 0x4d2d20 type_player__vf14 EVENT_COMMAND (0x10) -> 0x4d2ab0. The native
 // player swallows every command (the Controller script never sees one).
 int player_command(Runtime &rt, Runtime::Resource *player, uint32_t code,

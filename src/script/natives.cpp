@@ -4939,6 +4939,42 @@ bool pt_set_slot_pos(Vm &vm, const Args &a, Value *out, std::string *err)
     return true;
 }
 
+// 0x4cd3a0 Part.install_OK: search only, no attach. Returns {slot, slot2} or
+// null; xpart receives the target part actually used.
+bool pt_install_ok(Vm &vm, const Args &a, Value *out, std::string *err)
+{
+    int32_t slot2;
+    if (!want("Part.install_OK", a, 6, err) ||
+        !get_i("Part.install_OK", a[4], &slot2, err))
+        return false;
+    Runtime *rt = game_rt();
+    Runtime::Resource *dest = value_resource(a[1]);
+    if (!rt || !dest) {
+        *out = Value::make_null();
+        return true;
+    }
+    float p[3];
+    const float *posp = nullptr;
+    if (a[5].kind == Value::Obj && a[5].obj) {
+        p[0] = dd_get_f(vm, a[5].obj, "x");
+        p[1] = dd_get_f(vm, a[5].obj, "y");
+        p[2] = dd_get_f(vm, a[5].obj, "z");
+        posp = p;
+    }
+    Runtime::Resource *used = nullptr;
+    int32_t r = game::part_install_ok(*rt, value_resource(a[0]), dest, &used, &slot2, posp);
+    if (Runtime::Handle *xh = value_handle(a[3])) rt->bind(xh, used);
+    if (r == 0) {
+        *out = Value::make_null();
+        return true;
+    }
+    Array *arr = vm.new_array("I", 2);
+    arr->elems[0] = Value::make_int(r);
+    arr->elems[1] = Value::make_int(slot2);
+    *out = Value::make_array(arr);
+    return true;
+}
+
 bool pt_get_car_ref(Vm &, const Args &a, Value *out, std::string *err)
 {
     if (!want("Part.getCarRef", a, 1, err)) return false;
@@ -8067,7 +8103,7 @@ const std::vector<Entry> &table()
     {"java.game.parts.Part", "getMass", "()F", pt_get_mass, false},
     {"java.game.parts.Part", "setSfxLoopParams", "(FF)I", pt_set_sfx_loop_params, false},
     {"java.game.parts.Part", "flap", "(I)I", pt_flap, false},
-    {"java.game.parts.Part", "install_OK", "(Ljava.util.resource.GameRef;ILjava.util.resource.GameRef;ILjava.lang.Vector3;)[I", nullptr, true},
+    {"java.game.parts.Part", "install_OK", "(Ljava.util.resource.GameRef;ILjava.util.resource.GameRef;ILjava.lang.Vector3;)[I", pt_install_ok, false},
     {"java.game.parts.DynoData", "newNative", "()V", dd_new_native, false},
     {"java.game.parts.DynoData", "deleteNative", "()V", dd_delete_native, false},
     {"java.game.parts.DynoData", "calcDyno", "(F)F", dd_calc_dyno, false},
