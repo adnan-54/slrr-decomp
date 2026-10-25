@@ -54,7 +54,7 @@ T+0xc4 = byte[m+1]; [0] = 0; [1..m] = 1;           // per road-group enable flag
 ```
 0x40e0d0: cross+0x38 = 0; cross+0x34 = max over links |link.lane.endpos(link.flag) - cross.pos|
           (endpos = lane+0x1c for flag 0, lane+0x28 for flag 1; strict >, starts 0)
-cross+0x58 = realloc(nLink*8), all zero
+cross+0x58 = realloc(nPath*8), all zero   (count +0x20 = paths, not links; fixed in review 28)
 mx = 0; mn = paths[0].c (u16 at path entry +2)
 for each path: mx = max(mx, c); mn = min(mn, c)        (unsigned)
 mx -= mx % 10; if (mx == (mn/10)*10) mx += 10;  cross+0x5c = mx

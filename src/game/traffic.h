@@ -33,7 +33,7 @@ struct Cross {                  // ctCross 0x40e850
     float pos[3] = {}; uint32_t k30 = 0;
     float radius = 0;                 // +0x34 (cross_init 0x415650)
     uint32_t k38 = 0;                 // +0x38 (only zeroed, type unobserved)
-    std::vector<uint64_t> link_state; // +0x58, one zero per link
+    std::vector<uint64_t> path_state; // +0x58, one zero per path (count +0x20)
     uint32_t cycle = 0;               // +0x5c (light_init 0x415700 zeroes it)
     float phase_time = 0;             // +0x6c (light only)
     std::vector<int32_t> phase;       // +0x70 (light only)

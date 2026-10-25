@@ -696,7 +696,7 @@ void cross_init(Graph &g, Cross &c)
         float d = sqrtf(dx * dx + dy * dy + dz * dz);
         if (d > c.radius) c.radius = d;          // strict >
     }
-    c.link_state.assign(c.links.size(), 0);
+    c.path_state.assign(c.paths.size(), 0);   // 0x415650: realloc(+0x20 * 8), paths count
     uint32_t mx = 0;
     uint16_t mn = c.paths.empty() ? 0 : c.paths[0].c;  // INVENTED: no paths -> 0
     for (const CrossPath &p : c.paths) {

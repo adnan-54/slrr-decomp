@@ -43,7 +43,7 @@ c.k38 = 0; c.radius = 0;                                  // +0x38, +0x34
 for link in c.links:
     L = lane(link.node); e = link.flag ? L.v28 : L.v1c;   // lane +0x28 / +0x1c
     d = |e - c.pos|; if (d > c.radius) c.radius = d;      // strict >
-c.link_state = vector<uint64_t>(links.size(), 0);         // +0x58, nLink*8 zeroed
+c.path_state = vector<uint64_t>(paths.size(), 0);         // +0x58, nPath*8 zeroed (review fix)
 mx = 0; mn = paths[0].c;                                  // u16 path field +2 (INVENTED: no paths -> mn = 0)
 for p in c.paths: mx = max(mx, p.c); mn = min(mn, p.c);   // unsigned
 mx -= mx % 10; if (mx == (mn / 10) * 10) mx += 10;
@@ -75,7 +75,7 @@ l.kc8 = 0; l.kc0 = T.sim_time; l.kcc = l.path.length; l.halted = false;   // +0x
 
 ## Files
 - edit: src/game/traffic.h: `Lane::k98` becomes `float` (+0x98, the exe multiplies it); add
-  `Lane::kc0, kc8, kcc` floats; `Cross::radius, k38, cycle` + `link_state`, `phase_time`, `phase`,
+  `Lane::kc0, kc8, kcc` floats; `Cross::radius, k38, cycle` + `path_state`, `phase_time`, `phase`,
   `phase_count`; `Graph::sim_time, max_road_width, road_enabled`; `void init(float t)`.
 - edit: src/game/traffic.cpp: read k98 with `r.f32` (same bytes); `Graph::init` + the four
   helpers, each with its `// 0xADDR` comment.
