@@ -230,6 +230,12 @@ struct CarData {
     float shaft_speed = 0.0f;    // +0x1e78 driveshaft / wheel-average speed
     float rpm_raw = 0.0f;        // +0x1e7c
     float rpm_smoothed = 0.0f;   // +0x1e80
+    float combustion_torque = 0.0f;  // +0x1e8c
+    // 0x49c8e0 tail telemetry (zeroed by 0x4992e0).
+    float speed_smoothed = 0.0f; // +0x1fd8 |root vel| low-pass
+    float odo_engine = 0.0f;     // +0x1e90
+    float odo_shaft = 0.0f;      // +0x1e94
+    float odo_dist = 0.0f;       // +0x1e98
     float engine_temp = 20.0f;   // +0x1ec0  0x4992e0 writes 0x41a00000
     float engine_temp_ambient = 20.0f;  // +0x1ec4  0x4992e0 writes 0x41a00000
     float engine_damage = 0.0f;  // +0x1e9c

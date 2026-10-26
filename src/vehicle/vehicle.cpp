@@ -20,7 +20,7 @@ float health_factor(float w)
 
 // 0x4afb50 Vehicle__damageRoll: deterministic wear accumulation. Returns 0 when
 // the amount is not positive, 1 while the wear stays below 1, 2 once it clamps.
-static int wear_add(float *wear, float rate, float amount)
+int wear_add(float *wear, float rate, float amount)
 {
     if (amount <= 0.0f) return 0;
     *wear = rate * amount + *wear;

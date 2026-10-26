@@ -16,6 +16,9 @@ static const int kMaxGears = 8;
 // w >= 1. Shared by the car payload setters (car.cpp) and §1 wear.
 float health_factor(float w);
 
+// 0x4afb50 Vehicle__damageRoll: wear += rate * amount, clamped to [0, 1].
+int wear_add(float *wear, float rate, float amount);
+
 // 17 magic-formula coefficients, exe layout W+0x1e8 + 4*i.
 // p2 is overwritten per tick with ground friction * tyre friction and p13 with
 // ground rolling resistance + wheel rolling resistance (notes/09 §6).

@@ -1,7 +1,7 @@
 ---
 id: 227
-status: todo
-branch:
+status: implemented
+branch: card/227
 depends: [226]
 ---
 # Vehicle: end-of-tick telemetry, general wear, Part__syncWear, mileage (Vehicle::update §8)

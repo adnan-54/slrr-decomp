@@ -2047,6 +2047,55 @@ const BotData *bot_data(Runtime::Resource *bot)
     return it == g_bots.end() ? nullptr : &it->second;
 }
 
+// 0x497520 Part__syncWear(obj, P, M, car, dt): push the car's wear values into
+// an installed part according to its dmg_mode, or accumulate dmg_mode kinds
+// 2/3/4/0xe from the car telemetry.
+static void part_sync_wear(Runtime &rt, CarData &c, Runtime::Resource *P, float dt,
+                           float K)
+{
+    PartData *p = part_data(rt, P);
+    if (!p || p->wear >= 1.0f) return;
+    uint32_t k = p->dmg_mode & 0xffffu;
+    int w = (int)(p->dmg_mode >> 16);
+    switch (k) {
+    case 2:  // engine rpm
+        wear_add(&p->wear, p->max_wear_inv, fabsf(c.rpm_raw) * K * dt);
+        break;
+    case 3:  // road speed
+        wear_add(&p->wear, p->max_wear_inv, c.speed_smoothed * K * dt);
+        break;
+    case 4:  // driveshaft speed
+        wear_add(&p->wear, p->max_wear_inv, fabsf(c.shaft_speed) * K * dt);
+        break;
+    case 0xe:  // combustion power
+        wear_add(&p->wear, p->max_wear_inv,
+                 fabsf(c.combustion_torque * c.rpm_raw) * K * dt);
+        break;
+    case 5:  // W+0x15c tyre wear
+        if (w < (int)c.wheels.size()) p->wear = c.wheels[(size_t)w].tyre_wear;
+        break;
+    case 6:  // W+0x164 brake wear
+        if (w < (int)c.wheels.size()) p->wear = c.wheels[(size_t)w].brake_wear;
+        break;
+    case 7:  // W+0x16c suspension damage
+        if (w < (int)c.wheels.size()) p->wear = c.wheels[(size_t)w].susp_damage;
+        break;
+    case 8:  p->wear = c.engine_damage; break;
+    case 9:  p->wear = c.trans_wear; break;
+    case 10: p->wear = c.clutch_wear; break;
+    case 12: p->wear = c.radiator_damage; break;
+    }
+    if (p->wear < 0.0f) p->wear = 0.0f;  // exe logs "Part <name> has invalid wear!"
+    // Part.java:706 updateDamage, once the part is worn through.
+    if (p->wear >= 1.0f) {
+        if (Object *obj = rt.script_instance(P)) {
+            std::string err;
+            Value rv;
+            rt.call_method(obj, "updateDamage", {}, &rv, &err);
+        }
+    }
+}
+
 // 0x47be30 Game__runDriveCallbacks -> 0x47be90 -> type_car vf12
 // Vehicle__update 0x49c8e0, once per physics sub-step.
 // Called by World::step between the force pass and integrate (0x502060 C);
@@ -2211,6 +2260,32 @@ void drive_cars(float dt)
         c->rpm_smoothed = e.smoothed_omega;
         c->shaft_speed = sim.shaft_speed;
         c->gear_ratio = c->gear >= 0 && c->gear < 8 ? c->ratio[c->gear] : 0.0f;
+        c->combustion_torque = sim.combustion_torque;
+        // 0x4a089a..0x4a0bf3: the last block of Vehicle__update (dt > 1e-5).
+        if (dt > 1e-5f) {
+            Vec3 v = c->root_body->vel;
+            float speed = sqrtf(vec_dot(v, v)) * 0.2f + c->speed_smoothed * 0.8f;
+            c->speed_smoothed = speed;  // +0x1fd8
+            float d = speed * dt;
+            c->odo_engine += fabsf(c->rpm_raw) * dt;   // +0x1e90
+            c->odo_shaft += fabsf(c->shaft_speed) * dt;  // +0x1e94
+            c->odo_dist += d;                          // +0x1e98
+            if (!(c->flags & 0x400u) &&
+                (speed > 0.01f || fabsf(c->rpm_raw) > 0.01f ||
+                 fabsf(c->shaft_speed) > 0.01f)) {
+                float x = d * k_dmg;
+                if (x > 0.0f) {
+                    // The car is a part too: its own PartData (+0xb8/+0xbc).
+                    PartData *cp = part_data(*g_rt, kv.first);
+                    cp->wear = clamp01(cp->max_wear_inv * x + cp->wear);
+                }
+                // INVENTED: the exe walks the car+0xdc installed-part list; src
+                // keeps the parts reported by 0x4942b0 in CarData::part_list.
+                for (Runtime::Resource *P : c->part_list)
+                    part_sync_wear(*g_rt, *c, P, dt, k_dmg);
+                c->mileage += speed * dt;
+            }
+        }
     }
 }
 
