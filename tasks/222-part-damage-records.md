@@ -1,7 +1,7 @@
 ---
 id: 222
-status: todo
-branch:
+status: implemented
+branch: card/222
 depends: [221]
 ---
 # Parts: damage-mode propagation + refreshParameters wear records (0x4a8060)

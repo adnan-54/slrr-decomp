@@ -961,6 +961,29 @@ void rebuild_compound(Runtime &rt, Runtime::Resource *carres)
         }
 }
 
+// 0x4c9530 Part__propagateDamageMode: every child sitting on P's occupied
+// target slots inherits P's word, overridden by that slot's cfg halves.
+// INVENTED: the exe only recurses when the child's +0x44 ref resolves with
+// +0xc != 0; that link is not mapped, so recurse whenever the word changed.
+static void propagate_damage_mode(Runtime &rt, Runtime::Resource *P)
+{
+    PartData *pp = part_data(rt, P);
+    if (!pp) return;
+    for (const Slot &s : pp->slots) {
+        if (!(s.flags & 2u) || !s.attached) continue;
+        Runtime::Resource *child = slot_part(rt, s.attached);
+        if (!child) continue;
+        PartData *cp = part_data(rt, child);
+        uint32_t old = cp->dmg_mode;
+        cp->dmg_mode = pp->dmg_mode;
+        uint32_t lo = (uint32_t)s.dmg_mode & 0xffffu;
+        if (lo != 0xffffu) cp->dmg_mode = (cp->dmg_mode & 0xffff0000u) | lo;
+        uint32_t hi = (uint32_t)s.dmg_mode & 0xffff0000u;
+        if (hi != 0xffff0000u) cp->dmg_mode = (cp->dmg_mode & 0xffffu) | hi;
+        if (cp->dmg_mode != old) propagate_damage_mode(rt, child);
+    }
+}
+
 // 0x4ca390 Part__installReport(param_2 == 0): the first block (0x4942b0
 // addpart) plus the child recursion. INVENTED: direct call instead of the exe's
 // "add_part %d" queue round-trip (the %d is a 32-bit native pointer).
@@ -1024,6 +1047,15 @@ int part_attach(Runtime &rt, Runtime::Resource *P, int32_t my_slot,
     ts->flags = (ts->flags & ~4u) | 2u;
     pp->installed++;
     tp->installed++;
+    // 0x4c7d20 0x4c7ec9..0x4c7f28: P's word := T's, then the halves from T's
+    // slot cfg (an 0xffff half keeps the inherited value).
+    uint32_t old_dmg = pp->dmg_mode;
+    pp->dmg_mode = tp->dmg_mode;
+    uint32_t lo = (uint32_t)ts->dmg_mode & 0xffffu;
+    if (lo != 0xffffu) pp->dmg_mode = (pp->dmg_mode & 0xffff0000u) | lo;
+    uint32_t hi = (uint32_t)ts->dmg_mode & 0xffff0000u;
+    if (hi != 0xffff0000u) pp->dmg_mode = (pp->dmg_mode & 0xffffu) | hi;
+    if (pp->dmg_mode != old_dmg) propagate_damage_mode(rt, P);
     // 0x4c7d20: P's car ref := getInfo(target, 0x2b): the chassis target is the
     // car itself, a sub-part yields its own car_id.
     if (g_cars.count(tref)) {
@@ -3791,6 +3823,64 @@ void refresh_engine_curve(CarData &c)
         c.nitro_rpm[i] = rpm;
         c.nitro_nm[i] = d->torque_table[1].empty() ? d->torque_table[0][i]
                                                    : d->torque_table[1][i];
+    }
+}
+
+// 0x4a8060 Vehicle__applyPartWearRecord per installed part (0x4aebf0 tail).
+// The word's kind (lo16) picks the target, its wheel index is hi16; wear is
+// P+0xb8 and the rate P+0xbc (1/max wear). Unknown kinds do nothing.
+// INVENTED: the car+0xdc installed-part list is approximated by part_list
+// (car+0xfc, the reported parts).
+void apply_part_wear_records(Runtime &rt, CarData &car)
+{
+    int wheels = (int)car.wheels.size();
+    for (Runtime::Resource *r : car.part_list) {
+        PartData *p = part_data(rt, r);
+        if (!p) continue;
+        uint32_t kind = p->dmg_mode & 0xffffu;
+        int wheel = (int)(p->dmg_mode >> 16);  // signed compare, as the exe
+        float wear = p->wear, rate = p->max_wear_inv;
+        switch (kind) {
+        case 5:
+            if (wheel < wheels) {
+                car.wheels[wheel].tyre_wear = wear;
+                car.wheels[wheel].tyre_rate = rate;
+            }
+            break;
+        case 6:
+            if (wheel < wheels) {
+                car.wheels[wheel].brake_wear = wear;
+                car.wheels[wheel].brake_rate = rate;
+            }
+            break;
+        case 7:
+            if (wheel < wheels) {
+                car.wheels[wheel].susp_damage = wear;
+                car.wheels[wheel].susp_rate = rate;
+            }
+            break;
+        case 8:
+            car.engine_damage = wear;
+            car.engine_rate = rate;
+            break;
+        case 9:
+            car.trans_wear = wear;
+            car.trans_rate = rate;
+            car.trans_part = r;
+            break;
+        case 10:
+            car.clutch_wear = wear;
+            car.clutch_rate = rate;
+            car.clutch_part = r;
+            break;
+        case 12:
+            car.radiator_damage = wear;
+            car.radiator_rate = rate;
+            car.radiator_part = r;
+            break;
+        default:
+            break;
+        }
     }
 }
 

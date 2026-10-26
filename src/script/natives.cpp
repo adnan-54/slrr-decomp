@@ -3915,20 +3915,25 @@ bool ch_force_update(Vm &vm, const Args &a, Value *out, std::string *err)
         *out = Value::make_null();
         return true;
     }
-    // shortcut: suspension wear (+0x16c/+0x170) and the +0x160/+0x168 rates are
-    // not modelled.
     // INVENTED: WheelData() defaults stand in for the manager template M+0x2ec4.
     game::WheelData def;
     for (game::WheelData &w : c->wheels) {
         w.tyre_wear = 0.0f;
+        w.tyre_rate = 0.0f;
         w.brake_wear = 0.0f;
+        w.brake_rate = 0.0f;
+        w.susp_damage = 0.0f;
+        w.susp_rate = 0.0f;
         std::copy(std::begin(def.pacejka), std::end(def.pacejka), w.pacejka);
     }
     std::string e;  // Chassis.java updatevariables() runs dyno.calcDyno()
     Value r;
     rt->call_method(self, "updatevariables", {}, &r, &e);
+    // 0x4aed65: only the clutch ref is unlinked here; then the installed
+    // parts' wear records refill the wheel/car fields.
+    c->clutch_part = nullptr;
+    game::apply_part_wear_records(*rt, *c);
     c->inertia = dd_get_f(vm, self, "engine_inertia");
-    // shortcut: installed parts' wear records (0x4a8060) not re-applied.
     c->torque_base = 1.0f;
     c->nitro_torque_base = 1.0f;
     c->starter_torque = dd_get_f(vm, self, "starter_torque");

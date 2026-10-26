@@ -531,6 +531,9 @@ EngineModel *attach_dyno(Object *wrapper);  // creates if missing, returns it
 void detach_dyno(Object *wrapper);          // frees it
 // Curve block of Vehicle__refreshParameters 0x4aebf0 (dyno -> e+0..0xc, e+0x14).
 void refresh_engine_curve(CarData &c);
+// 0x4aebf0 wear-record loop: Vehicle__applyPartWearRecord 0x4a8060 for every
+// installed part, after the wheel records were zeroed and updatevariables ran.
+void apply_part_wear_records(Runtime &rt, CarData &car);
 // Drop all payloads when a new Runtime takes over (tests/tools create several).
 void reset(Runtime *rt = nullptr);
 
