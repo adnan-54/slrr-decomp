@@ -75,6 +75,15 @@ struct Wheel {
     float extra_brake = 0.0f;
     float bearing = 0.0f;
 
+    // brake thermal + wear state (0x4992e0 create values: W+0x184 cap,
+    // W+0x188 temp, W+0x18c ambient, W+0x190 cooling; wear/rate W+0x164/68).
+    float brake_wear = 0.0f;
+    float brake_rate = 0.0f;
+    float brake_temp = 20.0f;
+    float brake_ambient = 20.0f;
+    float brake_heat_cap = 50000.0f;
+    float brake_cool = 0.001f;
+
     // steering (W+0xc8) and wheel frame (W+0x90): the sensor-body local matrix
     // is base_rot * Ry(steer_angle), written by 0x4aa830/0x566a70.
     float steer_factor = 0.0f;
@@ -209,6 +218,10 @@ struct Car {
     float engine_rate = 5.0e-8f;      // car+0x1ea0
     float radiator_dmg = 0.0f;        // car+0x1eac
     float radiator_rate = 5.0e-6f;    // car+0x1eb0
+    float trans_wear = 0.0f;          // car+0x1ea4
+    float trans_rate = 5.0e-8f;       // car+0x1ea8
+    float clutch_wear = 0.0f;         // car+0x1eb4
+    float clutch_rate = 5.0e-8f;      // car+0x1eb8
     float torque_base = 1.0f;         // e+0xd4
     float nitro_base = 1.0f;          // e+0xd8
     float k_dmg = 1.0f;               // Config.internal_damage (0x5dacd4)

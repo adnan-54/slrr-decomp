@@ -173,6 +173,14 @@ void fill_part(Runtime &rt, const Package *pkg, PartData &p, const CfgFile &cfg)
     // 0x4bf4d0 passes this mass to Physics__createBody, whose inverse mass is 1/m.
     if (!cfg.bodies.empty() && cfg.bodies[0].mass > 0.0f)
         p.inv_mass = 1.0f / cfg.bodies[0].mass;
+    // 0x4c1f90 Part__initInstance: P+0xbc = 1/M+0x121c, and every shipped part
+    // cfg carries its max wear as `intdamage` (Brake.cfg 1e7, Wheel.cfg 1e9).
+    for (const CfgLine &ln : cfg.lines)
+        if (ln.key == "intdamage" && !ln.values.empty()) {
+            float max_wear = num(ln.values[0]);
+            if (max_wear > 0.0f) p.max_wear_inv = 1.0f / max_wear;
+            break;
+        }
     fill_slots(rt, pkg, p, cfg);
 }
 
@@ -2116,6 +2124,11 @@ void drive_cars(float dt)
         sim.nitro_base = c->nitro_torque_base;
         sim.k_dmg = k_dmg;
         sim.wear_off = (c->flags & 0x400u) != 0;
+        // INVENTED glue: §3 transmission/clutch wear state.
+        sim.trans_wear = c->trans_wear;
+        sim.trans_rate = c->trans_rate;
+        sim.clutch_wear = c->clutch_wear;
+        sim.clutch_rate = c->clutch_rate;
         e.torque_curve.resize(c->torque_nm.size());
         for (size_t i = 0; i < c->torque_nm.size(); i++) {
             e.torque_curve[i].rpm = i < c->torque_rpm.size() ? c->torque_rpm[i] : 0.0f;
@@ -2142,8 +2155,17 @@ void drive_cars(float dt)
                 sw.rolling_resistance = w.roll_res;
                 for (int k = 0; k < kPacejkaSlots; k++) sw.pacejka.p[k] = w.pacejka[k];
                 sw.set_drive(w.drive_eff);
-                sw.set_brake(w.brake_eff);
-                sw.set_handbrake(w.hbrake_eff);
+                // INVENTED glue: the exe has one wheel struct; keep base and
+                // effective brake shares separate (set_brake sets both).
+                sw.brake = w.brake;
+                sw.brake_eff = w.brake_eff;
+                sw.handbrake = w.hbrake;
+                sw.handbrake_eff = w.hbrake_eff;
+                sw.brake_wear = w.brake_wear;
+                sw.brake_rate = w.brake_rate;
+                // INVENTED glue: WheelData::damage_visual is the exe's W+0xf0
+                // wheel bearing friction (WheelRef.setBearing).
+                sw.bearing = w.damage_visual;
                 sw.steer_factor = w.steer;
                 sw.base_rot = w.rot;
             }
@@ -2155,8 +2177,19 @@ void drive_cars(float dt)
         // shortcut: slot 2 (also written there) is not copied back; set_friction
         // owns it in src.
         if (sim.wheels.size() == c->wheels.size())
-            for (size_t i = 0; i < sim.wheels.size(); i++)
-                c->wheels[i].pacejka[13] = sim.wheels[i].pacejka.p[13];
+            for (size_t i = 0; i < sim.wheels.size(); i++) {
+                WheelData &w = c->wheels[i];
+                Wheel &sw = sim.wheels[i];
+                w.pacejka[13] = sw.pacejka.p[13];
+                // INVENTED glue: brake wear/failure results the natives read back.
+                w.brake_wear = sw.brake_wear;
+                w.brake_eff = sw.brake_eff;
+                w.hbrake_eff = sw.handbrake_eff;
+                w.damage_visual = sw.bearing; // W+0xf0 wheel bearing
+            }
+        // INVENTED glue: §3 transmission/clutch wear results.
+        c->trans_wear = sim.trans_wear;
+        c->clutch_wear = sim.clutch_wear;
         // INVENTED glue: the §1 thermal/wear results the natives read back.
         c->engine_temp = sim.engine_temp;
         c->cooling_coeff = sim.cooling_coeff;

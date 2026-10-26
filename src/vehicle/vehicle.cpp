@@ -464,6 +464,17 @@ void Car::update_engine_and_drivetrain(float dt)
         shaft_speed = wd_new / G;
         clutch_slip = w > 1e-6f ? 10.0f * k * delta / (w * w) : 0.0f;
 
+        // §3 transmission/clutch wear, 0x49e1bf..0x49e2f6 (right after
+        // clutch_slip, W+0x1ea4/0x1ea8 and W+0x1eb4/0x1eb8).
+        if (!wear_off) {
+            float x = fabsf((wd_new - we_new) * k * 0.1f) * k_dmg;
+            if (x > 0.0f) wear_add(&trans_wear, trans_rate, x);
+            float y = fabsf(clutch_slip) * 0.01f;
+            y = y * y;
+            y = y * y * dt * 0.0001f * k_dmg; // (|slip|*0.01)^4 * dt * 1e-4 * K
+            if (y > 0.0f) wear_add(&clutch_wear, clutch_rate, y);
+        }
+
         // Per-wheel shaft correction, ((new-old)/D)*share*(-1/ratio).
         if (D > 1e-4f) {
             float ds = shaft_speed - shaft_old;
@@ -478,6 +489,7 @@ void Car::update_engine_and_drivetrain(float dt)
     }
 
     // §4 brakes (torque is an angular impulse per tick, no dt in the gain).
+    // Heat/wear/failure and cooling per wheel: 0x49e5xx..0x49e8de.
     float brk = fabsf(brake);
     float hbrk = fabsf(handbrake);
     for (Wheel &w : wheels) {
@@ -485,17 +497,38 @@ void Car::update_engine_and_drivetrain(float dt)
             continue;
         float T_b = (w.extra_brake + brk) * brake_torque_factor * w.brake_eff +
                     handbrake_torque_factor * hbrk * w.handbrake_eff + w.bearing;
-        if (T_b <= 0.0f)
-            continue;
-        float dw = w.inv_inertia_eff * T_b * wheel_brake_factor * dt * 50.0f;
-        float old = w.spin;
-        if (fabsf(w.spin) <= dw) {
-            w.spin = 0.0f;
-            w.slip_velocity.z -= w.radius * old;
-        } else {
-            float d = w.spin > 0.0f ? dw : -dw;
-            w.spin -= d;
-            w.slip_velocity.z -= w.radius * d;
+        if (T_b > 0.0f) {
+            float dw = w.inv_inertia_eff * T_b * wheel_brake_factor * dt * 50.0f;
+            float old = w.spin;
+            if (fabsf(w.spin) <= dw) {
+                w.spin = 0.0f;
+                w.slip_velocity.z -= w.radius * old;
+            } else {
+                float d = w.spin > 0.0f ? dw : -dw;
+                w.spin -= d;
+                w.slip_velocity.z -= w.radius * d;
+            }
+            if (wear_off) continue; // goto next wheel: no heat/wear, no cooling
+            float q = fabsf(w.spin) * (T_b - w.bearing) * 10.0f * 0.001f * dt * 50.0f;
+            if (q > 0.0f) {
+                w.brake_temp = q / w.brake_heat_cap + w.brake_temp; // W+0x188
+                if (w.brake_wear < 1.0f && q * k_dmg > 0.0f) {
+                    wear_add(&w.brake_wear, w.brake_rate, q * k_dmg); // W+0x164
+                    float h = health_factor(w.brake_wear);
+                    w.brake_eff = w.brake * h;          // W+0xd8
+                    w.handbrake_eff = w.handbrake * h;  // W+0xdc
+                    if (w.brake_wear >= 1.0f) {
+                        w.bearing += 100.0f;
+                        w.brake_eff *= 0.2f;
+                        w.handbrake_eff *= 0.2f;
+                        // shortcut: event M+0x1f6c (brake failure sound) not posted.
+                    }
+                }
+            }
+        }
+        if (!wear_off) {
+            float d = w.brake_temp - w.brake_ambient;               // W+0x18c
+            w.brake_temp -= fabsf(d) * w.brake_cool * dt * d;        // W+0x190
         }
     }
 

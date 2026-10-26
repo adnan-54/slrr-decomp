@@ -1,7 +1,7 @@
 ---
 id: 226
-status: todo
-branch:
+status: merged
+branch: card/226
 depends: [225]
 ---
 # Vehicle: transmission/clutch wear, brake heat/wear/failure, bearing friction into the sim
