@@ -239,7 +239,7 @@ Not a solver-row constraint: it derives `constraint`/`controller`, lives in the 
 - `Collide__triggerTest` 0x4fbda0: bodies flagged 0x48 (triggers) → `closestFeatures` vs. the trigger shape; flag 8 → returns `d < r+0.02`; capsule edge vs. face orientation filter; creates trigger contacts via `FUN_00502d60` (list `world+0x2bc`, count `world+0x64`, event 0x20 to both scripts). `PhysicsWorld__removeTrigger` 0x4fb070 sends event 0x40 on separation.
 - `Collide__candidatesTOI` 0x4fc7e0: TOI search for `body_dummy_candidate` list `DAT_006028f8` (same 10-step bisection; if still penetrating picks the vertex with min distance along the normal) → `addContact`.
 - `PhysicsWorld__init` 0x4fffb0: dt `world+8 = world+0xc = 0.02`, gravity `world+0x1c4 = (0, −9.81, 0)`, `world+0x364 = 1.2935` (air density?), `+0x368 = (0,−7,0)`, `+0x374 = (0,−1,0)` (default ground plane point/normal for the 0x800 plane contact), `+0x394 = 300`, `+0x398 = 550`, two static root bodies `world+0x84` (all dynamic bodies are children of it, `PhysicsWorld__addBody` 0x4f7830) and `world+0x88`. Global world pointer `g_physWorld` 0x5dadf0.
-- `PhysicsWorld__purgeEvents` 0x5040f0 frees collision events whose body has flag 0x200000.
+- `PhysicsWorld__purgeEvents` 0x5040f0 frees collision events whose body has flag 0x200000 (and first refreshes each queued object box, notes/32 §2).
 
 ## Voronoi error in vmboot (RE 2026-10-24, cards 165/166)
 - String + condition are the exe's: 0x50d230 loops `<= nfeatA + 2*nfeatB` steps, then prints

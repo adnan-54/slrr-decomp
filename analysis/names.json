@@ -1236,7 +1236,7 @@
   "0x502830": "PhysicsWorld__addContact",
   "0x502d60": "PhysicsWorld__addTriggerContact",
   "0x5030b0": "PhysBody__updateChildren",
-  "0x503c20": "GameObject__placeBegin",
+  "0x503c20": "GameObject__boundsFromInstances",
   "0x503de0": "GameObject__placeInContainer",
   "0x5040f0": "PhysicsWorld__purgeEvents",
   "0x504180": "PhysBody__updateBounds",
@@ -2059,5 +2059,10 @@
   "0x4608e0": "ResourceNode__loadTyped",
   "0x468b00": "ResRef__getTyped",
   "0x45f030": "Render__releaseInstance",
-  "0x4ebdd0": "GameRef__setNodeFlags"
+  "0x4ebdd0": "GameRef__setNodeFlags",
+  "0x501da0": "PhysBody__queueCollideObject",
+  "0x504090": "GameObject__refreshBoundsTree",
+  "0x40e380": "ctCross__isActive",
+  "0x4e9ac0": "GameObject__intervalMgr",
+  "0x4edbc0": "interval_node__ctor"
 }
