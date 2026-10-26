@@ -37,7 +37,8 @@ struct Cross {                  // ctCross 0x40e850
     std::vector<CrossLink> links; std::vector<CrossPath> paths;
     float pos[3] = {}; uint32_t k30 = 0;
     float radius = 0;                 // +0x34 (cross_init 0x415650)
-    uint32_t k38 = 0;                 // +0x38 (only zeroed, type unobserved)
+    int32_t live_refs = 0;            // +0x38 live-lane refcount, -1 = going inactive
+    uint32_t active_next = 0;         // +0x54 (eq) / +0x60 (light)
     // +0x44 ResRefLink. INVENTED: id of the bound object's instance, 0 = none.
     uint32_t object = 0;
     std::vector<uint64_t> path_state; // +0x58, one zero per path (count +0x20)
@@ -58,6 +59,7 @@ struct Lane {
     uint32_t node88[4] = {}; float k98 = 0; uint32_t k9c = 0, ka0 = 0;  // +0x98 speed factor
     Path path;                                            // +0x3c
     std::vector<uint32_t> cars;                           // +0x08/+0x0c list; INVENTED: exe intrusive prev/next replaced by car indices, ascending pos
+    uint32_t active_next = 0;                             // +0xa4 (0 = not listed, kLiveEnd = list end)
     bool live = false;                                    // +0xa8
     uint32_t pending_events = 0;                          // +0xac (0 = no timed event scheduled)
     // +0xb0 weak ref to the car blocking this lane. INVENTED: 1-based car index,
@@ -122,6 +124,12 @@ struct Graph {
     // kLiveEnd = end (a pointer in the exe).
     uint32_t live_cars = kLiveEnd;
     int32_t live_count = 0;                     // global 0x5e6514; INVENTED: per graph
+    // +0x8c/+0x90/+0x94 heads of the active lane/cross lists. INVENTED: 1-based
+    // indices into lanes / cross_eq / cross_light (kLiveEnd = end), like live_cars.
+    uint32_t active_lanes = kLiveEnd;
+    uint32_t active_eq = kLiveEnd;
+    uint32_t active_light = kLiveEnd;
+    int32_t live_lanes = 0;                     // global 0x5e6500; INVENTED: per graph
     // +0x70 car pool. INVENTED: deque gives stable addresses, the free list keeps
     // indices, and the serial counter is per graph (the exe's is process-wide).
     std::deque<Car> cars;
@@ -148,6 +156,10 @@ struct Graph {
     // 0x419050: cross_eq first, then cross_light; first strict minimum wins.
     const Cross *nearest_cross(float x, float y, float z, float dist, bool yflag) const;
     void clear_halts();   // 0x417c50: every lane's halt flag (+0xc4) = 0
+    // 0x40f6d0 ctLane__setLive: cars and the road's two cross refcounts follow.
+    void set_lane_live(size_t lane, bool on);
+    // 0x40f8e0 ctRoad__vf1 -> 0x40eed0 lane vf7: keep every lane of the road live.
+    void keep_road_live(size_t road);
     // 0x4191d0: x-sorted lane index lookup, then path projection within |dy| < 5.
     const Lane *nearest_lane_pos(float x, float y, float z, float *d, float *lat) const;
     // 0x419410: snap pos onto the nearest lane's road path; dir = path direction.

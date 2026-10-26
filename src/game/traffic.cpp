@@ -693,10 +693,35 @@ Lane *lane_at(Graph &g, uint32_t id)
     return const_cast<Lane *>(g.lane_by_node(id));
 }
 
+// INVENTED: node id -> cross with a bounds check (the exe dereferences the table).
+Cross *cross_by_node(Graph &g, uint32_t id, bool *is_light)
+{
+    if (id == 0) return nullptr;
+    if (id <= g.cross_eq.size()) {
+        if (is_light) *is_light = false;
+        return &g.cross_eq[id - 1];
+    }
+    size_t i = id - 1 - g.cross_eq.size();
+    if (i < g.cross_light.size()) {
+        if (is_light) *is_light = true;
+        return &g.cross_light[i];
+    }
+    return nullptr;
+}
+
+// INVENTED: node id -> road with a bounds check (the exe dereferences the table).
+Road *road_by_node(Graph &g, uint32_t id)
+{
+    size_t base = g.cross_eq.size() + g.cross_light.size();
+    if (id <= base) return nullptr;
+    size_t i = id - 1 - base;
+    return i < g.roads.size() ? &g.roads[i] : nullptr;
+}
+
 // 0x415650 ctCross init (0x40e0d0 inlined).
 void cross_init(Graph &g, Cross &c)
 {
-    c.k38 = 0;
+    c.live_refs = 0;
     c.radius = 0.0f;
     for (const CrossLink &link : c.links) {
         Lane *l = lane_at(g, link.node);
@@ -742,6 +767,18 @@ void light_init(Graph &g, Cross &c)
     }
     c.phase_count = cnt + 1;
     c.cycle = 0;
+}
+
+// 0x415f20 ctCrossEq__vf10 / 0x415f40 ctCrossLight__vf10: move the cross to the
+// head of its kind's active list.
+void cross_activate(Graph &g, Cross &c, bool light)
+{
+    uint32_t &head = light ? g.active_light : g.active_eq;
+    std::vector<Cross> &list = light ? g.cross_light : g.cross_eq;
+    if (c.active_next == 0) {
+        c.active_next = head;
+        head = (uint32_t)(&c - list.data()) + 1;
+    }
 }
 
 // 0x40e260 ctRoad init (consts 1.1, 0.9090909, 1.75).
@@ -916,6 +953,19 @@ void lane_attach(Graph &g, size_t li, uint32_t ci)
     if (lane.k34 == 0xffffffffu)
         car.k124 = lane.node88[2] ? lane.node88[2] : lane.node88[3];
     lane.kc8 += car.k24 + car.k14 + car.k20;
+}
+
+// 0x40fa50 TrafficCar__dropLive.
+void car_drop_live(Graph &g, Car &car)
+{
+    if (car.next_lane_b == 0 && car.live) {   // +0xbc, +0xdc
+        g.live_count--;
+        if (!car.type_id && car.inst_id && car.notify) {
+            // shortcut: the notify sink (T+0x3130) is not modelled (notes/29 §5)
+        }
+        car.live = 0;
+        if (car.k128) car.k128 = 0;
+    }
 }
 
 // 0x40ca40 TrafficCar__unlinkLane: unlink from the lane's car list.
@@ -1142,6 +1192,92 @@ void Graph::remove_car(uint32_t handle)
     }
     car_release(*this, ci);
     free_cars.push_back(ci);
+}
+
+// 0x40f6d0 ctLane__setLive: the live switch; cars go live and the road's two
+// crosses gain a reference, or the reverse.
+void Graph::set_lane_live(size_t li, bool on)
+{
+    // INVENTED: out-of-range lane index returns (the exe takes a valid pointer).
+    if (li >= lanes.size()) return;
+    Lane &lane = lanes[li];
+    if (lane.live == on) return;   // +0xa8
+    live_lanes += on ? 1 : -1;
+    lane.live = on;
+    // INVENTED: a lane whose road id is not a road skips the cross refcounts
+    // (the exe dereferences the table unchecked).
+    Road *road = road_by_node(*this, lane.road);
+    if (on) {
+        if (road) {
+            for (int k = 1; k < 3; k++) {
+                bool light = false;
+                Cross *c = cross_by_node(*this, road->node[k], &light);
+                if (!c) continue;   // INVENTED: a null cross id is skipped
+                if (c->live_refs == 0) {
+                    cross_activate(*this, *c, light);
+                    c->live_refs = 1;
+                } else if (c->live_refs < 0) {
+                    c->live_refs = 1;
+                } else {
+                    c->live_refs += 1;
+                }
+            }
+        }
+        for (uint32_t ci : lane.cars) {   // first to last
+            Car &car = cars[ci];
+            if (car.live != 1) {
+                live_count++;
+                if (!car.type_id && car.inst_id && car.notify) {
+                    // shortcut: the notify sink (T+0x3130) is not modelled (notes/29 §5)
+                }
+                car.live = 1;
+                if (car.live_next == 0) {   // head insert into the live list
+                    car.live_next = live_cars;
+                    live_cars = ci + 1;
+                }
+            }
+        }
+        if (lane.active_next == 0) {
+            lane.active_next = active_lanes;
+            active_lanes = (uint32_t)li + 1;
+        }
+    } else {
+        if (road) {
+            for (int k = 1; k < 3; k++) {
+                Cross *c = cross_by_node(*this, road->node[k], nullptr);
+                if (!c) continue;   // INVENTED: a null cross id is skipped
+                c->live_refs -= 1;
+                if (c->live_refs == 0) c->live_refs = -1;
+            }
+        }
+        for (uint32_t ci : lane.cars) car_drop_live(*this, cars[ci]);
+        if (!lane.cars.empty()) {
+            float t = car_time_to_lane_end(*this, cars[lane.cars.front()]);
+            if (lane.pending_events == 0) {
+                schedule_lane(*this, t, (uint32_t)li);
+                lane.pending_events++;
+            }
+        }
+    }
+    // shortcut: TrafficCar__syncInstance 0x410680 (road+0x68) is not modelled.
+}
+
+// 0x40f8e0 ctRoad__vf1: every lane of the road gets vf7 (0x40eed0), which keeps
+// the lane live and stamps its sim time.
+void Graph::keep_road_live(size_t road)
+{
+    // INVENTED: out-of-range road index returns (the exe takes a valid pointer).
+    if (road >= roads.size()) return;
+    uint32_t id = roads[road].node[0];   // +0x04 first lane
+    // INVENTED: cap the pointer walk with the lane count (the exe follows a cycle).
+    for (size_t guard = 0; guard < lanes.size(); guard++) {
+        const Lane *l = lane_by_node(id);
+        if (!l) break;   // INVENTED: a null lane id ends the walk
+        size_t li = (size_t)(l - lanes.data());
+        set_lane_live(li, true);
+        lanes[li].kc0 = sim_time;   // +0xc0
+        id = l->node14;             // +0x14
+    }
 }
 
 // 0x416800 Traffic__spawnCarNear: a link lane of the nearest cross picks the

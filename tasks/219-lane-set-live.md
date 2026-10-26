@@ -1,7 +1,7 @@
 ---
 id: 219
-status: todo
-branch:
+status: implemented
+branch: card/219
 depends: [218]
 ---
 # Traffic: ctLane__setLive, road keep-alive (road vf1 -> lane vf7), cross activation
