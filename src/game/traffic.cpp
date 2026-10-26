@@ -1103,6 +1103,8 @@ void Graph::step(float t)
     // shortcut: the lane event heap pop (ctLane__timedEvent) and the eq/light/
     // live-car walks (0x415c40, 0x415d60, 0x40f350) plus the notify queue are
     // not ported; the lane walk below is the last of the four in the exe.
+    // shortcut: the prologue's T[0xc46]+0xe0/0xe4/0xe8 = t + 1.0 stores and the
+    // trailing T[0x32] list drain (queues event 1) are not ported either.
     uint32_t *p = &active_lanes;   // +0x8c head, link = Lane::active_next (+0xa4)
     while (*p != kLiveEnd) {
         if (lane_active_step(*this, *p - 1)) {
