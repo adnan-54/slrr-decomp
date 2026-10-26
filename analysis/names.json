@@ -2074,5 +2074,7 @@
   "0x4942b0": "Car__partReport",
   "0x4c7d20": "Part__commitInstall",
   "0x4b1d50": "OsdGauge__update",
-  "0x497520": "Part__syncWear"
+  "0x497520": "Part__syncWear",
+  "0x4f78d0": "PhysicsWorld__addChildBody",
+  "0x4f7990": "PhysBody__compoundAttach"
 }
