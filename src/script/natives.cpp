@@ -157,10 +157,10 @@ struct Scheduler {
     float warp = 1.0f;
     // Engine globals written by the java.lang.System natives below.
     int quit_request = 0;        // 0x5f0c74 quit request flag
-    // INVENTED: the exe's initial measure was not traced; 0 until setMeasure.
-    float measure = 0.0f;        // 0x5da524
-    float measure_per_hour = 0.0f;  // 0x5fe378
-    float measure_inv10 = 0.0f;  // 0x5fe374
+    // 0x5da524 .data 1610.0; 0x409af0 / 0x409a90 CRT initialisers derive the other two.
+    float measure = 1610.0f;                    // 0x5da524 (0x44c94000)
+    float measure_per_hour = 1610.0f * 0.00027777778f;  // 0x5fe378
+    float measure_inv10 = 10.0f / 1610.0f;      // 0x5fe374
     int day_seconds = 0;         // 0x6024c0
     int time_flag_5da080 = 0;    // 0x5da080
     float load_slice = 0.0f;     // 0x5da464

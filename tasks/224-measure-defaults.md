@@ -1,7 +1,7 @@
 ---
 id: 224
-status: todo
-branch:
+status: implemented
+branch: card/224
 depends: []
 ---
 # Start values: measure globals (fixes vmboot `hud: speed=999`) + car wear rates

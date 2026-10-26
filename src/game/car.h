@@ -232,13 +232,13 @@ struct CarData {
     float engine_temp = 20.0f;   // +0x1ec0  0x4992e0 writes 0x41a00000
     float engine_temp_ambient = 20.0f;  // +0x1ec4  0x4992e0 writes 0x41a00000
     float engine_damage = 0.0f;  // +0x1e9c
-    float engine_rate = 0.0f;    // +0x1ea0
+    float engine_rate = 5.0e-8f;    // +0x1ea0 0x3356bf95 (0x4992e0)
     float trans_wear = 0.0f;     // +0x1ea4
-    float trans_rate = 0.0f;     // +0x1ea8
+    float trans_rate = 5.0e-8f;  // +0x1ea8 0x3356bf95 (0x4992e0)
     float radiator_damage = 0.0f;  // +0x1eac
-    float radiator_rate = 0.0f;  // +0x1eb0
+    float radiator_rate = 5.0e-6f;  // +0x1eb0 0x36a7c5ac (0x4992e0)
     float clutch_wear = 0.0f;    // +0x1eb4
-    float clutch_rate = 0.0f;    // +0x1eb8
+    float clutch_rate = 5.0e-8f; // +0x1eb8 0x3356bf95 (0x4992e0)
     Runtime::Resource *engine_part = nullptr;    // +0x2098
     Runtime::Resource *clutch_part = nullptr;    // +0x20c0
     Runtime::Resource *trans_part = nullptr;     // +0x20d0
