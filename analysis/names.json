@@ -2064,5 +2064,14 @@
   "0x504090": "GameObject__refreshBoundsTree",
   "0x40e380": "ctCross__isActive",
   "0x4e9ac0": "GameObject__intervalMgr",
-  "0x4edbc0": "interval_node__ctor"
+  "0x4edbc0": "interval_node__ctor",
+  "0x4b0f80": "Hud__damageColor",
+  "0x4b1cd0": "ResRef__partTear",
+  "0x4ad770": "type_car__createHudElements",
+  "0x4ebd20": "Renderable__setColor",
+  "0x4c00d0": "cfg_slotdmgmode",
+  "0x4c9530": "Part__propagateDamageMode",
+  "0x4942b0": "Car__partReport",
+  "0x4c7d20": "Part__commitInstall",
+  "0x4b1d50": "OsdGauge__update"
 }
