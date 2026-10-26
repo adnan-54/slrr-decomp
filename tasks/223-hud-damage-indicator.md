@@ -1,7 +1,7 @@
 ---
 id: 223
-status: todo
-branch:
+status: implemented
+branch: card/223
 depends: [221, 222]
 ---
 # HUD: damage indicator colours + engine/tyre part refs + vmboot readout

@@ -989,7 +989,7 @@ static void propagate_damage_mode(Runtime &rt, Runtime::Resource *P)
 // "add_part %d" queue round-trip (the %d is a 32-bit native pointer).
 // shortcut: the P+0xac copy and the render +0x1b4/+0x1b8 copies stay unported.
 // shortcut: add_light/add_wing/add_rollbar/add_mslot/add_linked stay unported.
-// shortcut: 0x4942b0's engine-slot and wheel-pivot branches stay unported.
+// shortcut: 0x4942b0's wheel-pivot branch stays unported.
 // shortcut: the queued "updatevariables" tail and 0x4a8200 stay unported.
 static void report_install(Runtime &rt, Runtime::Resource *P, bool nested)
 {
@@ -1005,6 +1005,15 @@ static void report_install(Runtime &rt, Runtime::Resource *P, bool nested)
             if (Object *ref = rt.wrap(P, &err)) {
                 Value rv;
                 rt.call_method(car_obj, "addpart", {Value::make_obj(ref)}, &rv, &err);
+            }
+        }
+        // 0x4942b0 engine branch: car runtime slot 0x191 (PartType__findRuntimeSlot
+        // 0x4c6fd0) holds the reported part -> engine ref car+0x2098.
+        if (PartData *cp = part_data(rt, pp->car_ref)) {
+            Slot *engine_slot = slot_by_part(cp, 0x191);
+            if (engine_slot && engine_slot->attached == rt.script_instance(P)) {
+                auto ci = g_cars.find(pp->car_ref);
+                if (ci != g_cars.end()) ci->second->engine_part = P;
             }
         }
     }
@@ -3692,11 +3701,35 @@ static void gauge_update(const OsdGauge &g, HudGauge &h, float x)
     }
 }
 
+// 0x4b0f80 Hud__damageColor: red at 0, yellow at 0.5, green at 1, linear.
+// The (int) casts are cvttss2si: NaN and out-of-range truncate to INT_MIN.
+static uint32_t hud_damage_color(float x)
+{
+    auto trunc = [](float v) -> int32_t {
+        return !(v >= -2147483648.0f && v < 2147483648.0f) ? INT32_MIN
+                                                           : (int32_t)v;
+    };
+    if (1.0f <= x) return 0xff00ff00u;
+    if (x <= 0.0f) return 0xffff0000u;
+    if (0.5f <= x)
+        return 0xffffff00u - ((uint32_t)trunc(x * 512.0f - 256.0f) << 16);
+    return 0xffff0000u + ((uint32_t)trunc(x * 512.0f) << 8);
+}
+
+// 0x4b1cd0 ResRef__partTear: part payload +0xb4; 0.0 when null/unresolved.
+static float part_tear(Runtime::Resource *r)
+{
+    if (!r) return 0.0f;
+    auto it = g_parts.find(r);
+    return it == g_parts.end() ? 0.0f : it->second->tear;
+}
+
 // 0x494910 type_car__vf13 HUD block (0x4954bc..0x495945). The traffic/bot id
 // (car+0x2054) has no src field, so its skip test is always false.
 void hud_cars(float measure_per_hour, float measure_inv10)
 {
-    for (CarData *car : car_payloads()) {
+    for (auto &kv : g_cars) {
+        CarData *car = kv.second.get();
         for (int s = 0; s < car->control_slots; s++) {
             // INVENTED: HUD viewport (R_s+0x58) taken as present; cockpit view
             // (R_s+0x38) absent, so the G0/G1 elements stay deleted.
@@ -3742,6 +3775,65 @@ void hud_cars(float measure_per_hour, float measure_inv10)
             // Cockpit G0/G1: R_s+0x38 is not modelled (absent), so delete.
             car->hud[0].live = false;
             car->hud[1].live = false;
+            // 0x495946..0x495e07 damage indicator: one colour per letter.
+            // Car tear (same lookup as control_cars): car part +0xb4.
+            auto pit = g_parts.find(kv.first);
+            float tear = pit != g_parts.end() ? pit->second->tear : 1.0f;
+            uint32_t c =
+                (0.0f < tear) ? hud_damage_color(tear) : 0xff000000u;
+            car->hud_dmg[0] = car->hud_dmg[1] = car->hud_dmg[2] =
+                car->hud_dmg[3] = c;
+            // E: (1 - engine damage) scaled by the engine part's tear.
+            float x = 1.0f - car->engine_damage;
+            float y = x * part_tear(car->engine_part);
+            car->hud_dmg[4] = car->engine_part
+                                  ? (y > 1.0f ? 0xff00007fu : hud_damage_color(y))
+                                  : 0xff000000u;
+            // T/L/O all test the clutch ref; L and O read the transmission and
+            // radiator parts (sic), and use the clutch wear.
+            x = 1.0f - car->clutch_wear;
+            if (car->clutch_part) {
+                y = x * part_tear(car->clutch_part);
+                car->hud_dmg[5] = y > 1.0f ? 0xff00007fu : hud_damage_color(y);
+            } else {
+                car->hud_dmg[5] =
+                    car->gears > 0 ? hud_damage_color(x) : 0xff000000u;
+            }
+            if (car->clutch_part) {
+                y = x * part_tear(car->trans_part);
+                car->hud_dmg[6] = y > 1.0f ? 0xff00007fu : hud_damage_color(y);
+            } else {
+                car->hud_dmg[6] = hud_damage_color(x);
+            }
+            if (car->clutch_part) {
+                y = x * part_tear(car->radiator_part);
+                car->hud_dmg[7] = y > 1.0f ? 0xff00007fu : hud_damage_color(y);
+            } else {
+                car->hud_dmg[7] = hud_damage_color(x);
+            }
+            // Per-wheel groups, in the exe's order. INVENTED: the exe writes
+            // group i>=4 past the 4 wheel colours into the next group (and off
+            // the end for suspension); src keeps the same cross-group writes
+            // while they stay inside the 20-entry array.
+            const int n = (int)car->wheels.size();
+            for (int i = 0; i < n && 8 + i < 20; i++) {
+                const WheelData &w = car->wheels[i];
+                car->hud_dmg[8 + i] =
+                    w.tyre_part
+                        ? hud_damage_color((1.0f - w.tyre_wear) *
+                                           part_tear(w.tyre_part))
+                        : 0xff000000u;
+            }
+            for (int i = 0; i < n && 12 + i < 20; i++)
+                car->hud_dmg[12 + i] =
+                    hud_damage_color(1.0f - car->wheels[i].brake_wear);
+            for (int i = 0; i < n && 16 + i < 20; i++) {
+                const WheelData &w = car->wheels[i];
+                // maxss +0x16c/+0xf8: NaN on either side takes +0xf8.
+                float s = (w.susp_damage > w.wobble_phase) ? w.susp_damage
+                                                           : w.wobble_phase;
+                car->hud_dmg[16 + i] = hud_damage_color(1.0f - s);
+            }
         }
     }
 }
@@ -3880,6 +3972,21 @@ void apply_part_wear_records(Runtime &rt, CarData &car)
             break;
         default:
             break;
+        }
+    }
+    // 0x4aebf0 tail (0x4af408..0x4af49a): tyre refs from runtime slots 101+i.
+    Runtime::Resource *car_res = nullptr;
+    for (auto &kv : g_cars)
+        if (kv.second.get() == &car) {
+            car_res = kv.first;
+            break;
+        }
+    PartData *car_parts = car_res ? part_data(rt, car_res) : nullptr;
+    if (car_parts) {
+        for (int i = 0; i < wheels; i++) {
+            Slot *r = slot_by_part(car_parts, 101 + i);
+            car.wheels[i].tyre_part =
+                (r && r->attached) ? slot_part(rt, r->attached) : nullptr;
         }
     }
 }

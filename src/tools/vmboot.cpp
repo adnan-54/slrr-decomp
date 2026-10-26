@@ -3251,6 +3251,22 @@ void game_init_check(Boot &boot, Checker &c)
                                     "time %.3f s, race time %.3f s\n",
                                     used, (double)finish_lap_time,
                                     (double)finish_race_time);
+                        // Card 223: the HUD damage indicator, printed once at
+                        // the race end (gauge text + the 20 damage colours).
+                        for (const game::CarData *cp : game::car_payloads()) {
+                            if (cp->driver_slot < 0 ||
+                                cp->driver_slot >= cp->control_slots ||
+                                !cp->slot_player[cp->driver_slot] ||
+                                game::bot_data(cp->slot_player[cp->driver_slot]))
+                                continue;
+                            std::printf("  hud: gear=%s rpm=%s speed=%s dmg=",
+                                        cp->hud[9].text.c_str(),
+                                        cp->hud[7].text.c_str(),
+                                        cp->hud[8].text.c_str());
+                            for (int i = 0; i < 20; i++)
+                                std::printf("%08x", cp->hud_dmg[i]);
+                            std::printf("\n");
+                        }
                         break;
                     }
                 }
