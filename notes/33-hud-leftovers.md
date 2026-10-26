@@ -82,5 +82,5 @@ other kinds (2, 4, 0xE, ...): nothing
 
 ## 4. Open
 - The wear accumulation in `Vehicle::update` (notes/09 §thermal/impact/brake/clutch wear) is not ported, so
-  in vmboot wear only comes from part P+0xb8 (scripts' setWear on used cars). Next target after 221-223.
+  in vmboot wear only comes from part P+0xb8 (scripts' setWear on used cars). Traced in notes/34 (cards 224-227).
 - 0x4ace87 / 0x4aed7b also unlink the engine/clutch refs (part removal path, not traced).
