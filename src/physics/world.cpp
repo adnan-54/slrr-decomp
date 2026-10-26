@@ -1444,6 +1444,8 @@ static void update_object_boxes(const std::vector<StepState> &states)
 // INVENTED order: DFS over map_nodes instead of the interval manager's SAP order
 // (same overlapped set, notes/36 §1).
 // shortcut: Collide__groundPrefetch (+5 m box, async residency) not ported.
+// shortcut: node unload is not ported, and the awake type-2 child half of 0x4f9750 is
+// approximated by !asleep (notes/36).
 static void walk_map_nodes(World &w, const std::vector<StepState> &states)
 {
     if (!w.map_node_touch) return;
