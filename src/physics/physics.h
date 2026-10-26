@@ -293,6 +293,10 @@ struct World {
     // other side's id into the "%d" param).
     std::function<void(RigidBody *target, RigidBody *other, uint32_t code)>
         trigger_event;
+    // 0x4fe6f0 / 0x4ee460: an object's box overlapped map node `node` of the
+    // static `ground` body; the game runtime makes it resident and runs the
+    // keep-alive (0x4fe852). Unset = nothing happens.
+    std::function<void(RigidBody *ground, size_t node)> map_node_touch;
 };
 
 // The process-wide world (g_physWorld, 0x60251c): the exe creates it at engine

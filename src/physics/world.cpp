@@ -1440,6 +1440,38 @@ static void update_object_boxes(const std::vector<StepState> &states)
     }
 }
 
+// 0x4fc610 dispatch -> 0x4ee460 collidePass -> 0x4fe6f0 groundTree, map node part.
+// INVENTED order: DFS over map_nodes instead of the interval manager's SAP order
+// (same overlapped set, notes/36 §1).
+// shortcut: Collide__groundPrefetch (+5 m box, async residency) not ported.
+static void walk_map_nodes(World &w, const std::vector<StepState> &states)
+{
+    if (!w.map_node_touch) return;
+    for (const StepState &s : states) {
+        const RigidBody &b = *s.body;
+        if (b.inst_records.empty() || b.asleep || !is_dynamic(b) || b.obj_kind != 1) continue;
+        if (vec_dot(b.obj_half, b.obj_half) > 10000.0f) continue;  // 0x4f9750 size part
+        for (RigidBody *g : w.statics) {
+            if (!g->def.shape.mesh || g->def.shape.mesh->map_nodes.empty()) continue;
+            const std::vector<CollisionMesh::MapNode> &nodes = g->def.shape.mesh->map_nodes;
+            const Vec3 gp = g->pose().pos;
+            const Mat34 gr = g->rotation();
+            for (size_t ni = 0; ni < nodes.size();) {
+                const Vec3 c = gp + mat_vec(gr, nodes[ni].centre);
+                const Vec3 h = nodes[ni].half;
+                if (b.obj_half.x + h.x < fabsf(c.x - b.obj_centre.x) ||
+                    b.obj_half.z + h.z < fabsf(c.z - b.obj_centre.z) ||
+                    b.obj_half.y + h.y < fabsf(c.y - b.obj_centre.y)) {
+                    ni = nodes[ni].end > ni ? nodes[ni].end : ni + 1;  // children skipped
+                    continue;
+                }
+                w.map_node_touch(g, ni);
+                ni++;
+            }
+        }
+    }
+}
+
 int World::step(float dt)
 {
     // PhysicsWorld__step 0x502060 prologue: dt joins the accumulator; a sum
@@ -1522,6 +1554,7 @@ int World::step(float dt)
         if (converged || it == 19) {
             // 0x502060 H: purgeEvents/boundsFromInstances before dispatch.
             update_object_boxes(states);
+            walk_map_nodes(*this, states);
             if (add_hull_contacts(*this, states) > 0)
                 converged = false;
         }

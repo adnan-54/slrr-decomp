@@ -309,6 +309,7 @@ static void create_ground_body(Runtime &rt, Runtime::Resource *r)
     b->def.shape.rolling_resistance = 0.01f; // shape +0x54
     b->def.shape.restitution = 0.2f;         // shape +0x58
     b->pos = vec3(x, y, z);
+    b->owner = r;              // body+0x38 ResourceRef target, as the trigger body (0x4d4700)
     // INVENTED: one merged collider: faces merged in groundTree walk order
     // (0x4fe6f0) with the node table (cards 207/208). Streaming/unload not
     // modelled: for cars the exe loads nodes synchronously (0x518a80 prio 0,
@@ -495,6 +496,10 @@ Runtime::Runtime(ResourceManager &resources, Vm *vm, ClassPath *classes)
             queue_event(r, nullptr, code,
                         Value::make_str(std::to_string((int32_t)other->owner_id)));
     };
+    // 0x4fe6f0 residency + 0x4fe852 keep-alive on the ground body's resource.
+    process_world().map_node_touch = [this](RigidBody *g, size_t ni) {
+        map_node_touched(static_cast<Resource *>(g->owner), ni);
+    };
 }
 
 Runtime::~Runtime()
@@ -502,6 +507,7 @@ Runtime::~Runtime()
     // The trigger callback captures this; the process world outlives the runtime
     // (the exe's engine singleton 0x60251c).
     process_world().trigger_event = nullptr;
+    process_world().map_node_touch = nullptr;
     if (active_ == this) {
         if (vm_) vm_->set_resource_resolver(nullptr);
         active_ = nullptr;
