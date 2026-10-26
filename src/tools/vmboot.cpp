@@ -3253,6 +3253,7 @@ void game_init_check(Boot &boot, Checker &c)
                                     (double)finish_race_time);
                         // Card 223: the HUD damage indicator, printed once at
                         // the race end (gauge text + the 20 damage colours).
+                        // INVENTED: player car = valid driver slot that is not a native bot.
                         for (const game::CarData *cp : game::car_payloads()) {
                             if (cp->driver_slot < 0 ||
                                 cp->driver_slot >= cp->control_slots ||

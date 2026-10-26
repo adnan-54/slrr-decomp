@@ -3728,6 +3728,7 @@ static float part_tear(Runtime::Resource *r)
 // (car+0x2054) has no src field, so its skip test is always false.
 void hud_cars(float measure_per_hour, float measure_inv10)
 {
+    // INVENTED: g_cars stands in for the exe's own car list walk.
     for (auto &kv : g_cars) {
         CarData *car = kv.second.get();
         for (int s = 0; s < car->control_slots; s++) {
@@ -3778,6 +3779,7 @@ void hud_cars(float measure_per_hour, float measure_inv10)
             // 0x495946..0x495e07 damage indicator: one colour per letter.
             // Car tear (same lookup as control_cars): car part +0xb4.
             auto pit = g_parts.find(kv.first);
+            // INVENTED: 1.0 when the car has no part record (exe reads +0xb4).
             float tear = pit != g_parts.end() ? pit->second->tear : 1.0f;
             uint32_t c =
                 (0.0f < tear) ? hud_damage_color(tear) : 0xff000000u;
@@ -3813,7 +3815,7 @@ void hud_cars(float measure_per_hour, float measure_inv10)
             }
             // Per-wheel groups, in the exe's order. INVENTED: the exe writes
             // group i>=4 past the 4 wheel colours into the next group (and off
-            // the end for suspension); src keeps the same cross-group writes
+            // the end for suspension: susp[4+] clobbers L); src keeps the same cross-group writes
             // while they stay inside the 20-entry array.
             const int n = (int)car->wheels.size();
             for (int i = 0; i < n && 8 + i < 20; i++) {
@@ -3976,6 +3978,7 @@ void apply_part_wear_records(Runtime &rt, CarData &car)
     }
     // 0x4aebf0 tail (0x4af408..0x4af49a): tyre refs from runtime slots 101+i.
     Runtime::Resource *car_res = nullptr;
+    // INVENTED: reverse scan of g_cars (the payload does not store its key).
     for (auto &kv : g_cars)
         if (kv.second.get() == &car) {
             car_res = kv.first;
