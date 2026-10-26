@@ -1056,6 +1056,26 @@ void cross_bind_object(Cross &cross, uint32_t object)
     // 0x40ed30; src keeps cars only on lanes (card 216), so the loop is empty.
 }
 
+// 0x40f4e0 ctLane__activeStep: keep a live lane listed while its sim-time stamp
+// is fresh, else switch it off so the caller unlinks it.
+bool lane_active_step(Graph &g, size_t li)
+{
+    Lane &lane = g.lanes[li];
+    if (!lane.live) return false;                    // +0xa8
+    if (g.sim_time - lane.kc0 <= 0.5f) {             // +0x84, +0xc0
+        for (uint32_t ci : lane.cars) {
+            const Car &car = g.cars[ci];
+            if (car.next_lane_b == 0) {              // +0xbc
+                // shortcut: TrafficCar__step 0x4107c0 and the hand-over to the
+                // next lane 0x40e460 are not ported (no t is needed without them).
+            }
+        }
+        return true;
+    }
+    g.set_lane_live(li, false);                      // 0x40f6d0 ctLane__setLive
+    return false;
+}
+
 }  // namespace
 
 // 0x419da0 Traffic__init.
@@ -1080,8 +1100,19 @@ void Graph::init(float t)
 void Graph::step(float t)
 {
     sim_time = t;  // +0x84
-    // shortcut: the event heap, the 4 active lists and the car notify list only
-    // hold traffic cars; src has no car pool (notes/28 §3), so they stay empty.
+    // shortcut: the lane event heap pop (ctLane__timedEvent) and the eq/light/
+    // live-car walks (0x415c40, 0x415d60, 0x40f350) plus the notify queue are
+    // not ported; the lane walk below is the last of the four in the exe.
+    uint32_t *p = &active_lanes;   // +0x8c head, link = Lane::active_next (+0xa4)
+    while (*p != kLiveEnd) {
+        if (lane_active_step(*this, *p - 1)) {
+            p = &lanes[*p - 1].active_next;
+        } else {
+            const uint32_t n = lanes[*p - 1].active_next;
+            lanes[*p - 1].active_next = 0;
+            *p = n;
+        }
+    }
 }
 
 // 0x40ce00 ctRoad__spawnCar (ECX = road).

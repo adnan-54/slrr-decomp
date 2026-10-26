@@ -1,7 +1,7 @@
 ---
 id: 220
-status: todo
-branch:
+status: implemented
+branch: card/220
 depends: [219]
 ---
 # Traffic: Graph::step active-lane walk + ctLane__activeStep expiry
