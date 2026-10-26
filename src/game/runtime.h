@@ -143,6 +143,16 @@ class Runtime {
         std::shared_ptr<traffic::Graph> traffic;
         // 0x4bade0 type_ground vf3 body part: static kind-0 "groundbody".
         std::unique_ptr<RigidBody> ground_body;
+        // INVENTED storage: per map node of ground_body's soup (same DFS order as
+        // CollisionMesh::map_nodes): its RSD and the native object created on
+        // first residency (0x5195a0). traffic_node = obj+0x1c (bindObject result).
+        struct MapObject {
+            uint32_t record = 0, gametype = 0;
+            std::string params;
+            bool created = false;
+            uint32_t traffic_node = 0;
+        };
+        std::vector<MapObject> map_objects;
         // 0x4d4700 type_trigger vf3: mass-0 sensor box/sphere/capsule.
         std::unique_ptr<RigidBody> trigger_body;
         bool instance = false;
@@ -275,6 +285,9 @@ class Runtime {
     bool class_is_a(const std::string &cls, const std::string &base);
     // 0x47c640 Game__getInfo(h, 0x39) -> 0x4bb570: the ground's traffic graph or null.
     traffic::Graph *ground_traffic(Handle *h);
+    // 0x4fe6f0 + 0x4fe852: physics walk residency of map node ni (0x5195a0
+    // create -> type_road__vf3 0x4d42a0), then the road keep-alive (vf5 0x4d44d0).
+    void map_node_touched(Resource *ground, size_t ni);
     // 0x4fe1a0 pick raycast over the resource tree: 0x4fddf0 node walk,
     // 0x4fc140 body hit, 0x5007c0 sphere and 0x500580 box tests. hit == null
     // means first-only (the exe's t_out == NULL). Returns whether anything hit.

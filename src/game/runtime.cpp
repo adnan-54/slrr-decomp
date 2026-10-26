@@ -182,13 +182,14 @@ static bool ground_rsd(Runtime::Resource *r, uint32_t *gametype, std::string *pa
     return has_type;
 }
 
-// The record's gametype chain names the `native ground` type.
-static bool native_ground_type(Runtime &rt, uint32_t gametype, const Package *base)
+// The record's gametype chain names the native `name` handler.
+static bool native_type_is(Runtime &rt, uint32_t gametype, const Package *base,
+                           const char *name)
 {
     Runtime::Resource *ty = rt.resolve(gametype, base);
     if (!ty || !ty->package || !ty->record) return false;
     for (const DataRef &ref : rt.resources().refs(*ty->package, *ty->record))
-        if (ref.kind == DataRef::Native && ref.native == "ground") return true;
+        if (ref.kind == DataRef::Native && ref.native == name) return true;
     // shortcut: a scripted type's getInfo (0x47dd50) is not modelled.
     return false;
 }
@@ -196,12 +197,14 @@ static bool native_ground_type(Runtime &rt, uint32_t gametype, const Package *ba
 // 0x519940 / 0x4ff6b0: the map record and every embedded type-1 child carry a
 // PHYS triangle soup in world-frame metres (notes/19 §7). The exe walks the
 // resident nodes per body (Collide__groundTree 0x4fe6f0); src merges them but
-// keeps each node's bounds box (0x51e6b0) and face range, in walk order.
+// keeps each node's bounds box (0x51e6b0), face range and RSD object state, in
+// walk order.
 static void gather_ground_soup(const RpkArchive &rpk, const RpkRecord &rec,
                                std::vector<Vec3> *verts,
                                std::vector<CollisionMesh::Triangle> *tris,
                                std::vector<Vec3> *normals,
-                               std::vector<CollisionMesh::MapNode> *nodes)
+                               std::vector<CollisionMesh::MapNode> *nodes,
+                               std::vector<Runtime::Resource::MapObject> *objs)
 {
     RpkInstanceData inst;
     std::string err;
@@ -230,9 +233,15 @@ static void gather_ground_soup(const RpkArchive &rpk, const RpkRecord &rec,
         node.half = vec3(1e30f, 1e30f, 1e30f);
     }
     const size_t idx = nodes->size();
+    // Same push site as the node: the two vectors stay index-aligned.
+    Runtime::Resource::MapObject obj;
+    obj.record = rec.id;
+    rpk_rsd_fields(inst.rsd, &obj.gametype, &obj.params);
+    objs->push_back(std::move(obj));
     nodes->push_back(node);
     for (const RpkRecord &child : inst.children)
-        if (child.type == 1) gather_ground_soup(rpk, child, verts, tris, normals, nodes);
+        if (child.type == 1)
+            gather_ground_soup(rpk, child, verts, tris, normals, nodes, objs);
     // Subtree range + union box (speed only: a sphere that misses the union
     // misses every node in it, so the 0x4feb20 per-node result is unchanged).
     CollisionMesh::MapNode &n = (*nodes)[idx];
@@ -261,7 +270,7 @@ static void create_ground_body(Runtime &rt, Runtime::Resource *r)
     uint32_t gametype = 0;
     std::string params;
     if (!ground_rsd(r, &gametype, &params)) return;
-    if (!native_ground_type(rt, gametype, r->package)) return;
+    if (!native_type_is(rt, gametype, r->package, "ground")) return;
 
     // params "%x,%f,%f,%f,...": floats 1..3 are the body position.
     // INVENTED: a failed scan leaves the remaining fields at 0.
@@ -310,12 +319,41 @@ static void create_ground_body(Runtime &rt, Runtime::Resource *r)
     std::vector<CollisionMesh::Triangle> tris;
     std::vector<Vec3> normals;
     std::vector<CollisionMesh::MapNode> nodes;
+    r->map_objects.clear();
     if (r->package && r->record)
-        gather_ground_soup(r->package->rpk, *r->record, &verts, &tris, &normals, &nodes);
+        gather_ground_soup(r->package->rpk, *r->record, &verts, &tris, &normals, &nodes,
+                           &r->map_objects);
     b->def.shape.mesh = build_collision_mesh(verts, tris, normals, nodes);
     if (b->def.shape.mesh) b->def.shape.type = SHAPE_MESH;
     w.add_body(b.get());
     r->ground_body = std::move(b);
+}
+
+// 0x4fe6f0 residency + 0x5195a0 create (type_road__vf3 0x4d42a0), then the
+// 0x4fe852 keep-alive (type_road__vf5 0x4d44d0 with f = 1.0 -> node vf1).
+void Runtime::map_node_touched(Resource *ground, size_t ni)
+{
+    if (!ground || ni >= ground->map_objects.size()) return;
+    Resource::MapObject &m = ground->map_objects[ni];
+    if (!m.created) {
+        if (!m.gametype) {
+            m.created = true;                       // 0x5195a0: no gametype, no create
+        } else if (!native_type_is(*this, m.gametype, ground->package, "road")) {
+            m.created = true;   // shortcut: only native road objects are created; walk/scripted
+                                // map gametypes (notes/31 §1) need their own create, port then.
+        } else if (!ground->traffic) {
+            return;             // INVENTED: src builds the graph lazily (load_ground);
+                                // retry until it exists instead of binding 0 forever.
+        } else {
+            m.created = true;
+            m.traffic_node = ground->traffic->bind_object(m.params, m.record);
+        }
+    }
+    if (!m.traffic_node) return;
+    traffic::Graph &g = *ground->traffic;
+    uint32_t base = static_cast<uint32_t>(g.cross_eq.size() + g.cross_light.size());
+    if (m.traffic_node > base) g.keep_road_live(m.traffic_node - 1 - base);  // ctRoad vf1 0x40f8e0
+    // cross node: vf1 0x40e380 only reads the refcount -> nothing
 }
 
 // The type record's refs name the `native trigger` handler (vtable 0x5a00e0).
@@ -417,7 +455,7 @@ static void load_ground(Runtime &rt, Runtime::Resource *r, Runtime::Handle *h)
     uint32_t gametype = 0;
     std::string params;
     if (!ground_rsd(r, &gametype, &params)) return;
-    if (!native_ground_type(rt, gametype, r->package)) return;
+    if (!native_type_is(rt, gametype, r->package, "ground")) return;
 
     std::string trc;
     if (!scan_ground_params(params, &trc) || trc.empty()) return;

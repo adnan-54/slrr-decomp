@@ -1,7 +1,7 @@
 ---
 id: 230
-status: todo
-branch:
+status: implemented
+branch: card/230
 depends: [229]
 ---
 # Runtime: map node -> road object link (0x5195a0 create, type_road vf3/vf5, keep-alive call)
