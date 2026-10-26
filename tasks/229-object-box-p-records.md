@@ -1,7 +1,7 @@
 ---
 id: 229
-status: todo
-branch:
+status: merged
+branch: main (card/229 timed out; committed from the working tree)
 depends: []
 ---
 # Physics: per-root P records and the object box O+0xb4 (updateBounds + boundsFromInstances)

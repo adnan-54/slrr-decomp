@@ -1403,6 +1403,43 @@ static void trigger_pass(World &w)
     sweep_triggers(w);
 }
 
+// 0x504180 PhysBody__updateBounds per record, then 0x503c20
+// GameObject__boundsFromInstances unions their swept boxes into the root's
+// object box (O+0xb0..+0xc8). Nothing reads the box yet.
+static void update_object_boxes(const std::vector<StepState> &states)
+{
+    for (const StepState &s : states) {
+        RigidBody &b = *s.body;
+        if (b.inst_records.empty() || b.asleep || !is_dynamic(b)) continue;
+        const Mat34 r0 = pose_rotation(Pose{s.start.pos, s.start.rot});
+        const Mat34 r1 = b.rotation();
+        bool first = true;
+        Vec3 lo{0.0f, 0.0f, 0.0f}, hi{0.0f, 0.0f, 0.0f};
+        for (const RigidBody::InstRecord &r : b.inst_records) {
+            const Vec3 p0 = s.start.pos + mat_vec(r0, r.offset);
+            const Vec3 p1 = b.pos + mat_vec(r1, r.offset);
+            const Vec3 c = (p0 + p1) * 0.5f;
+            const Vec3 h{fabsf(p1.x - p0.x) * 0.5f + r.br,
+                         fabsf(p1.y - p0.y) * 0.5f + r.br,
+                         fabsf(p1.z - p0.z) * 0.5f + r.br};
+            const Vec3 rlo = c - h, rhi = c + h;
+            if (first) {
+                lo = rlo;
+                hi = rhi;
+                first = false;
+            } else {
+                lo = Vec3{fminf(lo.x, rlo.x), fminf(lo.y, rlo.y), fminf(lo.z, rlo.z)};
+                hi = Vec3{fmaxf(hi.x, rhi.x), fmaxf(hi.y, rhi.y), fmaxf(hi.z, rhi.z)};
+            }
+        }
+        if (!first) { // no records: O keeps its old box
+            b.obj_kind = 1;
+            b.obj_half = (hi - lo) * 0.5f;
+            b.obj_centre = lo + b.obj_half;
+        }
+    }
+}
+
 int World::step(float dt)
 {
     // PhysicsWorld__step 0x502060 prologue: dt joins the accumulator; a sum
@@ -1483,6 +1520,8 @@ int World::step(float dt)
         // shortcut: resolveImpacts (mode 6 -> 7 before resolve) is not ported;
         // the added contacts set converged = false directly.
         if (converged || it == 19) {
+            // 0x502060 H: purgeEvents/boundsFromInstances before dispatch.
+            update_object_boxes(states);
             if (add_hull_contacts(*this, states) > 0)
                 converged = false;
         }

@@ -129,6 +129,18 @@ struct RigidBody {
         std::shared_ptr<const Poly> poly;  // kind-6 V-Clip hull
     };
     std::vector<CollisionChild> collision_children;
+    // INVENTED storage: the exe's type-2 P nodes of this root's game object,
+    // flattened to root-frame offsets (children are rigid, 0x5001c0). br =
+    // shape +0xc (0x524620).
+    struct InstRecord {
+        Vec3 offset;
+        float br;
+    };
+    std::vector<InstRecord> inst_records;
+    // O+0xb0 kind, +0xb4 centre, +0xc0 half (0x503c20).
+    int obj_kind = 0;
+    Vec3 obj_centre{0.0f, 0.0f, 0.0f};
+    Vec3 obj_half{0.0f, 0.0f, 0.0f};
     BodyDef def;
     Vec3 pos{0.0f, 0.0f, 0.0f};
     Quat rot{0.0f, 0.0f, 0.0f, 1.0f};  // state s[0x25..0x28]

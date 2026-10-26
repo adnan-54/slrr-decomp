@@ -874,6 +874,7 @@ void rebuild_compound(Runtime &rt, Runtime::Resource *carres)
     CfgFile car_cfg;
     if (load_car_cfg(rt, carres, &car_cfg, nullptr))
         add_body_lines(children, car_cfg, identity_rot(), Vec3{0.0f, 0.0f, 0.0f});
+    const size_t car_cfg_children = children.size();
     for (const WheelData &w : car->wheels) {
         Vec3 hub{w.hub[0], w.hub[1], w.hub[2]};
         // cfg `type`: "<bone mass> sphere <radius>" (fill_car reads the 3rd value).
@@ -955,6 +956,31 @@ void rebuild_compound(Runtime &rt, Runtime::Resource *carres)
         child.poly = std::make_shared<const Poly>(poly_from_triangles(*c.shape.mesh));
         root->collision_children.push_back(child);
     }
+    // 0x524620 GameObject__createPhysInstance seeds one type-2 P record per
+    // game-object child; INVENTED storage (like collision_children): root-frame
+    // offsets, exact because 0x5001c0 places compound children rigidly.
+    root->inst_records.clear();
+    // car_root box createBox(1,5,1,1,1) 0x4992e0; src keeps SHAPE_NONE, so use
+    // the exe bounding radius (0x4f7d60).
+    root->inst_records.push_back({Vec3{0.0f, 0.0f, 0.0f}, sqrtf(3.0f) + 0.05f});
+    // part_comp, car frame origin, type 6 without a mesh: br = 0 (0x4c1f90).
+    root->inst_records.push_back({-com, 0.0f});
+    // bbone: the first car cfg `body` child (M+0xff0, 0x4bf4e0).
+    if (car_cfg_children > 0) {
+        const CompoundChild &bb = children[0];
+        root->inst_records.push_back({bb.pos - com, bb.shape.bounding_radius()});
+    }
+    // wheelbone: the cfg `type` sphere child per wheel (0x4992e0; 0x4f3f10 is the sensor capsule, no P node).
+    for (const WheelData &w : car->wheels) {
+        if (!(w.bone_mass > 0.0f)) continue;
+        root->inst_records.push_back(
+            {Vec3{w.hub[0], w.hub[1], w.hub[2]} - com, w.radius + 0.05f});
+        // shortcut: create-time offset; type_car__vf7 0x4a99b0 moves the bone
+        // records with suspension/steer every call (notes/35 §3), port vf7 to
+        // upgrade.
+    }
+    // shortcut: "hub"/"a_arm" (template rec[-0x1a]) and "steer"/"cbone" records
+    // are not parsed by src; add them when the cfg fields are (notes/35 §4).
     // 0x5032d0 re-centres the children; the sim wheels are src's children.
     Car *sim = car->sim.get();
     if (sim && sim->wheels.size() == car->wheels.size())
@@ -1524,6 +1550,13 @@ void create_car_bodies(Runtime &rt, Runtime::Resource *inst,
         car->chassis_body->def.flags |= 4u;  // static
     }
     rebuild_compound(rt, inst);
+    // 0x4992e0 tail: O.centre = part_comp active pos, O.half = (10,10,10),
+    // O.kind = 0 (the first object box).
+    if (car->root_body) {
+        car->root_body->obj_kind = 0;
+        car->root_body->obj_centre = car->chassis_body->pos;
+        car->root_body->obj_half = Vec3{10.0f, 10.0f, 10.0f};
+    }
 
     // Wheel records -> simulation wheels. mount = W+0x78 hub in car_root space;
     // the suspension lengths are W+0x50/54/58 (rest_ray etc. add the radius at
