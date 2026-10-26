@@ -45,13 +45,6 @@ const float kPacejkaDefaults[kPacejkaSlots] = {
 // DAT_005fe320 = gameplay config `steerhelp_turn`; not in the shipped files -> 0.
 static const float kSteerHelpTurn = 0.0f;
 
-// 0x4b0ff0 health->factor: 1 - w^2*0.6, floored at 0.100000024 when w >= 1.
-float wear_factor(float w)
-{
-    if (w >= 1.0f) return 0.100000024f;
-    return 1.0f - w * w * 0.6f;
-}
-
 float num(const std::string &s)
 {
     return (float)strtod(s.c_str(), nullptr);
@@ -450,9 +443,9 @@ void fill_car(CarData &c, const CfgFile &cfg)
         w.max_len = w.template_len + 0.1f;
         w.min_len = -1.0f;
         w.free_len = w.rest_len + w.radius;
-        w.friction_eff = w.friction * wear_factor(w.tyre_wear);
-        w.brake_eff = w.brake * wear_factor(w.brake_wear);
-        w.hbrake_eff = w.hbrake * wear_factor(w.brake_wear);
+        w.friction_eff = w.friction * health_factor(w.tyre_wear);
+        w.brake_eff = w.brake * health_factor(w.brake_wear);
+        w.hbrake_eff = w.hbrake * health_factor(w.brake_wear);
         w.drive_eff = w.drive;
         w.roll_res = 0.015f;
         w.damage_visual = w.template_damage;
@@ -1180,19 +1173,19 @@ void WheelData::set_friction(float v)
 {
     friction = v;
     pacejka[2] = v;
-    friction_eff = v * wear_factor(tyre_wear);
+    friction_eff = v * health_factor(tyre_wear);
 }
 
 void WheelData::set_brake(float v)
 {
     brake = v;
-    brake_eff = v * wear_factor(brake_wear);
+    brake_eff = v * health_factor(brake_wear);
 }
 
 void WheelData::set_hbrake(float v)
 {
     hbrake = v;
-    hbrake_eff = v * wear_factor(brake_wear);
+    hbrake_eff = v * health_factor(brake_wear);
 }
 
 void WheelData::set_radius(float v)
@@ -2052,6 +2045,18 @@ void drive_cars(float dt)
             ground = b;
             break;
         }
+    // 0x5dacd4 = Config "internal_damage" (0x47c240). INVENTED: the exe reloads
+    // it only in that routine; read it once per drive_cars call.
+    float k_dmg = 1.0f;
+    if (Runtime *rt = Runtime::active()) {
+        if (Vm *vm = rt->vm()) {
+            Value v;
+            std::string e;
+            if (vm->get_static_field("java.util.Config", "internal_damage", &v, &e) &&
+                v.kind == Value::Float)
+                k_dmg = v.f;
+        }
+    }
     for (auto &kv : g_cars) {
         CarData *c = kv.second.get();
         if (!c->sim || !c->root_body) continue;
@@ -2093,6 +2098,24 @@ void drive_cars(float dt)
         e.max_rpm = c->max_rpm;
         e.rpm_limit = c->rpm_limit;
         e.torque_health = c->torque_health;
+        e.nitro_health = c->nitro_health;
+        // INVENTED glue: §1 thermal/wear state (0x49cfd0) lives in the same exe
+        // struct as the rest of the car; copy the engine-block/car fields in.
+        sim.engine_temp = c->engine_temp;
+        sim.engine_ambient = c->engine_temp_ambient;
+        sim.heat_capacity = c->heat_capacity;
+        sim.cooling_coeff = c->cooling_coeff;
+        sim.cool_low = c->cooling_low;
+        sim.cool_air = c->cooling_air;
+        sim.cool_speed = c->cooling_speed;
+        sim.engine_dmg = c->engine_damage;
+        sim.engine_rate = c->engine_rate;
+        sim.radiator_dmg = c->radiator_damage;
+        sim.radiator_rate = c->radiator_rate;
+        sim.torque_base = c->torque_base;
+        sim.nitro_base = c->nitro_torque_base;
+        sim.k_dmg = k_dmg;
+        sim.wear_off = (c->flags & 0x400u) != 0;
         e.torque_curve.resize(c->torque_nm.size());
         for (size_t i = 0; i < c->torque_nm.size(); i++) {
             e.torque_curve[i].rpm = i < c->torque_rpm.size() ? c->torque_rpm[i] : 0.0f;
@@ -2134,6 +2157,15 @@ void drive_cars(float dt)
         if (sim.wheels.size() == c->wheels.size())
             for (size_t i = 0; i < sim.wheels.size(); i++)
                 c->wheels[i].pacejka[13] = sim.wheels[i].pacejka.p[13];
+        // INVENTED glue: the §1 thermal/wear results the natives read back.
+        c->engine_temp = sim.engine_temp;
+        c->cooling_coeff = sim.cooling_coeff;
+        c->engine_damage = sim.engine_dmg;
+        c->radiator_damage = sim.radiator_dmg;
+        c->torque_health = e.torque_health;
+        c->nitro_health = e.nitro_health;
+        c->friction_fwd = e.friction_fwd;
+        c->friction_rev = e.friction_rev;
         c->rpm_raw = e.omega;
         c->rpm_smoothed = e.smoothed_omega;
         c->shaft_speed = sim.shaft_speed;

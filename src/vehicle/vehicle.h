@@ -12,6 +12,10 @@
 static const int kPacejkaSlots = 17;
 static const int kMaxGears = 8;
 
+// 0x4b0ff0 Vehicle__healthFactor: 1 - w*w*0.6, floored at 0.100000024 once
+// w >= 1. Shared by the car payload setters (car.cpp) and §1 wear.
+float health_factor(float w);
+
 // 17 magic-formula coefficients, exe layout W+0x1e8 + 4*i.
 // p2 is overwritten per tick with ground friction * tyre friction and p13 with
 // ground rolling resistance + wheel rolling resistance (notes/09 §6).
@@ -192,6 +196,23 @@ struct Car {
     float net_torque = 0.0f;        // car+0x1e84
     float combustion_torque = 0.0f; // car+0x1e8c
     float last_rpm = 0.0f;          // car+0x1fb0
+
+    // Engine thermal + damage block (§1 0x49cfd0..0x49d2a5, notes/34 §3).
+    float engine_temp = 20.0f;        // car+0x1ec0
+    float engine_ambient = 20.0f;     // car+0x1ec4
+    float heat_capacity = 320000.0f;  // car+0x1ebc
+    float cooling_coeff = 9.375e-05f; // car+0x1ec8 = c / heat_capacity
+    float cool_low = 10.0f;           // e+0xa5c
+    float cool_air = 50.0f;           // e+0xa60
+    float cool_speed = 0.01f;         // e+0xa64
+    float engine_dmg = 0.0f;          // car+0x1e9c
+    float engine_rate = 5.0e-8f;      // car+0x1ea0
+    float radiator_dmg = 0.0f;        // car+0x1eac
+    float radiator_rate = 5.0e-6f;    // car+0x1eb0
+    float torque_base = 1.0f;         // e+0xd4
+    float nitro_base = 1.0f;          // e+0xd8
+    float k_dmg = 1.0f;               // Config.internal_damage (0x5dacd4)
+    bool wear_off = false;            // car+0x70 & 0x400: skip heating/wear
 
     // Aero drag (Vehicle::update §7, 0x49fb34): e+0x91c / e+0x910, copied in
     // by the per-tick glue. F = -C_drag*|v|^2*v_hat at drag_center.

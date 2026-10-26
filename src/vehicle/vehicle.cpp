@@ -12,6 +12,24 @@ static float clampf(float v, float lo, float hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+// 0x4b0ff0 Vehicle__healthFactor.
+float health_factor(float w)
+{
+    return w >= 1.0f ? 0.100000024f : 1.0f - w * w * 0.6f;
+}
+
+// 0x4afb50 Vehicle__damageRoll: deterministic wear accumulation. Returns 0 when
+// the amount is not positive, 1 while the wear stays below 1, 2 once it clamps.
+static int wear_add(float *wear, float rate, float amount)
+{
+    if (amount <= 0.0f) return 0;
+    *wear = rate * amount + *wear;
+    if (*wear < 0.0f) *wear = 0.0f; // exe logs "intdamage_data: part with invalid wear detected!"
+    if (*wear < 1.0f) return 1;
+    *wear = 1.0f;
+    return 2;
+}
+
 // 0x4aa830/0x566a70: the wheel's sensor-body frame, R_car * W+0x90 * Ry(W+0xe4).
 // The exe composes the same matrices with 0x566a70; 0x49c8e0 then reads rows
 // (local_j = sum_r M[r][j] v_r), which is mat_tvec below.
@@ -319,9 +337,58 @@ void Car::update_engine_and_drivetrain(float dt)
             float T = L * T_max;
             combustion_torque = thr > 0.01f ? 2.0f * T * thr : 0.0f;
             T_net += combustion_torque;
+
+            // 0x49cfd0..0x49d2a5 engine heat, radiator overheat and engine wear
+            // (notes/34 §3). thr is the post-governor/post-starter value.
+            // shortcut: nitro heat (heat += 2000*ΔT) has no sim path yet.
+            if (!wear_off) {
+                float heat = thr * 1000.0f * T_max;
+                if (heat * dt > 0.0f)
+                    engine_temp = heat * dt / heat_capacity + engine_temp;
+                if (engine_temp <= 90.0f || radiator_dmg >= 1.0f) {
+                    cooling_coeff = cool_low;                       // e+0xa5c
+                } else {
+                    Vec3 v = body.vel;                              // state +0x70
+                    cooling_coeff = health_factor(radiator_dmg) *
+                                        (vec_dot(v, v) * cool_speed + cool_air) + // e+0xa64/a60
+                                    cool_low;
+                }
+                cooling_coeff = cooling_coeff / heat_capacity;      // +0x1ec8
+                if (engine_temp > 100.0f) {                          // 0x49d071
+                    float d = engine_temp - 100.0f;
+                    wear_add(&radiator_dmg, radiator_rate, d * d * dt * k_dmg);
+                }
+                if (engine_dmg < 1.0f) {                             // 0x1e9c
+                    float fric = rpm < 0.0f ? engine.friction_rev : engine.friction_fwd;
+                    float r = fabsf(rpm) / engine.max_rpm;
+                    r = r * r;
+                    r = r * r;
+                    r = r * r;
+                    r = r * r;                                       // (|rpm|/maxRPM)^16
+                    float t = fabsf(engine_temp - 90.0f) * 0.01f;
+                    float p = ((dt + dt) / engine_rate) * r * fric * 100.0f * (t * t + 1.0f);
+                    if (p > 0.0f &&
+                        wear_add(&engine_dmg, engine_rate, k_dmg * p) != 0) { // 0x49d169
+                        float h = health_factor(engine_dmg);
+                        engine.torque_health = torque_base * h;      // +0x1e04
+                        engine.nitro_health = nitro_base * h;        // +0x1e08
+                        if (engine_dmg >= 1.0f) {
+                            engine.torque_health *= 0.5f;
+                            engine.nitro_health *= 0.5f;
+                            engine.friction_fwd *= 50.0f;
+                            engine.friction_rev *= 50.0f;
+                            // shortcut: event M+0x1f4c (engine blown sound).
+                        }
+                    }
+                }
+            }
         } else {
             combustion_torque = 0.0f;
         }
+
+        // Always while the engine runs, after the |rpm| block: Newton cooling.
+        float d = engine_temp - engine_ambient;                      // 0x1ec4
+        engine_temp = engine_temp - fabsf(d) * cooling_coeff * dt * d;
     }
 
     // §2: effective wheel inertia including the engaged drivetrain.

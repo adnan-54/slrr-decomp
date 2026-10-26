@@ -1,7 +1,7 @@
 ---
 id: 225
-status: todo
-branch:
+status: implemented
+branch: card/225
 depends: [224]
 ---
 # Vehicle: engine temperature, radiator overheat damage, engine wear (Vehicle::update §1)
