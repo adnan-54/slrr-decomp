@@ -1,7 +1,7 @@
 ---
 id: 228
-status: todo
-branch:
+status: implemented
+branch: card/228
 depends: [226]
 ---
 # Parts: intdamage parse follows the exe (fix for card 226 review)

@@ -170,7 +170,8 @@ struct PartData {
     uint32_t dmg_mode = 0;       // +0xb0 damage kind lo16 / wheel hi16 (0x4c7d20)
     float tear = 1.0f;           // +0xb4
     float wear = 0.0f;           // +0xb8; getWear returns 1 - wear
-    float max_wear_inv = 1.0f;   // +0xbc = 1/max wear
+    // +0xbc = 1/max wear; type_part ctor default max wear 1e7 (0x4c3995).
+    float max_wear_inv = 1.0f / 1e7f;
     float inv_mass = 0.0f;       // P+0x1c body -> body+0xb4 -> def+0x5c -> +0x2c (inverse mass)
     int32_t texture = 0;         // +0x84
     int32_t mesh = 0;            // +0x94

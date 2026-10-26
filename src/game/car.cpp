@@ -175,11 +175,14 @@ void fill_part(Runtime &rt, const Package *pkg, PartData &p, const CfgFile &cfg)
         p.inv_mass = 1.0f / cfg.bodies[0].mass;
     // 0x4c1f90 Part__initInstance: P+0xbc = 1/M+0x121c, and every shipped part
     // cfg carries its max wear as `intdamage` (Brake.cfg 1e7, Wheel.cfg 1e9).
+    // 0x4c0620 (intdamage handler) runs on every matching line, so the last one
+    // wins; the exe has no break.
     for (const CfgLine &ln : cfg.lines)
         if (ln.key == "intdamage" && !ln.values.empty()) {
             float max_wear = num(ln.values[0]);
+            // INVENTED: 0x4c27ce divides unguarded; skip non-positive values so
+            // a bad cfg cannot produce inf.
             if (max_wear > 0.0f) p.max_wear_inv = 1.0f / max_wear;
-            break;
         }
     fill_slots(rt, pkg, p, cfg);
 }
@@ -1305,8 +1308,13 @@ PartData *part_data(Runtime &rt, Runtime::Resource *r)
     // its `car` cfg (0x4c9af0 reads it like a part's).
     if (load_native_cfg(rt, r, "part", &cfg, &pkg))
         fill_part(rt, pkg, *up, cfg);
-    else if (load_car_cfg(rt, r, &cfg, &pkg))
+    else if (load_car_cfg(rt, r, &cfg, &pkg)) {
+        // type_car ctor 0x49ab64 overrides the part default: max wear 1e8.
+        // shortcut: this chassis PartData is only ever a slot list; the exe
+        // would also run its cfg through the user cfg keyword table.
+        up->max_wear_inv = 1.0f / 1e8f;
         fill_slots(rt, pkg, *up, cfg);
+    }
     PartData *p = up.get();
     g_parts[r] = std::move(up);
     return p;
