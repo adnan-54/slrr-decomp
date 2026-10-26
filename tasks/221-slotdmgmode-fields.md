@@ -1,7 +1,7 @@
 ---
 id: 221
-status: todo
-branch:
+status: implemented
+branch: card/221-slotdmgmode-fields
 depends: []
 ---
 # Parts: cfg `slotdmgmode` + damage-mode/wear fields

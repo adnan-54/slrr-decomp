@@ -78,11 +78,45 @@ bool try_id(const std::string &s, uint32_t *out)
     return true;
 }
 
+static int hex_digit(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// 0x527140 %d (car.cpp vscan_int has the full rules): a leading 0x/0X goes to
+// the hex reader, else decimal; '+' is not accepted and leading 0 stays
+// decimal. The value wraps like the exe's int32.
+bool scan_int(const std::string &tok, int32_t *out)
+{
+    size_t p = 0;
+    while (p < tok.size() && (tok[p] == ' ' || (tok[p] >= 9 && tok[p] <= 13))) p++;
+    uint32_t v = 0;
+    if (p + 1 < tok.size() && tok[p] == '0' && (tok[p + 1] == 'x' || tok[p + 1] == 'X')) {
+        p += 2;
+        if (p >= tok.size() || hex_digit(tok[p]) < 0) return false;
+        for (; p < tok.size() && hex_digit(tok[p]) >= 0; p++)
+            v = v * 16 + (uint32_t)hex_digit(tok[p]);
+    } else {
+        bool neg = p < tok.size() && tok[p] == '-';
+        if (neg) p++;
+        if (p >= tok.size() || tok[p] < '0' || tok[p] > '9') return false;
+        for (; p < tok.size() && tok[p] >= '0' && tok[p] <= '9'; p++)
+            v = v * 10 + (uint32_t)(tok[p] - '0');
+        if (neg) v = 0u - v;
+    }
+    *out = (int32_t)v;
+    return true;
+}
+
 bool known_key(const std::string &k)
 {
     return k == "render" || k == "mesh" || k == "texture" || k == "click" ||
            k == "body" || k == "category" || k == "slot" || k == "slottype" ||
-           k == "attach" || k == "compatible" || k == "stockpart" || k == "eof";
+           k == "slotdmgmode" || k == "attach" || k == "compatible" ||
+           k == "stockpart" || k == "eof";
 }
 
 struct Parser {
@@ -249,6 +283,16 @@ struct Parser {
             int32_t v;
             if (!int_at(ln, 0, "slottype", &v)) return false;
             if (!cfg->slots.empty()) cfg->slots.back().slot_type = v;
+            return true;
+        }
+
+        // 0x4c00d0 cfg_slotdmgmode: the type slot declared last, +0x68. A
+        // failed Str__scan keeps the ctor value 0xffffffff, i.e. -1.
+        if (k == "slotdmgmode") {
+            if (!cfg->slots.empty() && n > 0) {
+                int32_t dmg;
+                if (scan_int(v[0], &dmg)) cfg->slots.back().dmg_mode = dmg;
+            }
             return true;
         }
 

@@ -80,8 +80,13 @@ struct WheelData {
     uint32_t flags = 0;         // +0x100
     Mat34 pose = {};            // +0x110
     float tyre_wear = 0.0f;     // +0x15c
+    float tyre_rate = 0.0f;     // +0x160
     float brake_wear = 0.0f;    // +0x164
+    float brake_rate = 0.0f;    // +0x168
+    float susp_damage = 0.0f;   // +0x16c
+    float susp_rate = 0.0f;     // +0x170
     float half_width = 0.1f;    // +0x1d4
+    Runtime::Resource *tyre_part = nullptr;  // +0x1d8 (0x4af431)
     float pacejka[kPacejkaSlots] = {};
 
     float arm_len = 0.0f;       // +0x234
@@ -119,6 +124,7 @@ struct WheelData {
 struct Slot {
     int32_t id = 0;
     int32_t slot_type = 0;       // type slot +0x64, cfg `slottype` (0x4c0190)
+    int32_t dmg_mode = -1;       // type slot +0x68 (0x4c00d0)
     uint32_t flags = 0;          // 0x1 present, 0x10 disabled, 0x20 override, 0x40 hard
     float type_pos[3] = {};
     Mat34 type_rot = {};
@@ -161,6 +167,7 @@ struct HudGauge {
 
 struct PartData {
     std::vector<Slot> slots;
+    uint32_t dmg_mode = 0;       // +0xb0 damage kind lo16 / wheel hi16 (0x4c7d20)
     float tear = 1.0f;           // +0xb4
     float wear = 0.0f;           // +0xb8; getWear returns 1 - wear
     float max_wear_inv = 1.0f;   // +0xbc = 1/max wear
@@ -191,6 +198,7 @@ struct CarData {
     char gear_chars[9] = "N123456R";
     OsdGauge osd[17];
     HudGauge hud[17];            // 0x4b1d50 state, index = gauge index
+    uint32_t hud_dmg[8 + 12] = {};  // damage letters A B C D E T L O, then 4x tyre/brake/susp (notes/33 §2)
     float throttle = 0.0f;       // +0x1de4
     float brake_input = 0.0f;    // +0x1de8
     float handbrake_input = 0.0f;   // +0x1df4
@@ -224,6 +232,17 @@ struct CarData {
     float engine_temp = 20.0f;   // +0x1ec0  0x4992e0 writes 0x41a00000
     float engine_temp_ambient = 20.0f;  // +0x1ec4  0x4992e0 writes 0x41a00000
     float engine_damage = 0.0f;  // +0x1e9c
+    float engine_rate = 0.0f;    // +0x1ea0
+    float trans_wear = 0.0f;     // +0x1ea4
+    float trans_rate = 0.0f;     // +0x1ea8
+    float radiator_damage = 0.0f;  // +0x1eac
+    float radiator_rate = 0.0f;  // +0x1eb0
+    float clutch_wear = 0.0f;    // +0x1eb4
+    float clutch_rate = 0.0f;    // +0x1eb8
+    Runtime::Resource *engine_part = nullptr;    // +0x2098
+    Runtime::Resource *clutch_part = nullptr;    // +0x20c0
+    Runtime::Resource *trans_part = nullptr;     // +0x20d0
+    Runtime::Resource *radiator_part = nullptr;  // +0x20e0
     float torque_health = 1.0f;  // +0x1e04
     float nitro_health = 1.0f;   // +0x1e08
     float mileage = 0.0f;        // +0x2250

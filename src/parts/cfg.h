@@ -99,6 +99,7 @@ struct CfgSlot {
     CfgPosRot xform;
     int32_t id = 0;
     int32_t slot_type = 0;          // `slottype N`, type slot +0x64 (0x4c0190)
+    int32_t dmg_mode = -1;          // type slot +0x68, cfg slotdmgmode (0x4c00d0)
     std::vector<CfgAttach> attaches;
     std::vector<CfgAttach> compatibles;
 };

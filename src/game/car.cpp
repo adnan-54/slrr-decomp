@@ -153,6 +153,7 @@ void fill_slots(Runtime &rt, const Package *pkg, PartData &p, const CfgFile &cfg
         Slot s;
         s.id = cs.id;
         s.slot_type = cs.slot_type;
+        s.dmg_mode = cs.dmg_mode;
         s.type_pos[0] = cs.xform.px;
         s.type_pos[1] = cs.xform.py;
         s.type_pos[2] = cs.xform.pz;
