@@ -2076,5 +2076,17 @@
   "0x4b1d50": "OsdGauge__update",
   "0x497520": "Part__syncWear",
   "0x4f78d0": "PhysicsWorld__addChildBody",
-  "0x4f7990": "PhysBody__compoundAttach"
+  "0x4f7990": "PhysBody__compoundAttach",
+  "0x415c40": "ctCrossEq__step",
+  "0x415d60": "ctCrossLight__step",
+  "0x415b40": "ctCross__claimPath",
+  "0x415b00": "ctCross__pathBlocked",
+  "0x4118f0": "TrafficCar__pushInstance",
+  "0x4102d0": "TrafficCar__advance",
+  "0x40eff0": "TrafficCar__checkObstacle",
+  "0x40fde0": "TrafficCar__startLaneChange",
+  "0x40d2c0": "TrafficCar__noteLeader",
+  "0x40daa0": "TrafficCar__distanceOnRef",
+  "0x414050": "ctPath__projectXZ",
+  "0x40d970": "CarPathRef__crossObject"
 }
