@@ -1,7 +1,7 @@
 ---
 id: 233
-status: todo
-branch:
+status: implemented
+branch: card/233
 depends: [232]
 ---
 # Traffic: TrafficCar__liveStep 0x40f350 + Graph::step live-car walk

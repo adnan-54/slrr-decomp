@@ -1092,6 +1092,31 @@ void car_drop_live(Graph &g, Car &car)
     }
 }
 
+// 0x40f350 TrafficCar__liveStep: a live car stays listed while its current lane
+// is live; the cross-claim branches (idx >= 0) have no src state.
+bool car_live_step(Graph &g, Car &car)
+{
+    if (!car.live) {              // +0xdc
+        // shortcut: 0x4118f0 -> 0x4102d0 -> 0x4107c0 not ported (notes/37 §4)
+        return false;
+    }
+    // shortcut: cross owners (idx >= 0) are not representable in src until
+    // TrafficCar__step 0x4107c0 hands cars to crosses (skip 0x415b40/0x415b00)
+    // INVENTED: a car not on a lane (dir >= 0) counts as not live.
+    const bool cur_live = car.dir < 0 && car.path_lane < g.lanes.size() &&
+                          g.lanes[car.path_lane].live;   // lane vf1 0x40e390 = +0xa8
+    if (!car.next_lane_b && !cur_live && car.live) {
+        g.live_count--;
+        if (!car.type_id && car.inst_id && car.notify) {
+            // shortcut: the notify sink (T+0x3130) is not modelled (notes/29 §5)
+        }
+        car.live = 0;
+        if (car.k128) car.k128 = 0;
+    }
+    // shortcut: 0x4118f0 -> 0x4102d0 -> 0x4107c0 not ported (notes/37 §4)
+    return true;
+}
+
 // 0x40ca40 TrafficCar__unlinkLane: unlink from the lane's car list.
 // INVENTED: the vector erase replaces the exe's intrusive prev/next pointers, and
 // the exe has no lane bounds check (it trusts the lane pointer).
@@ -1225,8 +1250,7 @@ void Graph::step(float t)
 {
     sim_time = t;  // +0x84
     // shortcut: the pseudo-car prologue stores, the lane event heap pop
-    // (ctLane__timedEvent), the live-car walk (0x40f350, card 233), the notify
-    // queue and the T+0xc8 drain are not ported.
+    // (ctLane__timedEvent), the notify queue and the T+0xc8 drain are not ported.
     uint32_t *p = &active_eq;      // +0x90 head, link = Cross::active_next (+0x54)
     while (*p != kLiveEnd) {
         if (cross_eq_step(cross_eq[*p - 1])) {
@@ -1244,6 +1268,16 @@ void Graph::step(float t)
         } else {
             const uint32_t n = cross_light[*p - 1].active_next;
             cross_light[*p - 1].active_next = 0;
+            *p = n;
+        }
+    }
+    p = &live_cars;                // +0x88 head, link = Car::live_next (+0x44)
+    while (*p != kLiveEnd) {
+        if (car_live_step(*this, cars[*p - 1])) {
+            p = &cars[*p - 1].live_next;
+        } else {
+            const uint32_t n = cars[*p - 1].live_next;
+            cars[*p - 1].live_next = 0;
             *p = n;
         }
     }
