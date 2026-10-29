@@ -731,7 +731,7 @@ void cross_init(Graph &g, Cross &c)
         float d = sqrtf(dx * dx + dy * dy + dz * dz);
         if (d > c.radius) c.radius = d;          // strict >
     }
-    c.path_state.assign(c.paths.size(), 0);   // 0x415650: realloc(+0x20 * 8), paths count
+    c.path_state.assign(c.paths.size(), PathState{});   // 0x415650: realloc(+0x20 * 8), paths count
     uint32_t mx = 0;
     uint16_t mn = c.paths.empty() ? 0 : c.paths[0].c;  // INVENTED: no paths -> 0
     for (const CrossPath &p : c.paths) {
@@ -767,6 +767,130 @@ void light_init(Graph &g, Cross &c)
     }
     c.phase_count = cnt + 1;
     c.cycle = 0;
+}
+
+// 0x415b40 ctCross__claimPath: path i claims every path whose (a, b) span it
+// crosses; count stays 0 until the first claim.
+void cross_claim_path(Cross &c, size_t i)
+{
+    PathState &si = c.path_state[i];
+    if (si.count == 0) {
+        const CrossPath &pi = c.paths[i];
+        const uint8_t a = pi.a, b = pi.b;
+        const int32_t prio = pi.c;
+        for (size_t j = 0; j < c.paths.size(); j++) {
+            PathState &sj = c.path_state[j];
+            if (sj.block < prio) {
+                const uint8_t aj = c.paths[j].a, bj = c.paths[j].b;
+                if (aj != a) {
+                    if (bj == b) {
+                        sj.block = prio;
+                    } else {
+                        const bool in_a = a < b ? (a < aj && aj < b) : (a < aj || aj < b);
+                        const bool in_b = a < b ? (a < bj && bj < b) : (a < bj || bj < b);
+                        if (in_a != in_b) sj.block = prio;
+                    }
+                }
+            }
+        }
+    }
+    si.count += 10;
+}
+
+// 0x415b00 ctCross__pathBlocked: true while another path claims the block. Used
+// by the live-car step (card 233).
+[[maybe_unused]] bool cross_path_blocked(Cross &c, size_t i)
+{
+    if (c.path_state[i].block != 0) return true;
+    cross_claim_path(c, i);
+    return false;
+}
+
+// 0x415c40 ctCrossEq__step: decay the claim counts while the cross goes
+// inactive, else re-claim; false unlinks the cross from the active list.
+bool cross_eq_step(Cross &c)
+{
+    for (PathState &s : c.path_state) s.block = 0;
+    const int32_t r = c.live_refs;                    // +0x38
+    if (r < 0) {
+        bool any = false;
+        for (size_t i = 0; i < c.paths.size(); i++) {
+            PathState &s = c.path_state[i];
+            if (s.count > 4) s.count = 5;
+            s.count -= 1;
+            if (s.count < 1) {
+                s.count = 0;
+            } else {
+                any = true;
+                for (size_t j = 0; j < c.paths.size(); j++)
+                    if (c.paths[i].b == c.paths[j].b) c.path_state[j].block = 0x3ea;
+            }
+        }
+        if (any) return true;
+        c.live_refs = 0;
+        return false;
+    }
+    if (r > 0) {
+        for (size_t i = 0; i < c.paths.size(); i++) {
+            PathState &s = c.path_state[i];
+            if (s.count > 4) s.count = 5;
+            const int32_t cnt = s.count;
+            s.count = 0;
+            if (cnt > 1) {
+                cross_claim_path(c, i);
+                s.count = cnt - 1;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+// 0x415d60 ctCrossLight__step: eq counters, then the phase timer; the amber
+// phase blocks every path.
+bool cross_light_step(Graph &g, Cross &c)
+{
+    cross_eq_step(c);                                 // result ignored
+    const int32_t r = c.live_refs;
+    if (r < 1) return r != 0;
+    if (c.light_remain <= 0) {
+        float a = 0.1f, b = 0.1f;
+        int na = 0, nb = 0;
+        for (size_t k = 0; k < c.links.size(); k++) {
+            const Lane *l = lane_at(g, c.links[k].node);
+            if (!l) continue;                         // INVENTED: a non-lane link is skipped
+            const float f = l->kc8 / l->kcc;          // +0xc8, +0xcc
+            if (c.phase[k] == c.light_cur) { a += f; na++; }
+            else { b += f; nb++; }
+        }
+        if (na > 1) a /= (float)na;
+        if (nb > 1) b /= (float)nb;
+        if ((a + a) / b + c.phase_time < g.sim_time) {
+            c.phase_time = g.sim_time;
+            c.light_remain = 4.0f;
+            // shortcut: Game__queueEvent(cross+0x44, 0x10, "change_lamp") not delivered (no sink in src).
+        }
+    } else {
+        c.light_remain -= g.sim_time - c.phase_time;
+        c.phase_time = g.sim_time;
+        if (c.light_remain <= 0) {
+            c.light_remain = 0;
+            c.light_cur = (c.light_cur + 1) % c.phase_count;
+            // shortcut: Game__queueEvent(cross+0x44, 0x10, "change_lamp") not delivered (no sink in src).
+        }
+    }
+    if (c.light_remain <= 0) {
+        for (size_t i = 0; i < c.paths.size(); i++) {
+            const uint8_t a = c.paths[i].a;
+            // INVENTED: a path entry link outside the phase table counts as
+            // matching (the exe indexes the array unchecked).
+            if (a < c.phase.size() && c.phase[a] != c.light_cur)
+                c.path_state[i].block = 0x3ec;
+        }
+    } else {
+        for (PathState &s : c.path_state) s.block = 0x3eb;
+    }
+    return c.live_refs != 0;
 }
 
 // 0x415f20 ctCrossEq__vf10 / 0x415f40 ctCrossLight__vf10: move the cross to the
@@ -1100,12 +1224,30 @@ void Graph::init(float t)
 void Graph::step(float t)
 {
     sim_time = t;  // +0x84
-    // shortcut: the lane event heap pop (ctLane__timedEvent) and the eq/light/
-    // live-car walks (0x415c40, 0x415d60, 0x40f350) plus the notify queue are
-    // not ported; the lane walk below is the last of the four in the exe.
-    // shortcut: the prologue's T[0xc46]+0xe0/0xe4/0xe8 = t + 1.0 stores and the
-    // trailing T[0x32] list drain (queues event 1) are not ported either.
-    uint32_t *p = &active_lanes;   // +0x8c head, link = Lane::active_next (+0xa4)
+    // shortcut: the pseudo-car prologue stores, the lane event heap pop
+    // (ctLane__timedEvent), the live-car walk (0x40f350, card 233), the notify
+    // queue and the T+0xc8 drain are not ported.
+    uint32_t *p = &active_eq;      // +0x90 head, link = Cross::active_next (+0x54)
+    while (*p != kLiveEnd) {
+        if (cross_eq_step(cross_eq[*p - 1])) {
+            p = &cross_eq[*p - 1].active_next;
+        } else {
+            const uint32_t n = cross_eq[*p - 1].active_next;
+            cross_eq[*p - 1].active_next = 0;
+            *p = n;
+        }
+    }
+    p = &active_light;             // +0x94 head, same link field (+0x60)
+    while (*p != kLiveEnd) {
+        if (cross_light_step(*this, cross_light[*p - 1])) {
+            p = &cross_light[*p - 1].active_next;
+        } else {
+            const uint32_t n = cross_light[*p - 1].active_next;
+            cross_light[*p - 1].active_next = 0;
+            *p = n;
+        }
+    }
+    p = &active_lanes;   // +0x8c head, link = Lane::active_next (+0xa4)
     while (*p != kLiveEnd) {
         if (lane_active_step(*this, *p - 1)) {
             p = &lanes[*p - 1].active_next;

@@ -1,7 +1,7 @@
 ---
 id: 232
-status: todo
-branch:
+status: implemented
+branch: card/232
 depends: [220]
 ---
 # Traffic: cross path claims + ctCrossEq/ctCrossLight step + Graph::step eq/light walks

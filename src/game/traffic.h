@@ -33,6 +33,8 @@ struct Path {                   // 0x414b80, 0x3c bytes in the exe
 
 struct CrossLink { uint32_t node = 0; uint8_t flag = 0; };
 struct CrossPath { uint8_t a = 0, b = 0; uint16_t c = 0; uint32_t k58 = 0, k5c = 0; Segment seg; };
+// Per-path claim state at cross+0x58 (notes/37 §2).
+struct PathState { int32_t count = 0; int32_t block = 0; };
 struct Cross {                  // ctCross 0x40e850
     std::vector<CrossLink> links; std::vector<CrossPath> paths;
     float pos[3] = {}; uint32_t k30 = 0;
@@ -41,8 +43,10 @@ struct Cross {                  // ctCross 0x40e850
     uint32_t active_next = 0;         // +0x54 (eq) / +0x60 (light)
     // +0x44 ResRefLink. INVENTED: id of the bound object's instance, 0 = none.
     uint32_t object = 0;
-    std::vector<uint64_t> path_state; // +0x58, one zero per path (count +0x20)
+    std::vector<PathState> path_state; // +0x58, one zeroed pair per path (count +0x20)
     uint32_t cycle = 0;               // +0x5c (light_init 0x415700 zeroes it)
+    float light_remain = 0;           // +0x64 (light only, ctor 0x4154b0)
+    int32_t light_cur = 0;            // +0x68 current phase (light only)
     float phase_time = 0;             // +0x6c (light only)
     std::vector<int32_t> phase;       // +0x70 (light only)
     int32_t phase_count = 0;          // +0x74 (light only)
