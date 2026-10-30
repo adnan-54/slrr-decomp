@@ -91,8 +91,11 @@ struct Car {                    // 0x164 bytes in the exe
     float kac = 0;              // +0xac
     float speed = 0;            // +0xb0
     float kb4 = 0;              // +0xb4
-    uint32_t next_lane_a = 0, next_lane_b = 0;  // +0xb8, +0xbc
-    float kc0 = 0;              // +0xc0
+    // +0xb8/+0xbc/+0xc0 next ref {owner, path, idx} (notes/37 §3). INVENTED:
+    // the owner is a lane index (a pointer in the exe).
+    uint32_t next_lane_a = 0;          // +0xb8 next owner
+    const Path *next_lane_b = nullptr; // +0xbc next path (&lane.path)
+    int32_t kc0 = 0;                   // +0xc0 next idx (-1 = lane)
     uint32_t path_lane = 0;     // +0xc4 PathRef lane (INVENTED: index)
     const Path *path = nullptr; // +0xc8 (&lane.path)
     int32_t dir = 0;            // +0xcc
@@ -101,6 +104,7 @@ struct Car {                    // 0x164 bytes in the exe
     uint8_t notify = 0;         // +0xdd
     float e0 = 0, e4 = 0, e8 = 0;  // +0xe0..+0xe8 step times
     uint32_t k124 = 0, k128 = 0;   // +0x124, +0x128
+    float k12c = 0.0f;             // +0x12c lane-change rate
     uint32_t k130 = 0, k134 = 0, inst_id = 0, k13c = 0;  // +0x130 instance link (id +0x138)
     uint32_t k140 = 0;          // +0x140
     uint32_t k144 = 0, k148 = 0, type_id = 0, k150 = 0;  // +0x144 type link (id +0x14c)
