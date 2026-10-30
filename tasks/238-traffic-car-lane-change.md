@@ -99,9 +99,10 @@ return 0;                                            // 0x4101e9
 service: `Lane::obstacles` (vector of car indices, LIFO head insert, `INVENTED`; exe
 intrusive node at car+0xec) and the per-entry fields `Car::kfc` (+0x10 path distance,
 -1 = off-path, excluded by the `> -0.5` filter), `Car::k100` (+0x14 captured speed) and
-`Car::k120` (+0x34 radius). Port `before`/`after` as a scan of `side->obstacles`
-comparing `g.cars[oi].kfc`; on a tie the exe keeps the first walk hit (head insert order
-is LIFO, so the walk order is newest-first) - keep the first strict comparison winner.
+`Car::k120` (+0x34 radius). Port `before`/`after` as a scan of `side->obstacles` comparing
+`g.cars[oi].kfc`; follow the exe's walk order exactly (list head -> next, i.e. LIFO
+newest-first) and its strict comparisons at 0x410001..0x410087 (before) and
+0x410097..0x4100ea (after); do not invent a different tie rule.
 When the list is empty `before = after = 0` and both obstacle guards pass. `side`'s path
 projection and this list walk are the only consumers of the side lane; return 0 makes
 startLaneChange a no-op (k124/k128/k12c untouched).

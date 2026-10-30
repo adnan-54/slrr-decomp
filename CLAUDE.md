@@ -10,3 +10,5 @@ Resume point: read CHECKPOINT.md first (state, environment, next steps); run too
 Workflow: the main session orchestrates sub-agents per the re-orchestrate skill (.claude/skills/re-orchestrate): Claude does RE/task cards/review, DeepSeek V4 Flash implements cards in tasks/. Agents are defined in .claude/agents/ (each pins its model; Flash runs as `router-claude/deepseek-v4-flash[1m]` through the model router, no separate DeepSeek settings). tools/card-gate.sh checks and merges card branches.
 
 Tests: only keep checks that run against actual game facts: shipped files under bin/ (parse whole corpora, compare with the .java sources or .rdb data) or values read from the exe (tables, natives list). Do NOT write unit tests, synthetic programs or hand-made expected values derived from your own reading of the exe: they cannot catch a misread and only burn time. Verify behavior by comparing with the decompiled exe function and cite its address. Logic not taken from the exe (gap filling, design choices) must be marked with an `INVENTED:` comment, and never "improve" exe behavior (target is behaviour-equivalent).
+
+caveman
