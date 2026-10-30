@@ -1990,6 +1990,78 @@ bool lane_active_step(Graph &g, size_t li)
     return false;
 }
 
+// 0x40d380 ctLane__scheduleIfIdle (ECX = lane, float dt): schedule a timed
+// event for the lane unless one is already pending.
+void lane_schedule_if_idle(Graph &g, Lane &lane, size_t li, float dt)
+{
+    if (lane.pending_events != 0) return;            // +0xac
+    schedule_lane(g, dt, (uint32_t)li);              // 0x417050
+    lane.pending_events++;
+}
+
+// 0x41a810 TrafficHeap__pop (ECX = T): drop the root and sift the last entry
+// down (children always < n, so the back value is only read and written last).
+void heap_pop(Graph &g)
+{
+    if (g.heap.empty()) return;                      // INVENTED guard (caller checks the count)
+    const Graph::HeapEntry last = g.heap.back();
+    g.heap.pop_back();
+    const size_t n = g.heap.size();                  // T+4 after the decrement
+    if (n == 0) return;
+    size_t i = 0, c = 1;
+    while (c < n) {
+        const size_t r = 2 * i + 2;
+        if (r < n) {
+            if (g.heap[c].time <= g.heap[r].time) {
+                if (last.time <= g.heap[c].time) break;
+                g.heap[i] = g.heap[c];
+                i = c;
+            } else {
+                if (last.time <= g.heap[r].time) break;
+                g.heap[i] = g.heap[r];
+                i = r;
+            }
+        } else {
+            if (last.time <= g.heap[c].time) break;
+            g.heap[i] = g.heap[c];
+            i = c;
+        }
+        c = 2 * i + 1;
+    }
+    g.heap[i] = last;
+}
+
+// 0x40fcf0 ctLane__timedEvent (ECX = lane): step the cars of a not-live lane
+// and reschedule it from the head car's time to the lane end.
+void lane_timed_event(Graph &g, uint32_t li)
+{
+    Lane &lane = g.lanes[li];
+    lane.pending_events--;                           // +0xac (int)
+    if ((int32_t)lane.pending_events < 0) lane.pending_events = 0;
+    if (lane.live) return;                           // +0xa8: live lanes are stepped by 0x40f4e0
+    // INVENTED: index loop (the exe reads car+0x8 before each step); car_step
+    // can relink this lane's car list under the walk.
+    for (size_t k = 0; k < lane.cars.size(); k++)
+        car_step(g, lane.cars[k]);                   // 0x4107c0
+    const uint32_t head = lane.cars.empty() ? kLiveEnd : lane.cars.front();
+    if (head != kLiveEnd && g.cars[head].next_lane_b == 0) {   // +0xbc: no next lane
+        const float f = car_time_to_lane_end(g, head);         // 0x40d990
+        if ((double)f <= 0.01) {                     // 0x593560
+            // shortcut: the lane-end move 0x40e460 is not ported (no next-lane
+            // move in src); treat it as failed and schedule the idle retry.
+            lane_schedule_if_idle(g, lane, li, 1.0f);          // 0x40d380
+        } else {
+            if (lane.pending_events != 0) return;
+            schedule_lane(g, f, li);                 // 0x417050
+            lane.pending_events++;
+        }
+    }
+    if (lane.pending_events == 0 && !lane.cars.empty()) {
+        schedule_lane(g, 1.0f, li);                  // 0x417050
+        lane.pending_events++;
+    }
+}
+
 }  // namespace
 
 // 0x419da0 Traffic__init.
@@ -2014,8 +2086,12 @@ void Graph::init(float t)
 void Graph::step(float t)
 {
     sim_time = t;  // +0x84
-    // shortcut: the pseudo-car prologue stores, the lane event heap pop
-    // (ctLane__timedEvent), the notify queue and the T+0xc8 drain are not ported.
+    // shortcut: the pseudo-car prologue stores (T+0x3118) are a no-op in src
+    // (nothing is parked) and DAT_005e652c is not modelled.
+    while (!heap.empty() && heap.front().time < t) {  // strict <; +0x4 count, +0x0 array
+        lane_timed_event(*this, heap.front().lane);   // 0x40fcf0
+        heap_pop(*this);                              // 0x41a810
+    }
     uint32_t *p = &active_eq;      // +0x90 head, link = Cross::active_next (+0x54)
     while (*p != kLiveEnd) {
         if (cross_eq_step(cross_eq[*p - 1])) {
@@ -2054,6 +2130,20 @@ void Graph::step(float t)
             const uint32_t n = lanes[*p - 1].active_next;
             lanes[*p - 1].active_next = 0;
             *p = n;
+        }
+    }
+    // T+0xc8 event-1 drain: unlink each car and notify its instance.
+    while (event1 != kLiveEnd) {
+        const uint32_t ci = event1 - 1;   // INVENTED: 1-based car index (a pointer in the exe)
+        Car &car = cars[ci];
+        event1 = car.event_next;          // T+0xc8 = car+0x10
+        car.event_next = 0;
+        if (car.inst_id != 0) {           // +0x138
+            // SERVICE MISSING: 0x47d550 Game__queueEvent(ECX = 0x5fde90,
+            // &car+0x130, 0, 1, 0, 0) binds the instance (ResRefLink__set
+            // 0x40cac0 from car+0x13c) and queues event code 1 (0x47c760
+            // returns 1, ignored). The traffic module has no Runtime*, so
+            // the event is not dispatched.
         }
     }
 }
