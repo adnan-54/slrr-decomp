@@ -994,7 +994,7 @@ float car_target_speed(const Graph &g, const Car &car)
     if (!car.next_lane_b) {          // +0xbc, next lane
         if (car.k124) {
             // shortcut: +0x124 vf6(-1) not modelled (a cross's vf6 0x40dd00 would read
-            // paths[-1]); unreached: no city.trc lane has +0x34 == -1, so attach never sets +0x124
+            // paths[-1]); reachable since the lane-change decision 0x40fde0 sets +0x124
             s = (0.0f + s) * 0.5f;
         }
     } else {
@@ -1569,9 +1569,111 @@ void car_scan_obstacles(Graph &g, uint32_t ci, float dt, float ego_len, float *f
     car.ob_owner = li;
 }
 
+// 0x40fe50 ctLane__vf5 (ECX = lane, args float f, Car *car): pick a side lane
+// (node88[2]/[3]) the car may move to at gap f; returns the side-lane node id
+// or 0.
+uint32_t lane_side_pick(const Graph &g, const Lane &lane, uint32_t ci, float f)
+{
+    const Car &car = g.cars[ci];
+    const float need = car.k24 + car.k14 + 12.666666f;     // 0x593740
+    if (lane.k34 == 0xffffffffu) return 0;
+    if (!(need < car.pos)) return 0;                       // +0x88
+    // INVENTED: the exe walks car+4 (prev in the intrusive lane list); src
+    // lane.cars is ascending pos, so the element before ci is the car ahead.
+    const Car *prev = nullptr;
+    std::vector<uint32_t>::const_iterator it =
+        std::find(lane.cars.begin(), lane.cars.end(), ci);
+    if (it != lane.cars.end() && it != lane.cars.begin()) prev = &g.cars[*(it - 1)];
+    if (prev && !(prev->pos + prev->k20 -
+                  prev->speed * prev->speed / prev->k38 < car.pos - need))
+        return 0;
+    if (lane.node88[2] == 0 && lane.node88[3] == 0) return 0;
+    float p[3];
+    car_ref_pos_offset(car.path, car.dir, car.pos, car.lateral, p);   // 0x40dde0
+    bool ok[2] = {false, false};
+    for (int i = 0; i < 2; i++) {                          // 0x40ff31..0x41019a
+        // INVENTED: bounds check (the exe compares pointers).
+        const Lane *side = g.lane_by_node(lane.node88[2 + i]);
+        if (!side || side->halted) continue;               // 0x40ff3b, +0xc4
+        float d = 0, lat = 0;
+        if (!path_project_strict(side->path, p[0], p[2], &d, &lat)) continue;
+        if (!(need < d)) continue;
+        // Nearest obstacle entry of the side lane's +4 list: before = largest
+        // kfc < d, after = smallest kfc > d, both with kfc > -0.5 (0x593744).
+        // The exe walks head -> next (LIFO newest-first); strict comparisons
+        // keep the first entry on a tie. INVENTED: vector for the intrusive node.
+        const Car *before = nullptr, *after = nullptr;
+        for (uint32_t oi : side->obstacles) {
+            const Car &o = g.cars[oi];
+            if (!(o.kfc > -0.5f)) continue;
+            if (o.kfc < d) {
+                if (!before || before->kfc < o.kfc) before = &o;
+            } else if (o.kfc > d) {
+                if (!after || o.kfc < after->kfc) after = &o;
+            }
+        }
+        // side.cars (ascending pos): c = the last car with pos < d, scanning
+        // from the tail (exe car+0xc via car+4); nxt = the car after it, else
+        // the head (exe lane+8).
+        const std::vector<uint32_t> &list = side->cars;
+        const Car *c = nullptr, *nxt = nullptr;
+        for (size_t k = list.size(); k-- > 0;) {
+            if (g.cars[list[k]].pos < d) {
+                c = &g.cars[list[k]];
+                if (k + 1 < list.size()) nxt = &g.cars[list[k + 1]];
+                break;
+            }
+        }
+        if (!c && !list.empty()) nxt = &g.cars[list.front()];
+        float brake_car = 0.0f;
+        if (nxt) {                                         // 0x410001..0x410087
+            const float inv = 1.0f / nxt->k38;
+            float v = nxt->speed;
+            float t = (v * v - car.speed * car.speed) * inv;
+            if (!(0.0f <= t)) t = 0.0f;
+            v -= 2.0f;
+            if (!(0.0f < v)) v = 0.0f;
+            brake_car = (nxt->pos - nxt->k14) - (v * 0.5f + 1.0f) * nxt->k24 - t;
+        }
+        float brake_obs = 0.0f;
+        if (after)                                         // 0x410097..0x4100ea
+            brake_obs = (after->kfc - after->k120) -
+                        fmaxf(0.0f, (after->k100 * after->k100 -
+                                     car.speed * car.speed) * 0.16666667f);   // 0x593700
+        if (c && !(c->pos + c->k20 - c->speed * c->speed / c->k38 < d - need &&
+                   c->pos + c->k20 < d - f)) continue;     // 0x4100f6..0x41013a
+        if (nxt && !(car.k20 + d < brake_car)) continue;   // 0x410143..0x410153
+        if (before && !(d - fmaxf(need, f) > before->k120 + before->kfc)) continue;
+        if (after && !(car.k20 + d < brake_obs)) continue; // 0x410176..0x410186
+        ok[i] = true;                                      // 0x410188
+    }
+    if (ok[0] && ok[1]) return lane.node88[2 + (msvc_rand() & 1)];   // 0x4101ae
+    if (ok[0]) return lane.node88[2];                      // 0x4101c7
+    if (ok[1]) return lane.node88[3];                      // 0x4101d9
+    return 0;                                              // 0x4101e9
+}
+
+// 0x40fde0 TrafficCar__startLaneChange (ECX = car, one float arg): pick the
+// target side lane and set k124/k128/k12c; a no-op when vf5 finds none.
+void car_start_lane_change(Graph &g, uint32_t ci, float f)
+{
+    Car &car = g.cars[ci];
+    if (car.live == 0 || car.next_lane_b != nullptr) return;   // +0xdc, +0xbc
+    // INVENTED: bounds check (the exe dereferences the owner pointer).
+    if (car.path_lane >= g.lanes.size()) return;
+    const Lane &lane = g.lanes[car.path_lane];             // car+0xc4 owner
+    const uint32_t l = lane_side_pick(g, lane, ci, f);
+    if (l == 0) return;
+    car.k124 = l;                                          // 0x40fe1b
+    car.k12c = 0.0f;                                       // 0x40fe27
+    // (lane+0x90 != l) * 2 - 1
+    car.k128 = (lane.node88[2] == l) ? (uint32_t)-1 : 1u;  // 0x40fe21..0x40fe3b
+}
+
 // 0x4107c0 TrafficCar__step (ECX = car): entry gate, step 1 free distance, step 2
-// leaders, step 3 obstacle scan, step 5 speed integration, step 6 ref hand-over.
-// Step 4 (lane change) and 7/8 (projection, registration) are later cards.
+// leaders, step 3 obstacle scan, step 4 lane-change decision, step 5 speed
+// integration, step 6 ref hand-over. Steps 7/8 (projection, registration) are a
+// later card.
 void car_step(Graph &g, uint32_t ci)
 {
     Car &car = g.cars[ci];
@@ -1617,8 +1719,8 @@ void car_step(Graph &g, uint32_t ci)
     }
     if (leader) car_note_leader(g, ci, leader, 0);   // 0x4108e1..0x4108e6
     // shortcut: target-lane marking 0x4108eb..0x41091b and the flag != 0 refresh
-    // below (0x410948 branch): car+0x124 is the lane-change target (a later card,
-    // 0 for all src data) and car+0xfc its projection distance.
+    // below (0x410948 branch) belong to steps 7/8; car+0x124 is now set by the
+    // step-4 decision (0x40fde0) and car+0xfc is still never written.
     for (int i = 0; i < 4; i++) {
         LeaderSlot &slot = car.leaders[i];
         if (!slot.car) continue;                     // 0x410935..0x410937
@@ -1656,7 +1758,26 @@ void car_step(Graph &g, uint32_t ci)
     // 0x410fc8..0x410fdd: the clamp is unconditional; 0x410fc1 only sets the
     // flags that 0x410fe2 JNZ tests for the lane-change branch.
     free = fminf(fmaxf(free, 0.0f), d0);
-    // card 238: lane-change decision 0x410fc1..0x411105.
+    // step 4: lane-change decision (0x410fe2..0x411105).
+    if (car.k128 == 0) {                             // 0x410fe2 JNZ 0x41110a
+        if (free < d0 * 0.9f &&                      // 0x59370c
+            leader_speed < car.speed &&              // 0x410ff5..0x411005
+            ((leader_speed * leader_speed -
+              (target * 0.8f) * (target * 0.8f)) * 0.5f) / (free + 1.0f)
+                < -car.accel)                        // 0x411007..0x411047
+            // 0x411049..0x41105e: XMM6 = brake, XMM4 = free, + k14, + 1.0
+            car_start_lane_change(g, ci, brake + free + car.k14 + 1.0f);
+        if (car.k128 == 0 && car.live) {             // 0x411068, 0x411075
+            const float lo = target < 0.01f ? 0.01f : 0.001f;   // 0x593584/0x5935d0
+            car.k12c = powf(0.01f, dt) * (car.k12c - lo) + lo;  // 0x4110a6..0x4110cb
+            if (car.next_lane_b == nullptr) {        // 0x4110d3
+                const float r = (float)(msvc_rand() & 0x7fff) *
+                                3.0517578e-05f;      // 0x5936fc
+                if (r < car.k12c)                    // 0x4110d5..0x4110f9
+                    car_start_lane_change(g, ci, 0.0f);          // 0x411105
+            }
+        }
+    }
 
     // step 5: speed integration (live block 0x41110a..0x411448, simple
     // block 0x411455..0x4114fb; the exe takes the simple block whenever
@@ -1789,7 +1910,8 @@ void car_step(Graph &g, uint32_t ci)
         }
     }
     // shortcut: steps 7/8 (lane-change completion, target-lane registration
-    // 0x4115f1..) are later cards.
+    // 0x4115f1..) are later cards, so a k128 set by the step-4 decision never
+    // completes and the car is never registered on the target lane.
 }
 
 // 0x40d1e0 ctLane__insertCar: insert before the first car with a larger pos,
