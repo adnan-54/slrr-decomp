@@ -1,7 +1,7 @@
 ---
 id: 237
-status: todo
-branch:
+status: implemented
+branch: card/237
 depends: []
 ---
 # traffic: TrafficCar__step step-3 obstacle scan + obstacle-entry list node

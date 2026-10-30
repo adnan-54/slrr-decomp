@@ -1386,10 +1386,188 @@ bool car_distance_on_ref(Graph &g, uint32_t ci, const Path *ref1, const Path *re
     return false;                                          // 0x40dbb6
 }
 
-// 0x4107c0 TrafficCar__step (ECX = car): lane motion slice - entry gate, step 1
-// free distance, step 2 leaders, step 5 speed integration, step 6 ref hand-over.
-// Steps 3/4 (obstacles, lane change) and 7/8 (projection, registration) are
-// later cards; they only fill leader_speed / free / car.k128.
+// 0x40eff0 TrafficCar__checkObstacle (ECX = car, arg = the obstacle entry's Car):
+// closest-approach test of the obstacle body against the car's front direction;
+// head-inserts the car onto the event-1 list T+0xc8 (drained in Traffic__step).
+void car_check_obstacle(Graph &g, uint32_t ci, const Car &o)
+{
+    Car &car = g.cars[ci];
+    float dx = car.front_x - car.world[0];          // +0x98 - +0x8c
+    float dz = car.front_z - car.world[2];          // +0x9c - +0x94
+    const float l = sqrtf(dx * dx + dz * dz);       // the y direction is 0
+    if (l != 0.0f) {
+        dx /= l;
+        dz /= l;
+    }
+    const float back = -car.speed;                  // 0x40f04c -[+0xb0]
+    float rx = o.k108[0] - car.world[0];
+    float ry = o.k108[1] - car.world[1];
+    float rz = o.k108[2] - car.world[2];
+    const float vx = o.k114[0] - dx * back;
+    const float vy = o.k114[1];
+    const float vz = o.k114[2] - dz * back;
+    const float dot = vx * rx + vy * ry + vz * rz;
+    if (dot > 0.0f) return;
+    const float dist = sqrtf(rx * rx + ry * ry + rz * rz);
+    const float spd = sqrtf(vx * vx + vy * vy + vz * vz);
+    const float k = -(((dot / (spd * dist)) * dist) / spd);   // keep this order
+    rx += vx * k;
+    ry += vy * k;
+    rz += vz * k;
+    if (o.k120 + 1.0f < rx * rx + ry * ry + rz * rz) return;  // entry +0x34
+    if (car.event_next == 0) {                      // +0x10
+        car.event_next = g.event1;                  // T+0xc8
+        g.event1 = ci + 1;
+    }
+}
+
+// 0x4107c0 TrafficCar__step step 3 (0x410a57..0x410fbf): the three obstacle-list
+// passes (cur owner, next owner shifted by the next length, lane-change target);
+// fills free / leader_speed and may queue an event-1 check.
+void car_scan_obstacles(Graph &g, uint32_t ci, float dt, float d0, float ego_len,
+                        float *free, float *leader_speed)
+{
+    (void)d0;   // used only by the caller's unconditional clamp (0x410fc8..0x410fdd)
+    Car &car = g.cars[ci];
+    for (int pass = 0; pass < 3; pass++) {
+        const std::vector<uint32_t> *obs;
+        float base_pos = 0.0f;
+        if (pass == 0) {
+            // INVENTED: bounds check (the exe dereferences the owner pointer).
+            if (car.path_lane >= g.lanes.size()) continue;
+            base_pos = car.pos;                          // +0x88
+            obs = &g.lanes[car.path_lane].obstacles;     // +0xc4 owner
+        } else if (pass == 1) {
+            if (!car.next_lane_b) continue;              // +0xbc
+            // shortcut: kc0 >= 0 is a cross path (length at +0x30, owner is a
+            // cross); src has no car on a cross (same shortcut as step 1).
+            if (car.kc0 >= 0) continue;
+            base_pos = car.pos + car.next_lane_b->length;   // +0x38
+            // INVENTED: bounds check (the exe dereferences the owner pointer).
+            if (car.next_lane_a >= g.lanes.size()) continue;
+            obs = &g.lanes[car.next_lane_a].obstacles;   // +0xb8 owner
+        } else {
+            if (!car.k124) continue;                     // +0x124
+            if (!(car.kfc > -0.5f)) continue;            // 0x593744
+            base_pos = car.kfc;                          // +0xfc
+            // src k124 is a raw side-lane node id (lane_attach 0x40cbd0).
+            const Lane *tl = g.lane_by_node(car.k124);   // INVENTED bounds (exe pointer)
+            if (!tl) continue;
+            obs = &tl->obstacles;
+        }
+        for (uint32_t oi : *obs) {                       // exe lane+4 head, node+4 next
+            const Car &o = g.cars[oi];
+            const float s = o.kfc;                       // entry +0x10
+            if (s <= -0.5f) {                            // free body
+                float p[3], dir[3];
+                car_ref_pos_offset(car.path, car.dir, car.pos, car.lateral, p);  // 0x4133f0
+                car_ref_dir(car.path, car.dir, car.pos, dir);                    // 0x412ed0
+                const float e0 = p[0] - o.k108[0];
+                const float e1 = p[1] - o.k108[1];
+                const float e2 = p[2] - o.k108[2];
+                const float dot = dir[0] * e0 + dir[1] * e1 + dir[2] * e2;
+                if (!(dot > 0.0f)) continue;
+                const float lat = -dir[2] * e0 + dir[1] * e1 + dir[0] * e2;
+                if (fabsf(lat) - o.k120 >= 2.0f) continue;           // 0x593728
+                float d = dot - (o.k120 + car.k14 + ego_len);
+                float rear = ego_len;
+                if (d < 0.0f) {
+                    rear = (-ego_len <= d) ? d + ego_len : 0.0f;
+                    d = 0.0f;
+                }
+                if (*free <= d) continue;
+                const float closing = -(dir[0] * o.k114[0] + dir[1] * o.k114[1] +
+                                        dir[2] * o.k114[2]);
+                float brake_d = d;
+                if (car.speed <= 1.0f || 1e-5f > d || closing < 0.0f ||
+                    (closing * closing - car.speed * car.speed) / (d + d) >= -car.k38) {
+                    *leader_speed = fmaxf(closing, 0.0f);
+                } else {
+                    const float bd = (car.speed <= car.k38 * dt)
+                        ? car.speed * car.speed / (car.k38 + car.k38)
+                        : car.speed * dt - dt * dt * car.k38 * 0.5f;
+                    const float v2 = car.speed - car.k38 * dt;
+                    const float bd_raw = bd;
+                    brake_d = fmaxf(bd, d);
+                    rear += d;
+                    *leader_speed = fmaxf(v2, 0.0f);
+                    if (rear <= bd_raw && closing <= v2)
+                        car_check_obstacle(g, ci, o);    // 0x40eff0 (unconditional here)
+                }
+                *free = fminf(*free, brake_d);
+            } else {                                     // on-path
+                if (base_pos <= s) continue;             // 0x410b3e JBE
+                float d = base_pos - (o.k120 + s + car.k14 + ego_len);
+                float rear = ego_len;
+                if (d < 0.0f) {
+                    rear = (-ego_len <= d) ? d + ego_len : 0.0f;
+                    d = 0.0f;
+                }
+                if (*free <= d) continue;                // 0x410b82 JBE
+                const float os = o.k100;                 // entry +0x14
+                float brake_d = d;
+                if (car.speed <= 1.0f || 1e-5f > d || os < 0.0f ||
+                    (os * os - car.speed * car.speed) / (d + d) >= -car.k38) {
+                    *leader_speed = fmaxf(os, 0.0f);
+                } else {
+                    const float bd = (car.speed <= car.k38 * dt)
+                        ? car.speed * car.speed / (car.k38 + car.k38)
+                        : car.speed * dt - dt * dt * car.k38 * 0.5f;
+                    const float v2 = car.speed - car.k38 * dt;
+                    const float bd_raw = bd;
+                    brake_d = fmaxf(bd, d);
+                    rear += d;
+                    *leader_speed = fmaxf(v2, 0.0f);
+                    if (rear <= bd_raw && os <= v2) {
+                        if (o.k104) {                    // 0x410c63
+                            car_check_obstacle(g, ci, o);
+                        } else {
+                            // shortcut: the k104 writer is not traced, so src only
+                            // reaches this branch with k104 == 0.
+                            brake_d = rear;
+                            *leader_speed = fmaxf(os, 0.0f);
+                        }
+                    }
+                }
+                *free = fminf(*free, brake_d);
+            }
+        }
+    }
+}
+
+// 0x41180d..0x4118b0, inlined in TrafficCar__step: unlink the car's obstacle node
+// (+0xec/+0xf0 links, +0xf8 owner) from its lane's list.
+[[maybe_unused]] void obstacle_unlink(Graph &g, uint32_t ci)
+{
+    Car &car = g.cars[ci];
+    const uint32_t owner = car.ob_owner;
+    if (owner != kNoneLane) {
+        if (owner < g.lanes.size()) {                    // INVENTED bounds (exe pointer)
+            std::vector<uint32_t> &list = g.lanes[owner].obstacles;
+            std::vector<uint32_t>::iterator it = std::find(list.begin(), list.end(), ci);
+            if (it != list.end()) list.erase(it);
+        }
+        car.ob_owner = kNoneLane;
+    }
+    car.ob_next = 0;
+    car.ob_prev = 0;
+}
+
+// 0x411801..0x411859, inlined in TrafficCar__step step 8: head-insert the car's
+// obstacle node into lane li's list (exe owner+4 head).
+[[maybe_unused]] void obstacle_link(Graph &g, uint32_t li, uint32_t ci)
+{
+    Car &car = g.cars[ci];
+    // INVENTED: bounds check (the exe dereferences the target lane pointer).
+    if (li >= g.lanes.size()) return;
+    std::vector<uint32_t> &list = g.lanes[li].obstacles;
+    list.insert(list.begin(), ci);
+    car.ob_owner = li;
+}
+
+// 0x4107c0 TrafficCar__step (ECX = car): entry gate, step 1 free distance, step 2
+// leaders, step 3 obstacle scan, step 5 speed integration, step 6 ref hand-over.
+// Step 4 (lane change) and 7/8 (projection, registration) are later cards.
 void car_step(Graph &g, uint32_t ci)
 {
     Car &car = g.cars[ci];
@@ -1469,8 +1647,12 @@ void car_step(Graph &g, uint32_t ci)
         }
     }
 
-    // shortcut: steps 3/4 (obstacle scan 0x40eff0, lane-change decision
-    // 0x40fde0) are later cards; they further fill leader_speed / free / car.k128.
+    // step 3: obstacle scan (0x410a57..0x410fbf).
+    car_scan_obstacles(g, ci, dt, d0, brake, &free, &leader_speed);
+    // 0x410fc8..0x410fdd: the clamp is unconditional; 0x410fc1 only sets the
+    // flags that 0x410fe2 JNZ tests for the lane-change branch.
+    free = fminf(fmaxf(free, 0.0f), d0);
+    // card 238: lane-change decision 0x410fc1..0x411105.
 
     // step 5: speed integration (live block 0x41110a..0x411448, simple
     // block 0x411455..0x4114fb; the exe takes the simple block whenever
