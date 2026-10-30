@@ -63,7 +63,8 @@ struct Lane {
     uint32_t road = 0, node14 = 0; uint8_t k18 = 0;       // +0x10 (parent road), +0x14, +0x18
     float v1c[3] = {}, v28[3] = {}; uint32_t k34 = 0, k38 = 0;
     float index_min_x = 0, index_run_max_x = 0, index_max_x = 0; uint32_t index_lane = 0;  // +0x78..+0x84
-    uint32_t node88[4] = {}; float k98 = 0; uint32_t k9c = 0, ka0 = 0;  // +0x98 speed factor
+    uint32_t node88[4] = {}; float k98 = 0; float k9c = 0.0f; uint32_t ka0 = 0;
+    // +0x9c room factor, float (0.9 in city.trc); MULSS in 0x40e460
     Path path;                                            // +0x3c
     std::vector<uint32_t> cars;                           // +0x08/+0x0c list; INVENTED: exe intrusive prev/next replaced by car indices, ascending pos
     // +0x04 head of the obstacle list (0x40eff0 producer, 0x4107c0 step 3 passes);
