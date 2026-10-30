@@ -1,7 +1,8 @@
 ---
 id: 241
-status: implemented
+status: merged
 branch: card/241
+review: deepseek-pass
 depends: []
 ---
 # traffic: lane-end move 0x40e460 (next-lane hand-over) + CarPathRef set 0x40f950 + lane vf2 0x411f00

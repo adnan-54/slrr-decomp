@@ -1432,7 +1432,7 @@ bool lane_end_move(Graph &g, size_t li, uint32_t ci, float t)
         if (cap0 <= need) {
             if (cap1 <= need) return false;          // neither fits
             chosen = next1;                          // only next1 fits
-        } else if (cap1 > need && cap1 >= cap0) {    // smaller room wins, tie -> next1
+        } else if (cap1 > need && cap1 >= cap0) {    // larger room wins, tie -> next1
             chosen = next1;
         }
     }
