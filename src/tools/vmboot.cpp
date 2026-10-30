@@ -673,6 +673,17 @@ void city_checks(Boot &boot, Checker &c, Object *state, FrameLoop &loop)
                               "(0x47c640 -> 0x41a000)");
     if (!graph) return;
 
+    // INVENTED HARNESS: there is no exe counterpart for the trigger (the exe
+    // touches road nodes from the camera LOD walk 0x45f180 -> 0x461980 ->
+    // 0x4d44d0); the effect (lane vf7 0x40eed0 -> ctLane__setLive 0x40f6d0) is exe.
+    const size_t touched =
+        mh && mh->target ? boot.runtime()->touch_road_nodes(mh->target) : 0;
+    c.check(touched > 0, "city: harness touched the map's native road nodes "
+                         "(INVENTED LOD stand-in, got " + std::to_string(touched) + ")");
+    c.check(graph->live_lanes > 0,
+            "city: touching the road nodes makes lanes live (0x40f6d0, got " +
+                std::to_string(graph->live_lanes) + ")");
+
     // The live graph must be the shipped file (Traffic__load 0x41a000).
     std::vector<uint8_t> trc;
     std::string ferr;

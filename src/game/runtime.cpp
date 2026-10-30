@@ -357,6 +357,23 @@ void Runtime::map_node_touched(Resource *ground, size_t ni)
     // cross node: vf1 0x40e380 only reads the refcount -> nothing
 }
 
+// INVENTED HARNESS: the exe keeps a road's lanes live from the camera LOD walk
+// (0x45f180 -> 0x461980 -> 0x4d44d0 -> lane vf7 0x40eed0); src has no render
+// walk, so touch every resident `native road` map object once.
+size_t Runtime::touch_road_nodes(Resource *ground)
+{
+    size_t n = 0;
+    if (!ground) return 0;
+    for (size_t i = 0; i < ground->map_objects.size(); i++) {
+        const Resource::MapObject &m = ground->map_objects[i];
+        if (!m.gametype || !native_type_is(*this, m.gametype, ground->package, "road"))
+            continue;
+        map_node_touched(ground, i);
+        n++;
+    }
+    return n;
+}
+
 // The type record's refs name the `native trigger` handler (vtable 0x5a00e0).
 static bool native_trigger_type(Runtime &rt, Runtime::Resource *ty)
 {

@@ -288,6 +288,9 @@ class Runtime {
     // 0x4fe6f0 + 0x4fe852: physics walk residency of map node ni (0x5195a0
     // create -> type_road__vf3 0x4d42a0), then the road keep-alive (vf5 0x4d44d0).
     void map_node_touched(Resource *ground, size_t ni);
+    // INVENTED HARNESS: touch every resident `native road` map object once (the
+    // exe does this from the camera LOD walk). No render walk in src.
+    size_t touch_road_nodes(Resource *ground);
     // 0x4fe1a0 pick raycast over the resource tree: 0x4fddf0 node walk,
     // 0x4fc140 body hit, 0x5007c0 sphere and 0x500580 box tests. hit == null
     // means first-only (the exe's t_out == NULL). Returns whether anything hit.
