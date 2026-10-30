@@ -100,7 +100,9 @@ struct Car {                    // 0x164 bytes in the exe
     uint32_t path_lane = 0;     // +0xc4 PathRef lane (INVENTED: index)
     const Path *path = nullptr; // +0xc8 (&lane.path)
     int32_t dir = 0;            // +0xcc
-    uint32_t kd0 = 0, kd4 = 0;  // +0xd0, +0xd4 second ref
+    uint32_t kd0 = 0;                // +0xd0 prev ref lane/owner
+    const Path *prev_path = nullptr; // +0xd4 prev ref path
+    int32_t prev_dir = 0;            // +0xd8 prev ref dir
     uint8_t live = 0;           // +0xdc
     uint8_t notify = 0;         // +0xdd
     float e0 = 0, e4 = 0, e8 = 0;  // +0xe0..+0xe8 step times

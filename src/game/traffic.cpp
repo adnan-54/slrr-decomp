@@ -1099,41 +1099,41 @@ void car_drop_live(Graph &g, Car &car)
 // CarPathRef at car+0xc4 = {lane, path, dir}; src keeps path_lane/path/dir.
 
 // 0x40dde0 CarPathRef__posOffset (ECX = ref): path point at d shifted by off.
-void car_ref_pos_offset(const Car &car, float d, float off, float out[3])
+void car_ref_pos_offset(const Path *path, int32_t dir, float d, float off, float out[3])
 {
     out[0] = out[1] = out[2] = 0.0f;
-    if (!car.path) return;
-    if (car.dir >= 0) {
+    if (!path) return;
+    if (dir >= 0) {
         // shortcut: ctSegment__posOffset 0x413660 (cross path, ref->dir >= 0) has
         // no src equivalent; no src car is on a cross (dir is only ever -1).
         return;
     }
-    path_pos_offset_at(*car.path, d, off, out);  // 0x4133f0 ctPath__posOffsetAt
+    path_pos_offset_at(*path, d, off, out);      // 0x4133f0 ctPath__posOffsetAt
 }
 
 // 0x40dd60 CarPathRef__dir (ECX = ref): path direction at d.
-void car_ref_dir(const Car &car, float d, float out[3])
+void car_ref_dir(const Path *path, int32_t dir, float d, float out[3])
 {
     out[0] = out[1] = out[2] = 0.0f;
-    if (!car.path) return;
-    if (car.dir >= 0) {
+    if (!path) return;
+    if (dir >= 0) {
         // shortcut: ctSegment__dir 0x412f60 (cross path, ref->dir >= 0) is not
         // reached: no src car is on a cross (dir is only ever -1).
         return;
     }
-    path_dir_at(*car.path, d, out);              // 0x412ed0 ctPath__dirAt
+    path_dir_at(*path, d, out);                  // 0x412ed0 ctPath__dirAt
 }
 
 // 0x40e810 CarPathRef__length (ECX = ref): current path length.
-float car_ref_length(const Car &car)
+float car_ref_length(const Path *path, int32_t dir)
 {
-    if (!car.path) return 0.0f;
-    if (car.dir >= 0) {
+    if (!path) return 0.0f;
+    if (dir >= 0) {
         // shortcut: the cross path length read (ref + 0x30 = Segment::len) is not
         // reached: no src car is on a cross (dir is only ever -1).
         return 0.0f;
     }
-    return car.path->length;                     // +0x38
+    return path->length;                         // +0x38
 }
 
 // 0x4102d0 TrafficCar__advance (ECX = car): world position from the path
@@ -1151,7 +1151,7 @@ void car_advance(Graph &g, Car &car)
 
     const float oldx = car.world[0], oldz = car.world[2];
     float p[3];
-    car_ref_pos_offset(car, car.pos, car.lateral, p);   // 0x40dde0
+    car_ref_pos_offset(car.path, car.dir, car.pos, car.lateral, p);   // 0x40dde0
     for (int k = 0; k < 3; k++) car.world[k] = p[k];    // +0x8c/+0x90/+0x94
     const float dx = car.world[0] - oldx;
     const float dz = car.world[2] - oldz;
@@ -1159,31 +1159,40 @@ void car_advance(Graph &g, Car &car)
     if (dist == 0.0f) return;
     const float L = car.k18;                     // +0x18
     float tx, tz;
-    if (L / (dt + 1.0f) <= dist) {               // snapped: front from the path
+    // 0x4103d0: dt and L are promoted to double and (dt + 1) is a double.
+    if ((double)L / ((double)dt + 1.0) <= (double)dist) {  // snapped: front from the path
         float dir[3];
-        car_ref_dir(car, car.pos, dir);          // 0x40dd60
+        car_ref_dir(car.path, car.dir, car.pos, dir);   // 0x40dd60
         car.heading_x = -dir[0];                 // +0xa0 (dir[1] unused)
         car.heading_z = -dir[2];                 // +0xa4
         const float d = car.pos + L;
-        const float dl = car_ref_length(car);    // 0x40e810
-        float d2 = d - dl;
-        if (d2 <= 0.0f) d2 = d;
+        const float dl = car_ref_length(car.path, car.dir);   // 0x40e810
+        const float d2 = d - dl;
         float q[3];
-        car_ref_pos_offset(car, d2, car.lateral, q);
+        // 0x4105cc (d2 > 0) reads the prev ref (+0xd4/+0xd8); 0x4105ba reads
+        // the cur ref at pos + L.
+        if (d2 > 0.0f)
+            car_ref_pos_offset(car.prev_path, car.prev_dir, d2, car.lateral, q);
+        else
+            car_ref_pos_offset(car.path, car.dir, d, car.lateral, q);
         tx = q[0];
         tz = q[2];
     } else {
         if (0.01f < dist) {                      // 0x5935d0
-            car.heading_x = dx / dist;
-            car.heading_z = dz / dist;
+            const float inv = 1.0f / dist;       // 0x410400: DIVSS then MULSS
+            car.heading_x = dx * inv;
+            car.heading_z = dz * inv;
         }
         float fx = car.front_x - oldx;           // +0x98
         float fz = car.front_z - oldz;           // +0x9c
         const float h = sqrtf(fx * fx + fz * fz);
-        if (1e-05f < h) { fx = fx / h; fz = fz / h; }
+        if (1e-05 < (double)h) {                 // 0x410461: double compare
+            const float inv = 1.0f / h;
+            fx = fx * inv; fz = fz * inv;
+        }
         const float dot = fx * dx + fz * dz;
-        // keep this order: (dot*dot*dist*dist + L*L) - dist*dist
-        const float disc = (dot * dot * dist * dist + L * L) - dist * dist;
+        // 0x410493: (dot*dot) * (dist*dist) then + L*L - dist*dist.
+        const float disc = ((dot * dot) * (dist * dist) + L * L) - dist * dist;
         const float root = disc > 0.0f ? sqrtf(disc) : 0.0f;
         float f = dot * dist + root;
         if (g.front_mode == 1)                   // global 0x5e6518
@@ -1196,7 +1205,10 @@ void car_advance(Graph &g, Car &car)
     float nx = tx - car.world[0];
     float nz = tz - car.world[2];
     const float n = sqrtf(nx * nx + nz * nz);
-    if (1e-05f < n) { nx = nx / n; nz = nz / n; }
+    if (1e-05 < (double)n) {                     // 0x41061f: double compare
+        const float inv = 1.0f / n;
+        nx = nx * inv; nz = nz * inv;
+    }
     car.front_x = car.world[0] + nx * L;         // +0x98
     car.front_z = car.world[2] + nz * L;         // +0x9c (the y of the front point
                                                  // is never stored)
@@ -1410,9 +1422,11 @@ void car_step(Graph &g, uint32_t ci)
         } else {
             // prev = {path_lane (+0xc4), path (+0xc8), dir (+0xcc)}; vf4 reads only
             // the owner (0x40e710 ignores the idx argument).
-            // shortcut: the exe also copies cur to the prev ref fields
-            // +0xd0/+0xd4/+0xd8 (0x41154c/0x41155c); no src reader yet, card 236
-            // adds them with the leader logic.
+            // The exe copies cur to the prev ref +0xd0/+0xd4/+0xd8 before
+            // overwriting it (0x41154c/0x41155c); car_advance's 0x4105cc reads it.
+            car.kd0 = car.path_lane;
+            car.prev_path = car.path;
+            car.prev_dir = car.dir;
             const uint32_t prev_lane = car.path_lane;
             car.path_lane = car.next_lane_a;           // 0x411546..
             car.path = car.next_lane_b;
@@ -1616,7 +1630,7 @@ uint32_t Graph::spawn_on_road(size_t road, float p1, float p2, float p3, float p
     car.path_lane = (uint32_t)li;
     car.path = &lane.path;
     car.dir = -1;
-    car.kd0 = car.kd4 = 0;
+    car.kd0 = 0; car.prev_path = nullptr; car.prev_dir = 0;
     car.lateral = 0.0f;
     car.e0 = sim_time;
 
@@ -1679,7 +1693,7 @@ void Graph::remove_car(uint32_t handle)
     car.next_lane_b = nullptr;
     car.path_lane = 0;
     car.path = nullptr;
-    car.kd0 = car.kd4 = 0;
+    car.kd0 = 0; car.prev_path = nullptr; car.prev_dir = 0;
     car.lane = 0;
     if (car.live_next != 0) {   // in the live list
         if (live_cars == ci + 1) {
