@@ -178,6 +178,11 @@ depends on them.
 
 Constants: 0x5935ac = -1.0f, 0x593728 = 2.0f, 0x593590 = 0.5f, 0x593598 = 1.0f.
 
+## Already done on main (card 234)
+`Car.kd0` / `Car.prev_path` (+0xd4) / `Car.prev_dir` (+0xd8) exist and `car_step`'s
+hand-over already stores the prev ref (0x41154c/0x41155c); `car_ref_length` takes
+`(path, dir)`. Skip those edits; keep the LeaderSlot work and the step-2 slice.
+
 ## Files
 - edit: `src/game/traffic.h` — `struct Car`:
   ```cpp
