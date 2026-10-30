@@ -199,7 +199,7 @@ bool read_lane(Reader &r, traffic::Lane &lane)
         return false;
     for (int i = 0; i < 4; i++)
         if (!r.u32(&lane.node88[i])) return false;
-    if (!r.f32(&lane.k98) || !r.u32(&lane.k9c) || !r.u32(&lane.ka0)) return false;
+    if (!r.f32(&lane.k98) || !r.f32(&lane.k9c) || !r.u32(&lane.ka0)) return false;
     return read_path(r, lane.path);
 }
 
@@ -1055,6 +1055,32 @@ void schedule_lane(Graph &g, float dt, uint32_t lane)
     g.heap[i] = e;
 }
 
+// 0x40f5e0 TrafficCar__setLive (ECX = car, char on): live flag (+0xdc), the
+// live count and the +0x44 live list. Shared by 0x40cbd0 and 0x40f950.
+void car_set_live(Graph &g, uint32_t ci, bool on)
+{
+    Car &car = g.cars[ci];
+    if (car.live == (on ? 1 : 0)) return;            // +0xdc
+    if (on) {
+        g.live_count++;
+        if (!car.type_id && car.inst_id && car.notify) {
+            // shortcut: the notify sink (T+0x3130) is not modelled (notes/29 §5)
+        }
+        car.live = 1;
+        if (car.live_next == 0) {                    // head insert into the live list
+            car.live_next = g.live_cars;
+            g.live_cars = ci + 1;
+        }
+    } else {
+        g.live_count--;
+        if (!car.type_id && car.inst_id && car.notify) {
+            // shortcut: the notify sink (T+0x3130) is not modelled (notes/29 §5)
+        }
+        car.live = 0;
+    }
+    if (car.live == 0 && car.k128 != 0) car.k128 = 0;   // +0x128
+}
+
 // 0x40cbd0 ctLane__vf3: live/not-live bookkeeping, first-event scheduling and
 // occupancy. The exe's tail-append branch is a no-op: insert already set car.lane.
 void lane_attach(Graph &g, size_t li, uint32_t ci)
@@ -1065,31 +1091,14 @@ void lane_attach(Graph &g, size_t li, uint32_t ci)
     if (lane.blocker.car == ci + 1 && lane.blocker.serial == car.serial)
         lane.blocker = Lane::Blocker();
 
+    car_set_live(g, ci, lane.live != 0);             // 0x40f5e0
     if (!lane.live) {
-        if (car.live) {
-            g.live_count--;
-            if (!car.type_id && car.inst_id && car.notify) {
-                // shortcut: the notify sink (T+0x3130) is not modelled (notes/29 §5)
-            }
-            car.live = 0;
-            car.k128 = 0;
-        }
         if (!lane.cars.empty() && lane.cars.front() == ci) {
             float t = car_time_to_lane_end(g, ci);
             if (lane.pending_events == 0) {
                 schedule_lane(g, t, (uint32_t)li);
                 lane.pending_events++;
             }
-        }
-    } else if (car.live != 1) {
-        g.live_count++;
-        if (!car.type_id && car.inst_id && car.notify) {
-            // shortcut: the notify sink (T+0x3130) is not modelled (notes/29 §5)
-        }
-        car.live = 1;
-        if (car.live_next == 0) {   // head insert into the live list
-            car.live_next = g.live_cars;
-            g.live_cars = ci + 1;
         }
     }
     // shortcut: TrafficCar__syncInstance 0x410680 needs the instance side (notes/29 §5)
@@ -1328,6 +1337,108 @@ void car_note_leader(Graph &g, uint32_t ci, uint32_t leader, uint8_t flag)
     if (leader) { slot[i].serial = g.cars[leader - 1].serial; slot[i].car = leader; }  // 0x40d359/0x40d361
     else        { slot[i].serial = 0; slot[i].car = 0; slot[i].flag = 0; }            // 0x40d339..0x40d347
     slot[i].flag = flag;                                   // 0x40d36a
+}
+
+// 0x411f00 ctLane__vf2 (ECX = lane, arg = Car*): cache the lane's tail car and
+// note the previous tail (or the still-valid cached blocker) as this car's leader.
+void lane_cache_tail(Graph &g, size_t li, uint32_t ci)
+{
+    Lane &lane = g.lanes[li];
+    const uint32_t cached = lane.blocker.car;        // +0xb4 (1-based; 0 = null)
+    // INVENTED: bounds check the exe does not have on the cached index.
+    if (cached != 0 && cached <= g.cars.size() &&
+        lane.blocker.serial == g.cars[cached - 1].serial) {   // +0xb0 == car+0
+        car_note_leader(g, ci, cached, 0);           // 0x40d2c0
+    } else {
+        if (cached != 0) lane.blocker = Lane::Blocker();   // +0xb0/+0xb4/+0xb8
+        if (!lane.cars.empty())                      // +0xc cars tail
+            car_note_leader(g, ci, lane.cars.back() + 1, 0);
+    }
+    // The exe clears the blocker when arg is null; every src call passes a car.
+    lane.blocker.car = ci + 1;                       // +0xb4; +0xb8 (k) untouched
+    lane.blocker.serial = g.cars[ci].serial;         // +0xb0
+}
+
+// 0x40f950 CarPathRef__set (ECX = car, args: owner lane, path, dir): hand the
+// car's current ref to a lane, or only record it as the next ref when live.
+void car_set_ref(Graph &g, uint32_t ci, size_t li, const Path *path, int32_t dir)
+{
+    Car &car = g.cars[ci];
+    if (!car.live) {                                 // +0xdc
+        if (g.lanes[li].live) car_set_live(g, ci, true);   // owner vf1 0x40e390
+        if (!car.live) {                             // destination lane not live
+            lane_unlink(g, ci);                      // 0x40ca40
+            if (car.path) {                          // +0xc8
+                // INVENTED: bounds check (the exe dereferences the lane pointer).
+                if (car.path_lane < g.lanes.size())
+                    lane_detach(g, car.path_lane, ci);    // 0x40e710 (dir ignored)
+            }
+            car.path_lane = (uint32_t)li;            // +0xc4
+            car.path = path;                         // +0xc8
+            car.dir = dir;                           // +0xcc
+            car.kd0 = 0; car.prev_path = nullptr;    // +0xd0, +0xd4
+            float len = 0.0f;
+            if (path) {
+                if (dir < 0) len = path->length;     // +0x38
+                // shortcut: cross owners are not modelled (see step 6 of car_step);
+                // the exe reads Segment::len (+0x30) for dir >= 0.
+            }
+            const float pos = len - car.k20;         // +0x20
+            car.pos = pos;                           // +0x88
+            if (car.k14 > pos) car.pos = car.k14;    // +0x14
+            if (path) {
+                lane_cache_tail(g, li, ci);          // owner vf2 0x411f00
+                g.lanes[li].cars.push_back(ci);      // vf3 append branch of 0x40cbd0
+                car.lane = (uint32_t)li;
+                lane_attach(g, li, ci);              // 0x40cbd0
+            }
+            return;
+        }
+    }
+    lane_cache_tail(g, li, ci);                      // owner vf2 0x411f00
+    car.next_lane_a = (uint32_t)li;                  // +0xb8
+    car.next_lane_b = path;                          // +0xbc
+    car.kc0 = dir;                                   // +0xc0
+}
+
+// 0x40e460 ctLane__laneEndMove (ECX = lane, args: Car* car, float t,
+// uint32_t link = lane.k38): move a car waiting at the lane end to a next lane.
+bool lane_end_move(Graph &g, size_t li, uint32_t ci, float t)
+{
+    Lane &lane = g.lanes[li];
+    const Car &car = g.cars[ci];
+    if (car.k128 != 0) return false;                 // +0x128
+    // INVENTED: a non-lane node id is treated as null (the exe dereferences it).
+    const Lane *next0 = g.lane_by_node(lane.node88[0]);   // +0x88
+    const Lane *next1 = g.lane_by_node(lane.node88[1]);   // +0x8c
+    if (next0 == nullptr && next1 == nullptr) {
+        // SERVICE MISSING: the exe calls 0x40e400 with the lane's cross
+        // (road_by_node(lane.road)->node[2 - lane.k18]) and returns true when a
+        // cross vf hands the car over (0x4157a0 live_refs > 0, 0x4159d0 < 0,
+        // 0x40e590 == 0), false when none does. src has no car-on-cross refs and
+        // no Cross+0x40 (UNRESOLVED writer; ctor 0x40c590 sets -1.0f), so the
+        // "no route" result is fixed here.
+        return false;
+    }
+    if (t > car_target_speed(g, car) / car.k38) return false;   // 0x40dc00, +0x38
+    if (!lane.live && t > 0.0f) return false;        // +0xa8
+    const float need = car.k20 + car.k14;            // +0x20 + +0x14
+    const Lane *chosen = next0;
+    if (next0 == nullptr) {
+        chosen = next1;
+    } else if (next1 != nullptr) {                   // both present
+        const float cap0 = next0->kcc * next0->k9c - next0->kc8;  // +0xcc*+0x9c-+0xc8
+        const float cap1 = next1->kcc * next1->k9c - next1->kc8;
+        if (cap0 <= need) {
+            if (cap1 <= need) return false;          // neither fits
+            chosen = next1;                          // only next1 fits
+        } else if (cap1 > need && cap1 >= cap0) {    // smaller room wins, tie -> next1
+            chosen = next1;
+        }
+    }
+    const size_t cj = (size_t)(chosen - g.lanes.data());
+    car_set_ref(g, ci, cj, &chosen->path, -1);       // 0x40f950
+    return true;
 }
 
 // 0x40c270 ctLeaderSlot__sort: min-heap build + heapsort, dist only. Empty
@@ -2058,7 +2169,13 @@ bool lane_active_step(Graph &g, size_t li)
             const uint32_t ci = lane.cars[k];
             if (g.cars[ci].next_lane_b != 0) continue;   // +0xbc
             car_step(g, ci);                             // 0x4107c0
-            // shortcut: the next-lane move 0x40e460 is not ported.
+            // 0x40f4e0: 2v braking time to the lane end, min speed 10.
+            const float stop = g.cars[ci].next_lane_b ? 0.0f : g.cross_stop_offset;
+            float v = car_target_speed(g, g.cars[ci]);   // 0x40dc00
+            if (v <= 10.0f) v = 10.0f;                   // 0x59373c
+            float t = ((g.cars[ci].pos - g.cars[ci].k14) - stop) * (2.0f / v);  // 0x593728
+            if (t < 0.0f) t = 0.0f;                      // 0x593580
+            lane_end_move(g, li, ci, t);                 // 0x40e460, result ignored
         }
         return true;
     }
@@ -2123,9 +2240,10 @@ void lane_timed_event(Graph &g, uint32_t li)
     if (head != kLiveEnd && g.cars[head].next_lane_b == 0) {   // +0xbc: no next lane
         const float f = car_time_to_lane_end(g, head);         // 0x40d990
         if ((double)f <= 0.01) {                     // 0x593560
-            // shortcut: the lane-end move 0x40e460 is not ported (no next-lane
-            // move in src); treat it as failed and schedule the idle retry.
-            lane_schedule_if_idle(g, lane, li, 1.0f);          // 0x40d380
+            // 0x40e460 call at 0x40fd8c, t = 0; a failed move falls back to the
+            // idle retry 0x40d380.
+            if (!lane_end_move(g, li, head, 0.0f))
+                lane_schedule_if_idle(g, lane, li, 1.0f);
         } else {
             if (lane.pending_events != 0) return;
             schedule_lane(g, f, li);                 // 0x417050
