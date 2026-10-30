@@ -165,6 +165,20 @@ struct HudGauge {
     std::string text;     // text printf result
 };
 
+// INVENTED: harness install report (debug aid, no exe counterpart). One entry
+// per part_command "install" attempt (0x4c4400 -> 0x4c96c0 -> 0x4cb1d0).
+struct InstallRecord {
+    Runtime::Resource *part = nullptr;    // the part being installed
+    Runtime::Resource *target = nullptr;  // target part used/requested, may be null
+    Runtime::Resource *dest = nullptr;    // the command's dest argument
+    uint32_t part_type = 0;
+    uint32_t target_type = 0;
+    bool ok = false;
+    // Failure only: a free, enabled, unlocked slot pair compatible with the two
+    // parts exists, i.e. the exe search would have found it (0x4c9d90/0x4cb0b0).
+    bool free_compatible = false;
+};
+
 struct PartData {
     std::vector<Slot> slots;
     uint32_t dmg_mode = 0;       // +0xb0 damage kind lo16 / wheel hi16 (0x4c7d20)
@@ -489,6 +503,9 @@ int car_command(Runtime &rt, Runtime::Resource *car, uint32_t code,
 // suppressed), 0 for anything else.
 int part_command(Runtime &rt, Runtime::Resource *part, uint32_t code,
                  const Value &param);
+// INVENTED: every part_command install attempt so far (vmboot report;
+// no exe counterpart).
+const std::vector<InstallRecord> &install_log();
 // 0x4cd3a0 Part.install_OK: the 0x4c96c0 search with no explicit target part
 // (goes straight to the dest fallback). Returns the mate slot or 0; *used is
 // the target part actually used.

@@ -765,6 +765,114 @@ void city_checks(Boot &boot, Checker &c, Object *state, FrameLoop &loop)
     c.check(failed == 0, "city: no failed thread (got " + std::to_string(failed) + ")");
 }
 
+// INVENTED: harness report of every part_command install attempt (debug aid, no
+// exe counterpart) and the shipped-cfg `bolt` corpus check (0x4bfd00). The exe
+// install fails iff the 0x4c96c0/0x4c9d90/0x4cb0b0 search finds no free
+// compatible slot, so a failed attempt with free_compatible is an RE finding.
+void install_report(Boot &boot, Checker &c, Runtime::Resource *player_car,
+                    int player_walk)
+{
+    Runtime *rt = boot.runtime();
+    const std::vector<game::InstallRecord> &log = game::install_log();
+    struct Group {
+        Runtime::Resource *dest = nullptr;
+        int ok = 0;
+        int failed = 0;
+        std::vector<const game::InstallRecord *> fails;
+    };
+    std::vector<Group> groups;
+    auto group_of = [&groups](Runtime::Resource *d) -> Group & {
+        for (Group &g : groups)
+            if (g.dest == d) return g;
+        groups.push_back(Group());
+        groups.back().dest = d;
+        return groups.back();
+    };
+    int ok_total = 0, failed_total = 0, free_total = 0;
+    int player_ok = 0, player_failed = 0;
+    for (const game::InstallRecord &rec : log) {
+        Group &g = group_of(rec.dest);
+        if (rec.ok) {
+            ok_total++;
+            g.ok++;
+        } else {
+            failed_total++;
+            g.failed++;
+            g.fails.push_back(&rec);
+            if (rec.free_compatible) free_total++;
+        }
+        if (player_car && rec.dest == player_car) {
+            if (rec.ok) player_ok++;
+            else player_failed++;
+        }
+    }
+    auto name_of = [rt](Runtime::Resource *dest) -> std::string {
+        if (!dest) return "(null)";
+        game::CarData *cd = game::car_data(*rt, dest);
+        if (cd && cd->cfg_resource) return cd->cfg_resource->name;
+        return !dest->name.empty() ? dest->name : dest->script_class;
+    };
+    std::printf("  install log (INVENTED report): %d install(s), %d failed, "
+                "%d with a free compatible slot\n",
+                ok_total, failed_total, free_total);
+    for (const Group &g : groups) {
+        std::printf("    %s: %d ok, %d failed\n", name_of(g.dest).c_str(), g.ok,
+                    g.failed);
+        for (const game::InstallRecord *rec : g.fails)
+            std::printf("      failed 0x%08x -> 0x%08x (%s)\n",
+                        rec->part_type, rec->target_type,
+                        rec->free_compatible ? "FREE SLOT" : "no free compatible slot");
+    }
+    c.check(player_car && player_failed == 0 && player_ok == player_walk,
+            "player car: " + std::to_string(player_ok) + " ok install(s) = " +
+                std::to_string(player_walk) + " recursive-walk part(s), " +
+                std::to_string(player_failed) + " failed (0x4c96c0/0x4cb1d0)");
+    c.check(free_total == 0,
+            "no failed install has a free compatible slot (0x4c9d90/0x4cb0b0, got " +
+                std::to_string(free_total) + ")");
+
+    // 0x4bfd00 cfg keyword `bolt`: no shipped cfg declares one, so
+    // Part__attach 0x4cb1d0's 0x4c1a10 bolt count is 0 and every install
+    // commits at once (no pending flag 4).
+    int cfg_files = 0, bolt_lines = 0;
+    std::vector<std::string> dirs{"."};
+    while (!dirs.empty()) {
+        std::string dir = dirs.back();
+        dirs.pop_back();
+        std::vector<fs::FindEntry> entries;
+        if (!fs::find(dir + "/*", &entries)) continue;
+        for (const fs::FindEntry &e : entries) {
+            if (e.name == "." || e.name == "..") continue;
+            std::string full = dir + "/" + e.name;
+            if (e.is_dir) {
+                dirs.push_back(full);
+                continue;
+            }
+            if (e.name.size() < 4 ||
+                lower_ascii(e.name.substr(e.name.size() - 4)) != ".cfg")
+                continue;
+            cfg_files++;
+            std::vector<uint8_t> data;
+            std::string ferr;
+            if (!fs::read_file(full, &data, &ferr)) continue;
+            for (size_t i = 0; i < data.size();) {
+                size_t j = i;
+                while (j < data.size() && data[j] != '\n') j++;
+                size_t k = i;
+                while (k < j && (data[k] == ' ' || data[k] == '\t')) k++;
+                if (j - k >= 4 && memcmp(&data[k], "bolt", 4) == 0 &&
+                    (j - k == 4 || data[k + 4] == ' ' || data[k + 4] == '\t'))
+                    bolt_lines++;
+                i = j + 1;
+            }
+        }
+    }
+    std::printf("  cfg corpus: %d .cfg file(s) scanned, %d `bolt` line(s) (0x4bfd00)\n",
+                cfg_files, bolt_lines);
+    c.check(cfg_files > 0 && bolt_lines == 0,
+            "no shipped cfg has a bolt line (0x4bfd00; 0x4c1a10 bolt sum stays 0)");
+}
+
 void game_init_check(Boot &boot, Checker &c)
 {
     std::string err;
@@ -1132,7 +1240,12 @@ void game_init_check(Boot &boot, Checker &c)
     {
         std::vector<Runtime::Resource *> stack;
         std::set<Runtime::Resource *> seen;
-        if (car_res) stack.push_back(car_res);
+        // Insert the car first: the engine's back-pointer slot reaches it again,
+        // and the chassis is not one of its own installed parts.
+        if (car_res) {
+            seen.insert(car_res);
+            stack.push_back(car_res);
+        }
         while (!stack.empty()) {
             Runtime::Resource *r = stack.back();
             stack.pop_back();
@@ -1181,11 +1294,10 @@ void game_init_check(Boot &boot, Checker &c)
         }
     }
     int part_list_n = car_payload ? (int)car_payload->part_list.size() : 0;
-    // The walk reaches the chassis again through the engine's back-pointer.
-    const int walk_parts = installed_parts - (installed_parts > 0 ? 1 : 0);
-    std::printf("  attachedParts count %d, recursive slot walk %d (%d without the chassis), "
+    const int walk_parts = installed_parts;
+    std::printf("  attachedParts count %d, recursive slot walk %d, "
                 "car+0xfc list %d\n",
-                attached_count, installed_parts, walk_parts, part_list_n);
+                attached_count, installed_parts, part_list_n);
     c.check(attached_count >= 0 && attached_count == walk_parts &&
                 attached_count == part_list_n,
             "Part.attachedParts count = installed parts = car+0xfc list (0x4942b0)");
@@ -3761,6 +3873,7 @@ void game_init_check(Boot &boot, Checker &c)
             if (t.name == "THRD-GARAGE-CMD") dealer_thread = true;
         c.check(dealer_thread, "Garage osdCommand(122) runs a THRD-GARAGE-CMD thread");
     }
+    install_report(boot, c, car_res, walk_parts);
     int failed = 0, not_impl = 0;
     for (const natives::ThreadInfo &t : threads) {
         if (t.error.empty()) continue;

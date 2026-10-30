@@ -94,6 +94,8 @@ void add_point_inertia(Mat34 *inertia, float m, Vec3 r)
 Runtime *g_rt = nullptr;
 std::map<Runtime::Resource *, std::unique_ptr<PartData>> g_parts;
 std::map<Runtime::Resource *, std::unique_ptr<CarData>> g_cars;
+// INVENTED: install report for the harness (no exe counterpart).
+std::vector<InstallRecord> g_install_log;
 std::map<Object *, WheelData *> g_wheels;
 std::map<Object *, audio::SfxTable *> g_sfx_tables;
 std::map<Object *, std::unique_ptr<EngineModel>> g_dynos;
@@ -675,6 +677,39 @@ int32_t find_mate_slot(Runtime &rt, Runtime::Resource *P,
         if (part_compatible(rt, tref, *t_slot, P, s.id)) return s.id;
     }
     return 0;
+}
+
+// INVENTED: report-only recomputation of "a free compatible slot pair exists"
+// from the exe's own predicates (0x4c9af0 free test, 0x4c9d90 compatibility,
+// 0x4cb0b0 lock). It must never feed install_search; a mismatch is an RE
+// finding, not a search change.
+bool free_slot_pair(Runtime &rt, Runtime::Resource *T, Runtime::Resource *P)
+{
+    if (!T || T == P) return false;
+    PartData *tp = part_data(rt, T);
+    PartData *mp = part_data(rt, P);
+    if (!tp || !mp || part_locked(rt, T, 0)) return false;
+    for (Slot &t : tp->slots) {
+        if (t.attached || (t.flags & 0x10u)) continue;
+        for (Slot &s : mp->slots) {
+            if (s.attached || (s.flags & 0x10u)) continue;
+            if (part_compatible(rt, T, t.id, P, s.id)) return true;
+        }
+    }
+    return false;
+}
+
+// The exe's fallback set 0x4c96c0: the target part, the dest object, then the
+// car's installed parts (0x4c96c0's getInfo 0x31 walk, src: dest->children).
+bool install_had_free_slot(Runtime &rt, Runtime::Resource *P,
+                           Runtime::Resource *tref, Runtime::Resource *dest)
+{
+    if (free_slot_pair(rt, tref, P)) return true;
+    if (!dest) return false;
+    if (free_slot_pair(rt, dest, P)) return true;
+    for (Runtime::Resource *child : dest->children)
+        if (free_slot_pair(rt, child, P)) return true;
+    return false;
 }
 
 // 0x4c96c0: target part first, else the dest object (0x4c96c0's fallback).
@@ -1908,8 +1943,19 @@ int part_command(Runtime &rt, Runtime::Resource *part, uint32_t code,
     Runtime::Resource *used = nullptr;
     int32_t found = install_search(rt, part, tref, dst, &used, &t_slot,
                                    n >= 8 ? pos : nullptr);
-    if (!found || !used) return 0; // nothing changes, the script destroys the part
-    part_attach(rt, part, found, used, t_slot, dst);
+    // INVENTED: install report (no exe counterpart); computed after the search,
+    // before the attach so a failed attach leaves the search result visible.
+    InstallRecord rec;
+    rec.part = part;
+    rec.dest = dst;
+    rec.ok = found && used && part_attach(rt, part, found, used, t_slot, dst);
+    rec.target = rec.ok ? used : tref;
+    rec.part_type = part_type_id(rt, part);
+    rec.target_type = part_type_id(rt, rec.target);
+    if (!rec.ok)
+        rec.free_compatible = install_had_free_slot(rt, part, tref, dst);
+    g_install_log.push_back(rec);
+    if (!rec.ok) return 0; // nothing changes, the script destroys the part
     return 1;
 }
 
@@ -4175,6 +4221,11 @@ void apply_part_wear_records(Runtime &rt, CarData &car)
     }
 }
 
+const std::vector<InstallRecord> &install_log()
+{
+    return g_install_log;
+}
+
 // shortcut: payloads keyed by Runtime address; a Runtime destroyed and recreated
 // at the same address would see stale entries (tools create one per process).
 void reset(Runtime *rt)
@@ -4193,6 +4244,7 @@ void reset(Runtime *rt)
     g_bots.clear();
     g_cars.clear();
     g_parts.clear();
+    g_install_log.clear();  // INVENTED report
     g_rt = rt;
 }
 
