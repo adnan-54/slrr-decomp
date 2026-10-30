@@ -1,7 +1,8 @@
 ---
 id: 243
-status: implemented
+status: merged
 branch: card/243
+review: deepseek-pass
 depends: [241]
 ---
 # harness: make the city lanes live in `vmboot --city` (INVENTED stand-in for the render LOD keep-alive)
