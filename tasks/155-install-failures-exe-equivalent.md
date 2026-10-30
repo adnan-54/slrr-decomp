@@ -1,6 +1,6 @@
 ---
 id: 155
-status: todo
+status: implemented
 branch: card/155
 depends: [150, 153, 154]
 ---
@@ -69,3 +69,33 @@ find_mate_slot / part_compatible behaviour (if b fails, report the failing line:
 finding, not something to patch around).
 
 ## Result
+
+Implemented (`src/game/car.h/.cpp`, `src/tools/vmboot.cpp`).
+
+- `game::InstallRecord` / `install_log()` (INVENTED report) records every
+  `part_command` install attempt (0x4c4400 -> 0x4c96c0 -> 0x4cb1d0): part, target,
+  dest, both type ids, ok, and `free_compatible`, which is recomputed on failure
+  with the exe predicates alone (0x4c9af0 free/enabled, 0x4cb0b0 lock, 0x4c9d90
+  compatibility) over `{target, dest} U dest->children`, skipping the part itself.
+  `install_search`/`find_mate_slot`/`target_slot_for`/`part_compatible` unchanged.
+- vmboot installed-parts walk: `car_res` now enters `seen` before the loop, so the
+  engine back-pointer no longer counts the chassis; the `-1` compensation is gone.
+- vmboot report at the end of `game_init_check`, per dest (preserving first-seen
+  order) with the chassis/cfg name from `CarData::cfg_resource`.
+
+`--selfcheck` on the real data (worktree binary, same caps as
+`tools/vmboot-capped.sh`: ulimit -v 4000000, timeout 280; the script itself hard-codes
+/root/slrr-re, so it was run directly):
+
+a. player car Duhen_SunStrip_1_8_DVC: 76 ok installs, 0 failed; recursive walk 76
+   (was 77 with the chassis). Check: ok installs == walk == 76.
+b. install log: 1105 installs, 55 failed, 0 with a free compatible slot. Failures:
+   4 x Whisper_Q1000XL 13 each (52) and Axis_200XT 3 - exactly the card's split, so
+   every failure is one the exe has too. (Card's 834-install total predates later
+   harness blocks; totals are printed, not asserted.)
+c. cfg corpus: 3194 `.cfg` files scanned, 0 `bolt` lines (0x4bfd00 never runs,
+   0x4c1a10 stays 0, every install commits at once).
+d. car_root mass unchanged: 1280.294 kg (742.297 bodies + 40.040 wheels + 497.957
+   parts).
+e. `selfcheck: PASSED` 174 checks, 0 failures, 30000 frames, 0 failed threads;
+   `make -C src check` green.
