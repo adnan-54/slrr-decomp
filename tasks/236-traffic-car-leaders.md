@@ -1,8 +1,8 @@
 ---
 id: 236
-status: implemented
+status: merged
 branch: card/236
-review:
+review: deepseek-pass
 depends: [235]
 ---
 # traffic: TrafficCar__step leader slots + nearest gap/leader speed
