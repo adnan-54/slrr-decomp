@@ -1,7 +1,7 @@
 ---
 id: 234
-status: todo
-branch:
+status: implemented
+branch: card/234
 review:
 depends: [235]   # both edit struct Car in traffic.h; 235 changes the next-ref fields
 ---

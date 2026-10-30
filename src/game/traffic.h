@@ -87,6 +87,7 @@ struct Car {                    // 0x164 bytes in the exe
     float pos = 0;              // +0x88 (distance on the lane path; counts down to the lane end)
     float world[3] = {};        // +0x8c
     float front_x = 0, front_z = 0;  // +0x98, +0x9c
+    float heading_x = 0, heading_z = 0;  // +0xa0, +0xa4 (0x4102d0)
     float lateral = 0;          // +0xa8
     float kac = 0;              // +0xac
     float speed = 0;            // +0xb0
@@ -120,6 +121,9 @@ struct Graph {
     std::vector<Road> roads;                    // +0x40
     std::vector<Lane> lanes;                    // +0x58
     float sim_time = 0;                         // +0x84
+    // global 0x5e6518 front-point mode of 0x4102d0 (0/1/2). INVENTED: per graph,
+    // initial 0 (BSS); the setter is not traced.
+    int32_t front_mode = 0;
     std::vector<uint8_t> road_enabled;          // +0xc4: enable flag per road group
     float max_road_width = 0;                   // +0x312c
     float cross_stop_offset = 0;                // +0x3140 (ctor 0x416000: 0)

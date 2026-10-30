@@ -1096,13 +1096,136 @@ void car_drop_live(Graph &g, Car &car)
     }
 }
 
+// CarPathRef at car+0xc4 = {lane, path, dir}; src keeps path_lane/path/dir.
+
+// 0x40dde0 CarPathRef__posOffset (ECX = ref): path point at d shifted by off.
+void car_ref_pos_offset(const Car &car, float d, float off, float out[3])
+{
+    out[0] = out[1] = out[2] = 0.0f;
+    if (!car.path) return;
+    if (car.dir >= 0) {
+        // shortcut: ctSegment__posOffset 0x413660 (cross path, ref->dir >= 0) has
+        // no src equivalent; no src car is on a cross (dir is only ever -1).
+        return;
+    }
+    path_pos_offset_at(*car.path, d, off, out);  // 0x4133f0 ctPath__posOffsetAt
+}
+
+// 0x40dd60 CarPathRef__dir (ECX = ref): path direction at d.
+void car_ref_dir(const Car &car, float d, float out[3])
+{
+    out[0] = out[1] = out[2] = 0.0f;
+    if (!car.path) return;
+    if (car.dir >= 0) {
+        // shortcut: ctSegment__dir 0x412f60 (cross path, ref->dir >= 0) is not
+        // reached: no src car is on a cross (dir is only ever -1).
+        return;
+    }
+    path_dir_at(*car.path, d, out);              // 0x412ed0 ctPath__dirAt
+}
+
+// 0x40e810 CarPathRef__length (ECX = ref): current path length.
+float car_ref_length(const Car &car)
+{
+    if (!car.path) return 0.0f;
+    if (car.dir >= 0) {
+        // shortcut: the cross path length read (ref + 0x30 = Segment::len) is not
+        // reached: no src car is on a cross (dir is only ever -1).
+        return 0.0f;
+    }
+    return car.path->length;                     // +0x38
+}
+
+// 0x4102d0 TrafficCar__advance (ECX = car): world position from the path
+// position, heading (+0xa0/+0xa4) and front point (+0x98/+0x9c).
+void car_advance(Graph &g, Car &car)
+{
+    if (!car.path) return;                       // +0xc
+    const float t0 = car.e4, t = g.sim_time;     // +0xe4, +0x84
+    if (!(t0 < t)) return;                       // JBE
+    car.e4 = t;
+    const float dt = t - t0;
+    // shortcut: the exe calls TrafficCar__step 0x4107c0 here; car_step (card 235)
+    // takes a pool index this card does not thread through, so the pose below is
+    // computed from the pos the active-lane walk left (notes/37 §4/§5).
+
+    const float oldx = car.world[0], oldz = car.world[2];
+    float p[3];
+    car_ref_pos_offset(car, car.pos, car.lateral, p);   // 0x40dde0
+    for (int k = 0; k < 3; k++) car.world[k] = p[k];    // +0x8c/+0x90/+0x94
+    const float dx = car.world[0] - oldx;
+    const float dz = car.world[2] - oldz;
+    const float dist = sqrtf(dx * dx + dz * dz);
+    if (dist == 0.0f) return;
+    const float L = car.k18;                     // +0x18
+    float tx, tz;
+    if (L / (dt + 1.0f) <= dist) {               // snapped: front from the path
+        float dir[3];
+        car_ref_dir(car, car.pos, dir);          // 0x40dd60
+        car.heading_x = -dir[0];                 // +0xa0 (dir[1] unused)
+        car.heading_z = -dir[2];                 // +0xa4
+        const float d = car.pos + L;
+        const float dl = car_ref_length(car);    // 0x40e810
+        float d2 = d - dl;
+        if (d2 <= 0.0f) d2 = d;
+        float q[3];
+        car_ref_pos_offset(car, d2, car.lateral, q);
+        tx = q[0];
+        tz = q[2];
+    } else {
+        if (0.01f < dist) {                      // 0x5935d0
+            car.heading_x = dx / dist;
+            car.heading_z = dz / dist;
+        }
+        float fx = car.front_x - oldx;           // +0x98
+        float fz = car.front_z - oldz;           // +0x9c
+        const float h = sqrtf(fx * fx + fz * fz);
+        if (1e-05f < h) { fx = fx / h; fz = fz / h; }
+        const float dot = fx * dx + fz * dz;
+        // keep this order: (dot*dot*dist*dist + L*L) - dist*dist
+        const float disc = (dot * dot * dist * dist + L * L) - dist * dist;
+        const float root = disc > 0.0f ? sqrtf(disc) : 0.0f;
+        float f = dot * dist + root;
+        if (g.front_mode == 1)                   // global 0x5e6518
+            f = f + (L - f) / (dist + 1.0f);
+        else if (g.front_mode == 2)
+            f = L;
+        tx = fx * f + oldx;
+        tz = fz * f + oldz;
+    }
+    float nx = tx - car.world[0];
+    float nz = tz - car.world[2];
+    const float n = sqrtf(nx * nx + nz * nz);
+    if (1e-05f < n) { nx = nx / n; nz = nz / n; }
+    car.front_x = car.world[0] + nx * L;         // +0x98
+    car.front_z = car.world[2] + nz * L;         // +0x9c (the y of the front point
+                                                 // is never stored)
+}
+
+// 0x4118f0 TrafficCar__pushInstance (ECX = car): per-frame advance plus the
+// instance pose send.
+void car_push_instance(Graph &g, Car &car)
+{
+    if (!car.path || !car.live) return;          // +0xc, +0xdc
+    const float t = g.sim_time;                  // +0x84
+    if (!(car.e8 < t)) return;                   // +0xe8
+    car.e8 = t;                                  // dt is only read by the tail below
+    // shortcut: first-instance init 0x411975..0x411a53 (getInfo 0x47c640 codes
+    // 0x40/0x46/0x41 -> +0x18/+0x1c/+0x14/+0x20/+0x28/+0x120) needs Game__getInfo on
+    // a car instance; src has none, and the exe skips the block when a getInfo fails.
+    car_advance(g, car);                         // 0x4102d0
+    if (car.inst_id == 0) return;                // 0x411c49
+    // shortcut: instance pose tail 0x411c4f..0x411ef6 (path y 0x40da20, Mat34
+    // 0x567250, euler 0x569970, 0x56a000, typed vf7 0x4eb3f0) - SERVICE MISSING:
+    // src has no traffic_car typed object, so nothing observes the push.
+}
+
 // 0x40f350 TrafficCar__liveStep: a live car stays listed while its current lane
 // is live; the cross-claim branches (idx >= 0) have no src state.
 bool car_live_step(Graph &g, Car &car)
 {
     if (!car.live) {              // +0xdc
-        // shortcut: 0x4118f0 pushInstance -> 0x4102d0 advance not ported
-        // (notes/37 §4); they are the only callers of 0x4107c0 on this path.
+        car_push_instance(g, car);    // 0x4118f0 -> 0x4102d0
         return false;
     }
     // shortcut: cross owners (idx >= 0) are not representable in src until
@@ -1118,8 +1241,7 @@ bool car_live_step(Graph &g, Car &car)
         car.live = 0;
         if (car.k128) car.k128 = 0;
     }
-    // shortcut: 0x4118f0 pushInstance -> 0x4102d0 advance not ported
-    // (notes/37 §4); they are the only callers of 0x4107c0 on this path.
+    car_push_instance(g, car);    // 0x4118f0 -> 0x4102d0
     return true;
 }
 
