@@ -1,8 +1,8 @@
 ---
 id: 234
-status: todo
-branch:
-review:
+status: merged
+branch: card/234
+review: deepseek-pass  # FAIL review fixes applied by orchestrator, not re-reviewed
 depends: [235]   # both edit struct Car in traffic.h; 235 changes the next-ref fields
 ---
 # traffic: per-car pushInstance + advance (lane motion)
