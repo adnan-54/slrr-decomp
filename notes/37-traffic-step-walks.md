@@ -192,6 +192,10 @@ last. Every slice changes the rand stream only once 4 is in.
 ## 5. Cards
 - 232 Cross eq/light steps + claim/blocked + Graph::step eq/light walks.
 - 233 TrafficCar__liveStep (lane-owner subset) + Graph::step live-car walk.
+- 237 step 3 obstacle scan (0x40eff0, three passes, obstacle list node/helpers).
+- 238 step 4 decision + startLaneChange 0x40fde0 + lane vf5 0x40fe50 (notes/39).
+- 239 steps 7/8 lane-change completion + target-lane registration + car_release unlink (notes/39).
+- 240 Graph::step heap loop (0x40fcf0 timed event, 0x41a810 pop) and T+0xc8 event-1 drain.
 Not carded: the timed-event pop 0x40fcf0 (needs 0x4107c0), the T+0xc8 drain (producer in 0x4107c0),
 the pseudo-car prologue (parkInstance not ported), 0x4118f0/0x4102d0/0x4107c0.
 **Numbers:** in today's vmboot no lane goes live (§0), so both cards are dead code there and race /
