@@ -1,8 +1,8 @@
 ---
 id: 240
-status: implemented
+status: merged
 branch: card/240
-review:
+review: deepseek-pass
 depends: []
 ---
 # traffic: Graph::step — lane event heap loop (ctLane__timedEvent + heap pop) and the event-1 drain
