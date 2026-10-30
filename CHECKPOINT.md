@@ -63,6 +63,34 @@ In progress: nothing unmerged (cards 232/233 merged: all four `Graph::step` walk
 Known open spots: Resource nodes are never freed after destroy (side tables keyed by Resource*), ids not recycled (0x5173e0); render typed data collapsed onto Runtime::Resource (text_*, bones, camera_*, fog_*: INVENTED mapping); physics: mode 6->7 conversion still after the loop (exe: inside, via 0x4ffd20 when 0x4fc610 fires), contact list rebuilt per sub-iteration (exe keeps creation order); audio: pan/doppler not ported (INVENTED), bus 2D flag and per-sound mindist/maxdist not wired; Chassis subsystem natives (mass/CM/OSD/SFX/force update) and Part getLogo/getMass/flap/install_OK stay explicit stubs; 4 Axis part refs ship only as `scripts/src/*.java`: the exe compiles them at load (0x51fcc0 -> 0x55aca0 -> 0x55bec0 -> JVM::compileSource 0x5598f0: recompile when the .class is missing, mtime differs from the source, or the header is not TUFA v4 build 0x11ae1/0x24f9d); src compiler exists but is not yet hooked into class load; 237 native stubs; CMaterial partial classes/font atlas; VM `>>>`; engine/service startup (GameType, type registry, streaming); no way to run PE32 here (no wine32). Audio service-sort tie order is deterministic but not qsort-identical; DS8/DirectShow runtime untested (hooks only). `make -C src clean check` raced under -j (ar saw classfile.o missing; recurred 2026-10-30); sequenced `make clean && make check` is green - use it.
 
 ## Next-steps queue (in order)
+0A. **2026-10-30, DeepSeek-only round 2: cards 241 + 243 merged; lanes are LIVE in `--city`.**
+    - Card 241 (traffic.cpp/.h): lane-end move `0x40e460` (cross branch = documented
+      SERVICE MISSING false stub), ref set `0x40f950`, lane vf2 `0x411f00`, `0x40f5e0`
+      setLive extracted out of `lane_attach`; wired into both callers (`0x40fcf0`
+      0x40fd8c, `0x40f4e0` 0x40f5c3). `Lane::k9c` is now a **float** (read with f32).
+    - Card 243 (runtime.cpp/.h + vmboot.cpp): INVENTED harness `Runtime::touch_road_nodes`
+      touches every resident `native road` map object (stands in for the exe's camera LOD
+      keep-alive `0x45f180 -> 0x461980 -> 0x4d44d0 -> lane vf7 0x40eed0 -> 0x40f6d0`;
+      the effect path is exe, only the trigger is invented). `--city` now reports
+      **755 road nodes touched, 1572/1572 lanes live**, 65 checks (was 63); `--race` 168
+      at 659.414 s, `--selfcheck` 174 — no existing check moved.
+    So every per-car traffic path from cards 234-241 now executes under `--city`.
+    Still missing for behaviour: at a lane end the car hits the unported cross routing, so
+    it now stops at the lane end instead of being handed to a cross.
+0B. **Round-3 plan, the cross chain (cards 242 + 244, both traced, both `draft`).**
+    - `tasks/242-traffic-cross-routing-dispatch.md`: `0x40e400` + `0x40e3a0` + the three
+      route vfs (`0x4157a0` >0, `0x4159d0` <0, `0x40e590` ==0) + the INVENTED next-ref tag.
+    - `tasks/244-traffic-cross-vf3-syncinstance-segment-offset.md`: cross vf3 `0x40cb60`
+      (cross car list + exit-lane hand-over), geometry `0x413660` (dir>=0 Segment offset),
+      `0x410680` syncInstance skeleton.
+    Order and caveats: 242 must land first (it defines the ref tag) but alone it changes
+    nothing right — with lanes live every cross has `live_refs > 0`, so the common route is
+    `0x4157a0`, which hands the car to a **cross path** and needs 244's geometry; and
+    `0x4157a0`'s success path also calls `claimPath 0x415b40` (**not traced yet**) and
+    `0x40f900`. 244's syncInstance needs untraced services (`0x4ec210` reparent,
+    `0x417080` park, `0x488080` link, `0x41a500` queueSpawn, counter globals
+    `0x5e64f4/f8/fc`). Plan: trace `0x415b40` next (one function), then implement 242+244
+    as one pair, keeping every missing service as a `SERVICE MISSING` comment.
 0z. notes/37 §4/§5: per-car motion complete in cards 234-240 (all `TrafficCar__step` steps, `pushInstance`/`advance`, `Traffic__step` heap loop + event-1 drain; each DeepSeek review PASS, race 659.414 s unchanged). Next: make a lane go live so the code runs - the real blocker is mounting city2 (0x519940, notes/38) or the INVENTED fixture (player car on a `native road` node inside z <= 328). Then: trace 0x40e460 lane-end move (card 240 shortcut), give the traffic module an event sink for event code 1, and eq/light/live-car walks 0x415c40/0x415d60/0x40f350 are ported already (232/233).
 0y. notes/38: `--city` drive probe. Player car wakes (0x498599) at posGarage[0] (-278.5, 9.8, 1033.0) and free-falls; the city ground soup built from `maps.city:1` has bounds z <= 328.5, and `city.rpk` depends on `maps\city2.rpk` (unmounted). The event-phase walk touches 15 map records but no `native road` one, so 0 lanes live. Next RE: how the exe mounts `city2` / streams the far half (0x519940, notes/19), then whether GroundRef(map) spans both. Cheapest harness experiment meanwhile: place the player car on a `native road` node inside z <= 328 and hold throttle to make lanes go live (INVENTED fixture). Next cards after that: per-car motion slice (0x4118f0 -> 0x4102d0 -> 0x4107c0 §4.1+5+6 of notes/37).
 0u. notes/34: wear/damage build-up traced (damageRoll 0x4afb50 is deterministic wear+=rate*x; overheat hits the radiator; Part__syncWear 0x497520 writes car wear back into parts). Card-223 open items resolved: speed=999 = src bug (exe measure starts 1610, CRT inits 0x409af0/0x409a90) -> card 224; rpm= empty is correct (3/70 cfgs have osd_rpm); race 655.1->651.6 s = engine wear records (kind 8, P+0xb8 up to 0.246) lowering torque_health, verified by skipping kind 8. Cards 224 (measure + createCar wear rates), 225 (engine heat/wear), 226 (trans/clutch/brake wear + bearing W+0xf0 never copied into the sim), 227 (§8 speed/odometers/general wear/Part__syncWear/mileage) todo, in order. Not carded: tyre impact wear/flat/suspension break (needs S+0xe4/S+0xfc in the sim spring), nitro in the sim.
