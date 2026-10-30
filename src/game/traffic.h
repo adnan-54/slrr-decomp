@@ -12,6 +12,9 @@ namespace traffic {
 // End of the live-car list. INVENTED encoding: the exe's sentinel is the Traffic
 // object itself (T+0x88 = T, 0x416000), src uses a reserved car handle.
 constexpr uint32_t kLiveEnd = 0xffffffffu;
+// "No lane" for Car::ob_owner. INVENTED: the exe uses a null pointer, and lane
+// index 0 is valid.
+constexpr uint32_t kNoneLane = 0xffffffffu;
 
 struct Segment {                // 0x414d50, 0x54 bytes in the exe
     float p0[3], p1[3], m0[3], m1[3];
@@ -63,6 +66,10 @@ struct Lane {
     uint32_t node88[4] = {}; float k98 = 0; uint32_t k9c = 0, ka0 = 0;  // +0x98 speed factor
     Path path;                                            // +0x3c
     std::vector<uint32_t> cars;                           // +0x08/+0x0c list; INVENTED: exe intrusive prev/next replaced by car indices, ascending pos
+    // +0x04 head of the obstacle list (0x40eff0 producer, 0x4107c0 step 3 passes);
+    // a separate list from +0x08. INVENTED: exe intrusive node links replaced by
+    // car indices, head = front (step 8 inserts at the head).
+    std::vector<uint32_t> obstacles;
     uint32_t active_next = 0;                             // +0xa4 (0 = not listed, kLiveEnd = list end)
     bool live = false;                                    // +0xa8
     uint32_t pending_events = 0;                          // +0xac (0 = no timed event scheduled)
@@ -85,6 +92,9 @@ struct Car {                    // 0x164 bytes in the exe
     uint32_t serial = 0;        // +0x00 (++g_car_serial; also the free-list link)
     uint32_t prev = 0, next = 0;  // +0x04, +0x08 (exe intrusive lane links; unused here)
     uint32_t lane = 0;          // +0x0c (INVENTED: lane index, pointer in the exe)
+    // event-1 list next (0x40eff0 head insert): 0 = not listed, kLiveEnd = list
+    // end (a pointer to the Traffic object in the exe). The drain is not ported.
+    uint32_t event_next = 0;    // +0x10
     float k14 = 0, k18 = 0, k1c = 0, k20 = 0, k24 = 0, k28 = 0;  // +0x14..+0x28
     float max_speed = 0;        // +0x2c
     float accel = 0;            // +0x30
@@ -114,6 +124,16 @@ struct Car {                    // 0x164 bytes in the exe
     uint8_t live = 0;           // +0xdc
     uint8_t notify = 0;         // +0xdd
     float e0 = 0, e4 = 0, e8 = 0;  // +0xe0..+0xe8 step times
+    // Obstacle list node (the exe's intrusive node starts at car+0xec; notes/37 §4).
+    uint32_t ob_prev = 0;          // +0xec node prev; unused: Lane::obstacles is a vector (INVENTED)
+    uint32_t ob_next = 0;          // +0xf0 node next; unused: Lane::obstacles is a vector (INVENTED)
+    uint32_t ob_owner = kNoneLane; // +0xf8 lane index whose obstacle list holds the node
+    float kfc = 0.0f;              // +0xfc lane-change projection distance (-1 = none)
+    float k100 = 0.0f;             // +0x100 speed captured at obstacle registration (0x4117b6)
+    uint8_t k104 = 0;              // +0x104 obstacle flag (a byte; 0x410c63 CMP byte); UNRESOLVED: writer not traced
+    float k108[3] = {};            // +0x108..+0x110 obstacle body position; UNRESOLVED writer
+    float k114[3] = {};            // +0x114..+0x11c obstacle body velocity; UNRESOLVED writer
+    float k120 = 0.0f;             // +0x120 obstacle radius (= k20 written at registration, 0x4117fb)
     uint32_t k124 = 0, k128 = 0;   // +0x124, +0x128
     float k12c = 0.0f;             // +0x12c lane-change rate
     uint32_t k130 = 0, k134 = 0, inst_id = 0, k13c = 0;  // +0x130 instance link (id +0x138)
@@ -151,6 +171,9 @@ struct Graph {
     uint32_t active_lanes = kLiveEnd;
     uint32_t active_eq = kLiveEnd;
     uint32_t active_light = kLiveEnd;
+    // +0xc8 head of the event-1 list (0x40eff0 head insert via car+0x10). INVENTED:
+    // 1-based car index, kLiveEnd = end. The Traffic__step drain is not ported.
+    uint32_t event1 = kLiveEnd;
     int32_t live_lanes = 0;                     // global 0x5e6500; INVENTED: per graph
     // +0x70 car pool. INVENTED: deque gives stable addresses, the free list keeps
     // indices, and the serial counter is per graph (the exe's is process-wide).

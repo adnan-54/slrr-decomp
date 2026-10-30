@@ -1,7 +1,7 @@
 ---
 id: 237
-status: todo
-branch:
+status: implemented
+branch: card/237
 depends: []
 ---
 # traffic: TrafficCar__step step-3 obstacle scan + obstacle-entry list node
@@ -48,7 +48,7 @@ ob_prev/ob_next +0xec/+0xf0  obstacle-list links (node+0 = prev, node+4 = next)
 ob_owner     +0xf8           lane whose obstacle list holds this node
 kfc          +0xfc           lane-change projection distance (-1 = none)
 k100         +0x100          speed captured at obstacle registration
-k104         +0x104          obstacle flag (UNRESOLVED writer)
+k104         +0x104 (u8)     obstacle flag, tested as a byte (0x410c63 CMP byte; UNRESOLVED writer)
 k108[3]      +0x108..0x110   obstacle body position (UNRESOLVED writer)
 k114[3]      +0x114..0x11c   obstacle body velocity (UNRESOLVED writer)
 k120         +0x120          obstacle radius (= k20 written at registration)
@@ -64,7 +64,7 @@ of car indices, `INVENTED` (`Lane::cars` precedent).
 ```
 dx = car.front_x - car.world[0];  dz = car.front_z - car.world[2];   // +0x98-0x8c, +0x9c-0x94
 l  = sqrt(dx*dx + dz*dz);                                            // y dir is 0 (0x90-0x90)
-if (l != 0.0f) { dx /= l; dz /= l; }
+if (l != 0.0f) { inv = 1.0f / l; dx *= inv; dz *= inv; }              // 0x40f057 DIVSS, MULSS after
 back = -car.speed;                                                   // 0x40f04c -[+0xb0]
 rx = o.k108[0] - car.world[0]; ry = o.k108[1] - car.world[1]; rz = o.k108[2] - car.world[2];
 vx = o.k114[0] - dx*back;      vy = o.k114[1];      vz = o.k114[2] - dz*back;
@@ -126,8 +126,11 @@ for (pass = 0; pass < 3; pass++) {
             if (free <= d) continue;
             float closing = -(dir[0]*o.k114[0] + dir[1]*o.k114[1] + dir[2]*o.k114[2]);
             float brake_d = d;
-            if (car.speed <= 1.0f || 1e-5f > d || closing < 0.0f ||
-                (closing*closing - car.speed*car.speed) / (d + d) >= -car.k38) {
+            // asm 0x410e96 / 0x410ee8: leader on speed <= 1; otherwise the bd
+            // block when d < 1e-5, closing < 0 or ratio < -k38.
+            if (car.speed <= 1.0f ||
+                (d >= 1e-5f && closing >= 0.0f &&
+                 (closing*closing - car.speed*car.speed) / (d + d) >= -car.k38)) {
                 leader_speed = fmaxf(closing, 0.0f);
             } else {
                 float bd = (car.speed <= car.k38*dt)
@@ -136,9 +139,8 @@ for (pass = 0; pass < 3; pass++) {
                 float v2 = car.speed - car.k38*dt;
                 float bd_raw = bd;
                 brake_d = fmaxf(bd, d);
-                rear += d;
                 leader_speed = fmaxf(v2, 0.0f);
-                if (rear <= bd_raw && closing <= v2)
+                if (rear + d <= bd_raw && closing <= v2)   // 0x410c3f addss
                     car_check_obstacle(g, ci, o);      // 0x40eff0, unconditional for free bodies
             }
             free = fminf(free, brake_d);
@@ -150,8 +152,11 @@ for (pass = 0; pass < 3; pass++) {
             if (free <= d) continue;               // 0x410b82 JBE
             float os = o.k100;                     // entry +0x14
             float brake_d = d;
-            if (car.speed <= 1.0f || 1e-5f > d || os < 0.0f ||
-                (os*os - car.speed*car.speed) / (d + d) >= -car.k38) {
+            // asm 0x410b9d JBE (speed <= 1 -> leader), 0x410bae/0x410bb8 JA
+            // (d < 1e-5 | os < 0 -> bd), 0x410bdf JBE (ratio >= -k38 -> leader).
+            if (car.speed <= 1.0f ||
+                (d >= 1e-5f && os >= 0.0f &&
+                 (os*os - car.speed*car.speed) / (d + d) >= -car.k38)) {
                 leader_speed = fmaxf(os, 0.0f);
             } else {
                 float bd = (car.speed <= car.k38*dt)
@@ -160,13 +165,12 @@ for (pass = 0; pass < 3; pass++) {
                 float v2 = car.speed - car.k38*dt;
                 float bd_raw = bd;
                 brake_d = fmaxf(bd, d);
-                rear += d;
                 leader_speed = fmaxf(v2, 0.0f);
-                if (rear <= bd_raw && os <= v2) {
-                    if (o.k104) {                  // 0x410c63 flag: 0 -> no event, use rear
+                if (rear + d <= bd_raw && os <= v2) {      // 0x410c3f addss
+                    if (o.k104) {                  // 0x410c63 CMP byte: 0 -> no event
                         car_check_obstacle(g, ci, o);
                     } else {
-                        brake_d = rear;
+                        brake_d = rear;            // XMM7 at 0x410c7b: before +d
                         leader_speed = fmaxf(os, 0.0f);
                     }
                 }
@@ -180,6 +184,11 @@ free = fminf(fmaxf(free, 0.0f), d0);               // 0x410fc8..0x410fdd, uncond
 Notes: the `2.0`/`1.0` are the exe's literal comparisons (`radius+1 < dist²` in
 0x40eff0, `|lat|-radius < 2` in the scan); keep them as is, no dimensional cleanup.
 Comparison direction is exactly `<=`/`<` as marked (the exe uses `JBE`/`JA`).
+The bd block is entered when `d < 1e-5` or the obstacle speed is negative or the
+ratio is below `-k38`; `speed <= 1` always takes the leader path. `rear` is only
+mutated for the event compare (`rear + d`, 0x410c3f); the k104 == 0 fallback frees
+the pre-add `rear` (XMM7 at 0x410c7b). Review 2026-10-30 fixed inverted branch
+selection and the pre-add rear in the card and src.
 
 ### 0x4107c0 inlined obstacle-list insert/remove (step 8, 0x411801..0x411859 / 0x411861..0x4118b0)
 No separate callee (procedure_callees of 0x4107c0 lists no list helper; the code is
@@ -251,7 +260,8 @@ outside the `k128 == 0` branch. Card 238 must also depend on this card (its
     (`// 0x41180d..0x4118b0, inlined in TrafficCar__step`), `obstacle_link`
     (`// 0x411801..0x411859, inlined in TrafficCar__step`).
   - `car_step`: replace the "steps 3/4 ... later cards" shortcut comment with a call
-    to `car_scan_obstacles(g, ci, dt, d0, brake, free, leader_speed)`, then the clamp,
+    to `car_scan_obstacles(g, ci, dt, brake, free, leader_speed)` (no `d0`: only the
+    clamp below reads it), then the clamp,
     then `// card 238: lane-change decision 0x410fc1..0x411105`. Keep the step-2
     target-lane branch shortcut (k124 stays 0 in src).
 
