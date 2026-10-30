@@ -1,81 +1,96 @@
 ---
 name: re-orchestrate
-description: Orchestrate the SLRR reverse-engineering rebuild with sub-agents, splitting work between Claude (RE, task cards, review) and DeepSeek Flash (implementing cards). Use at the start of every session in this repo, and whenever the user says "continue", "next round", "spawn agents", "run deepseek", or "review the deepseek work".
+description: Orchestrate the SLRR reverse-engineering rebuild with sub-agents (.claude/agents/), splitting work between Claude (RE, task cards, review) and DeepSeek V4 Flash (implementing cards) in one session through the model router. Also a DeepSeek-only mode for when Claude limits are hit. Use at the start of every session in this repo, and whenever the user says "continue", "next round", "spawn agents", "run deepseek", "review the deepseek work", or "deepseek only".
 ---
 
 # RE orchestration: Claude for accuracy, DeepSeek Flash for volume
 
 The main session is the **orchestrator**. It does not do bulk work itself; it reads
 state, picks work, spawns sub-agents, checks their results against the exe, merges,
-and updates `CHECKPOINT.md`. Follow `CLAUDE.md` (Tests rule!) in every agent prompt.
+and updates `CHECKPOINT.md`. Every agent's rules live in its file in `.claude/agents/`
+(CLAUDE.md Tests rule included); the orchestrator only passes the varying input.
 
-## 0. Detect the mode (one session = one provider)
+## 0. Mode (both run in one session)
 
-Claude Code talks to one API endpoint per session, so Claude and DeepSeek cannot run
-side by side. Check which one this session is:
+Claude Code talks to the model router (`ANTHROPIC_BASE_URL`, user settings), which serves
+Claude models and `router-claude/deepseek-v4-flash[1m]`. Agents pin their own model, so one
+session mixes Claude and Flash. No separate DeepSeek settings file.
 
-```bash
-echo "${ANTHROPIC_BASE_URL:-anthropic}"   # api.deepseek.com => DeepSeek mode
-```
+- **Mixed (default)**: main session on Claude (opus). Agents per the §2 table.
+- **DeepSeek-only** (Claude limits hit; user says "deepseek only" or `/re-orchestrate deepseek-only`):
+  switch the main session with `/model` → "DeepSeek V4 Flash". Spawn only `card-implementer`,
+  `ds-tracer` and `ds-reviewer` (never pass `model:` to the Agent tool; never spawn the Claude agents).
+  Follow §2c.
 
-- **Claude mode** (Claude plan, flat cost up to usage limits): RE, task cards, review, merge.
-- **DeepSeek mode** (`claude --settings .claude/settings-deepseek.json`, pay per token): only implement queued cards.
-
-The provider changes per *phase*, so a round is:
-`Claude: RE + cards` → `DeepSeek: implement cards` → `Claude: review + merge + next cards`.
-End every session by telling the user which mode the next session should use and why.
-
-## 1. Start of session (both modes)
+## 1. Start of session
 
 1. Read `CHECKPOINT.md` (state, next steps) and `tasks/` (card statuses).
-2. List unmerged agent branches: `git branch --list 'card/*' 'worktree-agent-*'`.
-3. Decide the work for this session from the mode table below; say it in one line.
+2. List unmerged branches and worktrees: `git branch --list 'card/*' 'worktree-agent-*'`, `git worktree list`.
+3. Mixed mode: `grep -l '^review: deepseek' tasks/*.md` lists cards merged in DeepSeek-only mode.
+   Re-review them first (`card-reviewer`; `model: opus` for core logic), then set `review: claude`.
+4. Decide the work for this session; say it in one line.
 
-## 2. Roles, models, effort
+## 2. Roles → agents (mixed mode)
 
-| Work | Mode | Agent model | Effort | Notes |
-|---|---|---|---|---|
-| Trace exe functions, write `notes/`, decide formulas | Claude | opus | medium | rea/Ghidra here only; huge decompile output is free on the plan |
-| Split a traced subsystem into task cards (`tasks/`) | Claude (orchestrator or opus agent) | opus | medium | paste the needed pseudocode into the card |
-| Implement a card | DeepSeek | deepseek-v4-flash (any alias maps to it) | high | one card per agent, see §3b for cache rules |
-| Review a DeepSeek branch vs exe, routine | Claude | sonnet | medium | sample-decompile the cited addresses |
-| Review hard/core logic (physics, VM, vehicle) | Claude | opus | medium | decompile every changed function |
-| Small fix found in review (< ~30 lines) | Claude | orchestrator or sonnet | medium | don't spend a DeepSeek round on it |
-| Mechanical side jobs (grep/list/rename, apply names.json) | Claude | haiku | low | |
-| Large rework found in review | → new card | — | — | goes to the next DeepSeek phase |
+| Work | Agent | Model / effort | Notes |
+|---|---|---|---|
+| Trace exe, write `notes/`, decide formulas, split into cards | `re-tracer` | opus / medium | rea here; orchestrator commits notes + cards |
+| Implement a card | `card-implementer` | Flash / high | own worktree, commits `card/<id>`; input = card path only |
+| Review a branch vs exe, routine | `card-reviewer` | sonnet / medium | read-only, no build; samples cited addresses |
+| Review core logic (physics, VM, vehicle) | `card-reviewer` + `model: opus` | opus / medium | decompiles every cited address |
+| Small fix from review (< ~30 lines) | `card-fixer` (`model: opus` after 2 failed fixes) | sonnet / medium | commits on the card branch |
+| Mechanical side jobs (grep/list/rename, names.json) | `mech-helper` | haiku / low | |
+| Large rework found in review | → new card | — | back through `card-implementer` |
 
-Model ladder (summary): **cards = opus 5.5 medium; implementation = DeepSeek; verification = sonnet,
-re-verify with opus only if it finds issues; fix = DeepSeek or sonnet, opus only after 2 failed fixes.**
+Ladder: **cards = opus medium; implementation = Flash; verification = sonnet, re-verify with opus
+only if it finds issues; fix = sonnet, opus only after 2 failed fixes.** Opus never above `medium`.
+Never use DeepSeek Pro. Never let Flash agents explore the exe open-endedly with rea.
+
+## 2a. Round flow (parallel)
+
+1. Spawn one `card-implementer` per independent card at once (`run_in_background`); cards that
+   touch the same file go one after another. Meanwhile run `re-tracer` for the next cards.
+2. Per finished card, at the same time: `tools/card-gate.sh check <id>` (Bash, background) and
+   the reviewer (`card-reviewer`, or `ds-reviewer` in DeepSeek-only mode).
+3. Both pass → `tools/card-gate.sh merge <id>` (main checkout, serialized by a lock), set
+   `status: merged` and `review: claude|deepseek-pass` in the card, commit, delete `card/<id>`.
+   FAIL → `card-fixer` (mixed) or a follow-up card; red check → read `$LOGDIR/card-check-<id>.txt`.
+4. Commit notes/cards on main between merges. Commit only from the main checkout.
 
 ## 2b. Agent communication rules (keep the orchestrator context small)
-- **Send paths, not summaries.** Tell an agent which file to read (card path, note path, branch name,
-  `CHECKPOINT.md`), never a paraphrase of its content: summaries drift and cost orchestrator tokens.
-- **Agents return small reports** (<= ~15 lines): e.g. `PASS/FAIL` + a short problem list, or
-  branch, commit, what changed, `INVENTED:` items, doubts. Put long detail in the card/notes file
-  and return its path. Put this limit in every agent prompt.
+- **Send paths, not summaries.** Pass the card path, note path or branch name, never a paraphrase:
+  summaries drift and cost orchestrator tokens.
+- **Agents return small reports** (<= ~15 lines; each agent file says so). Long detail goes in the
+  card/notes file.
 
-Claude effort rules (current models): **Opus 5.5 never above `medium`** (its default;
-higher costs plan usage without paying off here). Sonnet 5.5 at `medium` (its levels
-were recalibrated; `medium` is the recommended start for agentic coding). Haiku 5.5 at `low`.
-Never use DeepSeek Pro (cost, not worth it). Never let DeepSeek agents explore the
-exe open-endedly with rea: that is where tokens go and where they invent behaviour.
+## 2c. DeepSeek-only ladder (Claude limits hit)
 
-Claude-mode agents that edit code: spawn with `isolation: "worktree"` and tell them to run
-`ln -s /root/slrr-re/bin bin` first (bin/ is gitignored, never commit it), to commit
-on their branch, and **not push**. Run independent cards in parallel (different files);
-cards that touch the same file run one after another.
+Flash is less exact, so every step is bounded and leaves a trail for Claude.
+
+| Work | How |
+|---|---|
+| Pick next targets | orchestrator reads the CHECKPOINT next-steps queue + notes; rea only for bounded lookups (callees/xrefs of a named address) |
+| Trace + card | `ds-tracer` with `<id>: <addr Class.method(sig)>; ...` → `status: draft` card. Promote to `todo` only without `UNRESOLVED` and within §3 limits; else split or skip |
+| Implement | `card-implementer`, §2a flow |
+| Review | `ds-reviewer` (decompiles every cited address) → `review: deepseek-pass/fail` |
+| Fix | FAIL → follow-up card; 2 failed fixes → `status: blocked`, left for Claude |
+| Mechanical jobs, notes/, CHECKPOINT | orchestrator inline |
+
+- Core logic is allowed but always gets the Claude re-review (§1 step 3).
+- Cost: rea decompile output is the big token sink. Keep a round to ≤ ~5 cards, then end the session.
+- CHECKPOINT "State": name the card range done in DeepSeek-only mode.
 
 ## 3. Task cards (`tasks/NNN-slug.md`) — sized for Flash's small context
 
-Claude writes cards so a Flash agent can finish **without rea and without reading
-large files**. A card must fit: ≤ ~5 exe functions, ≤ 3 source files to touch, and
-all exe evidence pasted in. If a card needs more, split it.
+Cards must let a Flash agent finish **without rea and without reading large files**:
+≤ ~5 exe functions, ≤ 3 source files to touch, all exe evidence pasted in. Split larger work.
 
 ```markdown
 ---
 id: 042
-status: todo            # todo | implemented (branch) | merged | rejected
+status: todo            # draft | todo | implemented | merged | blocked | rejected
 branch:                 # filled by the implementing agent
+review:                 # claude | deepseek-pass | deepseek-fail (set at merge)
 depends: [041]
 ---
 # <subsystem>: <what>
@@ -93,57 +108,44 @@ One paragraph: what behaviour to port, which natives/functions become non-stubs.
 
 ## Done when
 - each ported function has a `// 0xADDR Name` comment; untraced logic is `INVENTED:`
-- `make -C src clean check` green; no new unit tests or hand-made expected values
+- `make -C src check` green; no new unit tests or hand-made expected values
 - card frontmatter: status implemented, branch name
 ```
 
-## 3b. DeepSeek mode: maximize cache hits (misses cost much more)
+## 3b. DeepSeek cache hits (misses cost much more)
 
-DeepSeek caches by exact prompt prefix: every byte that differs early in a request
-turns everything after it into a miss. So:
+DeepSeek caches by exact prompt prefix.
+- **The frozen prompt is the agent file.** Don't edit `card-implementer.md`, `ds-tracer.md` or
+  `ds-reviewer.md` mid-session. The Agent prompt is only the varying input (card path, or id + addresses):
+  no dates, counts or round commentary.
+- **Shared reads first, card last**: CLAUDE.md, then the card, then the listed files.
+- **Parallel worktrees vary the working directory** in each agent's system prompt, so the cache
+  hit rate drops a bit. Accepted for speed; the large tool/system prefix before it still hits.
+- **Keep agents short**: one small card per agent so context never gets compacted.
+- **Check the hit rate** in the DeepSeek usage dashboard; if low, look for a varying prefix first.
 
-- **One frozen agent prompt for all cards.** Use the template below verbatim; the
-  only varying text is the card path on the last line. No dates, counts, branch
-  names, or "this round we…" commentary in it.
-- **Shared reads first, card last.** The agent reads `CLAUDE.md` first, then its card,
-  then only the files the card lists, in the listed order.
-- **Run cards one after another in the main checkout, not in parallel worktrees.** The
-  working directory is likely part of each agent's system prompt, so a different
-  worktree path per agent breaks the shared prefix. Each agent creates `card/NNN` from
-  `main`, commits there, and switches back to `main` when done. (Parallel worktrees
-  only if speed matters more than cost.)
-- **Keep agents short.** One small card per agent so context never gets compacted
-  (compaction rewrites history = full miss). If a card is too large, stop and split it.
-- **Don't change model, effort or settings mid-session**, and keep the DeepSeek
-  orchestrator session itself short: read the queue, dispatch, report, end.
-- **Check the hit rate** after a phase in the DeepSeek usage dashboard (cache hit vs
-  miss tokens). If it is low, look for a varying prefix before anything else.
+## 3c. Build less, wait less
 
-Frozen card-agent prompt (fill in only `<card>`):
+`make` runs `-j$(nproc)` by default and every check line is its own target, so they run side by side.
+- Never `make clean` per step: `-MMD` deps make incremental builds safe. `make -C src clean check`
+  only once at session end (§5).
+- `make -C src check-fast` = every check except `--race`/`--city`: agents use it while iterating,
+  `make -C src check` once before commit.
+- `tools/card-gate.sh check` re-runs the check in the card's own worktree (incremental, already built).
+- Run long checks with `run_in_background` and do the next review/trace/card meanwhile.
 
-```text
-You implement one task card in this repo. Read CLAUDE.md, then the card, then only
-the files the card lists, in order. Do not use rea/Ghidra tools; all exe evidence is
-in the card. Steps: git switch -c card/<id> main; implement; make -C src clean check;
-set the card's status to implemented and branch to card/<id>; commit (message ends
-with "Co-Authored-By: DeepSeek V4 Flash <noreply@deepseek.com>"); git switch main. Do not push.
-Report (max 15 lines): branch, commit, what you changed, anything marked INVENTED, doubts.
-Card: <card>
-```
+## 4. Review gate
 
-## 4. Review gate (Claude mode)
-
-For each branch with `status: implemented`:
-1. `git diff main...<branch> --stat`, then read the diff.
-2. Decompile the cited addresses (all of them for core logic, a sample otherwise)
-   and compare branch by branch: constants, conditions, order of operations, edge cases.
-3. Grep the diff for uncited logic that is not marked `INVENTED:` and for any new
-   test code (reject it, per `CLAUDE.md`).
-4. Merge (`git merge --no-edit`), run `make -C src clean check`, set `status: merged`,
-   delete the branch/worktree. Otherwise fix small issues yourself or write a follow-up card.
-5. Report to the user: what merged, what was wrong, and corrections to earlier claims.
+Reviewers never build: `card-gate.sh check` is the build gate. For each `implemented` card:
+1. Reviewer agent reads `git diff main...card/<id> -- src` and decompiles the cited addresses
+   (all for core logic, a sample otherwise); compares constants, conditions, order, edge cases.
+2. It flags uncited logic not marked `INVENTED:` and any new test code (reject it, per `CLAUDE.md`).
+3. PASS + green check → `card-gate.sh merge <id>`. A non-fast-forward merge re-checks main itself.
+4. Report to the user: what merged, what was wrong, corrections to earlier claims.
 
 ## 5. End of session
 
+- Run `make -C src clean check` once (full gate).
+- `git worktree prune`; remove leftover `card/*` worktrees of merged cards.
 - Update `CHECKPOINT.md` "State" and "Known open spots"; commit; push only if the user asked.
-- Tell the user: next mode (Claude or DeepSeek), which cards are queued, rough size.
+- Tell the user: which cards are queued, rough size, and whether DeepSeek-only mode was used.

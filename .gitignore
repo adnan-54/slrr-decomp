@@ -16,5 +16,6 @@ obj/
 # local claude config (holds api keys)
 .claude/*
 !.claude/skills/
+!.claude/agents/
 
 __pycache__/
