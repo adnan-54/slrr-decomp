@@ -3,7 +3,7 @@ id: 238
 status: todo
 branch:
 review:
-depends: []
+depends: [237]
 ---
 # traffic: TrafficCar lane-change decision, startLaneChange and lane vf5 side-lane picker
 
@@ -15,13 +15,18 @@ side-lane picker 0x40fe50 it calls, the decision conditions + random branch with
 `msvc_rand` (0x571110), `powf` (0x571143, used as `powf(0.01f, dt)`), `path_project_strict`
 (0x414050), `path_pos_offset_at` (0x4133f0), `Graph::lane_by_node`.
 
-Partial-port state (do not "fix"): step 3 (obstacle scan 0x40eff0) and steps 7/8
-(0x4115f1..) remain unported, and the step-2 target-lane branch (`car+0x124`) stays a
-shortcut. Consequence: once this card sets `car.k128` the change never completes or
-inserts into the target lane until the steps 7/8 card lands; update the stale
-`// shortcut:` comments in `car_step` accordingly. The decision block also consumes the
-shared MSVC rand stream: every live car with `k128 == 0` and no next ref consumes one
-`rand()`, and vf5 consumes one more when both side lanes are valid.
+Card 237 (obstacle scan) lands first: it owns the unconditional clamp
+`free = min(max(free, 0), d0)` at 0x410fc8..0x410fdd (asm: `CMP [edi+0x128],0` at
+0x410fc1 sets the flags, the clamp runs, `JNZ 0x41110a` at 0x410fe2 uses those flags,
+so the clamp is outside the `k128 == 0` test). Do not repeat the clamp.
+
+Partial-port state (do not "fix"): steps 7/8 (0x4115f1..) remain unported, and the
+step-2 target-lane branch (`car+0x124`) stays a shortcut. Consequence: once this card
+sets `car.k128` the change never completes or inserts into the target lane until the
+steps 7/8 card lands; update the stale `// shortcut:` comments in `car_step`
+accordingly. The decision block also consumes the shared MSVC rand stream: every live
+car with `k128 == 0` and no next ref consumes one `rand()`, and vf5 consumes one more
+when both side lanes are valid.
 
 ## Exe evidence (cleaned pseudocode, renamed fields)
 Field map (all cited in src unless noted): `+0x14 k14`, `+0x20 k20`, `+0x24 k24`,
@@ -107,10 +112,11 @@ src port: `if (!car.path) p = {0,0,0}; else if (car.dir < 0) path_pos_offset_at(
 car.pos, car.lateral, p);` `// shortcut: cross ref dir >= 0 has no src Segment path; no
 src car is on a cross (same as 0x4107c0 step 1).` vf5 uses `p[0]`, `p[2]`.
 
-### 0x4107c0 decision slice (0x410fc1..0x411105), insert after step 2 and before step 5
+### 0x4107c0 decision slice (0x410fe2..0x411105), insert after card 237's clamp
+The clamp `free = min(max(free, 0.0f), d0)` (0x410fc8..0x410fdd) is card 237's and is
+unconditional; this slice starts at the `JNZ 0x41110a` on `car.k128 == 0`.
 ```
-if (car.k128 == 0) {                             // 0x410fc1 JNZ 0x41110a
-    free = min(max(free, 0.0f), d0);             // 0x410fc8..0x410fde
+if (car.k128 == 0) {                             // 0x410fe2 JNZ 0x41110a
     if (free < d0 * 0.9f                           // 0x59370c
         && leader_speed < car.speed               // 0x410ff5..0x411005
         && ((leader_speed*leader_speed
@@ -146,10 +152,10 @@ Constants (read from the exe): 0x593584=0.001f, 0x5935d0=0.01f, 0x5935d4=0.1f,
   - anonymous namespace near `car_step`: `lane_side_pick` (`// 0x40fe50 ctLane__vf5`,
     returns a side-lane node id or 0), `car_pos_offset` (`// 0x40dde0`),
     `car_start_lane_change` (`// 0x40fde0`).
-  - `car_step`: replace the step 3/4 shortcut comment with a step-3-only one and insert
-    the decision slice after the step-2 slot block / before the step-5 comment; keep the
-    step-2 `car.k124` target-branch shortcut (update its comment: k124 is now set by this
-    card, the branch waits for the steps 7/8 card).
+  - `car_step`: insert the decision slice after card 237's `car_scan_obstacles` call and
+    clamp, before the step-5 comment; keep the step-2 `car.k124` target-branch shortcut
+    (update its comment: k124 is now set by this card, the branch waits for the steps 7/8
+    card). Do not add a clamp; card 237 already did it.
   - use `msvc_rand()`, `powf`, `path_project_strict`, `path_pos_offset_at`,
     `Graph::lane_by_node`.
 - read only: `src/game/traffic.h` (`Car::k124/k128/k12c`, `Lane::node88/halted/path/k34`).
