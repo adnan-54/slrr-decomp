@@ -69,7 +69,9 @@ forms) and to `+0x108/+0x10c/+0x110/+0x114/+0x118/+0x11c` (MOVSS/MOVSD/MOVUPS fo
   (0x40eff0) is never filled by them. Card 237's `car_check_obstacle` must stay for
   fidelity but is unreachable on this data.
 - `+0x108..+0x11c` have **no writer at all** in the traffic code (`0x40c000-0x420000`);
-  only the unrelated spline 0x4124d0 and cross-object code hit those displacements.
+  the only absolute-displacement hits in that range belong to other objects (the spline
+  builder 0x4124d0 at +0x108, the Traffic-object reset 0x41b4d0, PaintDecal 0x420100),
+  never to a traffic car.
   => step 3's free-body branch reads zeros for traffic cars. It is only reachable via
   `+0xfc == -1`, and step 8 unlinks a car whose projection failed, so registered
   entries always carry a real distance. Keep the branch (fidelity), do not invent a
