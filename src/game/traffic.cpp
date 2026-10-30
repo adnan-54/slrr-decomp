@@ -941,7 +941,7 @@ void road_init(Graph &g, Road &road)
 void lane_init(Graph &g, Lane &l)
 {
     l.kc8 = 0.0f;
-    // shortcut: the car branch (0x4107c0 car step, 0x417050 timed event) is not
+    // shortcut: the car branch (0x4107c0 per car, 0x417050 timed event) is not
     // ported; the pool is empty at init.
     l.kc0 = g.sim_time;
     l.kcc = l.path.length;
@@ -1008,12 +1008,16 @@ float car_target_speed(const Graph &g, const Car &car)
     return f <= s ? s : f;
 }
 
-// 0x40d990 TrafficCar__timeToLaneEnd: 0 on a lane change, else the 2v braking
-// time to the stop offset (min speed 10).
-float car_time_to_lane_end(const Graph &g, const Car &car)
+// 0x4107c0 TrafficCar__step; defined after lane_detach (mutual recursion:
+// step 6 -> lane_attach/lane_detach -> car_time_to_lane_end -> car_step).
+void car_step(Graph &g, uint32_t ci);
+
+// 0x40d990 TrafficCar__timeToLaneEnd: step the car first, then 0 on a lane
+// change, else the 2v braking time to the stop offset (min speed 10).
+float car_time_to_lane_end(Graph &g, uint32_t ci)
 {
-    // shortcut: 0x4107c0 not ported; it returns at once here because a fresh car
-    // has e0 == sim_time (notes/29 §6)
+    car_step(g, ci);
+    const Car &car = g.cars[ci];
     float stop = car.next_lane_b ? 0.0f : g.cross_stop_offset;
     float v = car_target_speed(g, car);
     if (v <= 10.0f) v = 10.0f;
@@ -1056,7 +1060,7 @@ void lane_attach(Graph &g, size_t li, uint32_t ci)
             car.k128 = 0;
         }
         if (!lane.cars.empty() && lane.cars.front() == ci) {
-            float t = car_time_to_lane_end(g, car);
+            float t = car_time_to_lane_end(g, ci);
             if (lane.pending_events == 0) {
                 schedule_lane(g, t, (uint32_t)li);
                 lane.pending_events++;
@@ -1097,7 +1101,8 @@ void car_drop_live(Graph &g, Car &car)
 bool car_live_step(Graph &g, Car &car)
 {
     if (!car.live) {              // +0xdc
-        // shortcut: 0x4118f0 -> 0x4102d0 -> 0x4107c0 not ported (notes/37 §4)
+        // shortcut: 0x4118f0 pushInstance -> 0x4102d0 advance not ported
+        // (notes/37 §4); they are the only callers of 0x4107c0 on this path.
         return false;
     }
     // shortcut: cross owners (idx >= 0) are not representable in src until
@@ -1113,7 +1118,8 @@ bool car_live_step(Graph &g, Car &car)
         car.live = 0;
         if (car.k128) car.k128 = 0;
     }
-    // shortcut: 0x4118f0 -> 0x4102d0 -> 0x4107c0 not ported (notes/37 §4)
+    // shortcut: 0x4118f0 pushInstance -> 0x4102d0 advance not ported
+    // (notes/37 §4); they are the only callers of 0x4107c0 on this path.
     return true;
 }
 
@@ -1139,15 +1145,178 @@ void lane_detach(Graph &g, size_t li, uint32_t ci)
     lane.kc8 -= car.k24 + car.k14 + car.k20;
     if (lane.kc8 < 0.0f) lane.kc8 = 0.0f;
     if (!lane.cars.empty()) {   // f = the new first car (car is already unlinked)
-        // shortcut: TrafficCar__step 0x4107c0 is not ported (same shortcut as
-        // car_time_to_lane_end).
-        float t = car_time_to_lane_end(g, g.cars[lane.cars.front()]);
+        // 0x4107c0 through car_time_to_lane_end 0x40d990, like 0x40e710.
+        float t = car_time_to_lane_end(g, lane.cars.front());
         if (lane.pending_events == 0) {
             schedule_lane(g, t, (uint32_t)li);
             lane.pending_events++;
         }
     }
     if (lane.k34 == 0xffffffffu) car.k124 = 0;
+}
+
+// 0x4107c0 TrafficCar__step (ECX = car): lane motion slice - entry gate, step 1
+// free distance, step 5 speed integration, step 6 ref hand-over. Steps 2/3/4
+// (leaders, obstacles, lane change) and 7/8 (projection, registration) are later
+// cards; they only fill leader_speed / free / car.k128.
+void car_step(Graph &g, uint32_t ci)
+{
+    Car &car = g.cars[ci];
+    // INVENTED: car.serial == 0 stands in for the exe's null lane pointer
+    // (car+0xc; src lane ids are indices where 0 is a valid lane).
+    if (car.serial == 0) return;
+    const float t = g.sim_time;            // +0x84
+    if (!(t > car.e0)) return;             // 0x4107eb COMISS e0,t
+    const float dt = t - car.e0;
+    car.e0 = t;
+
+    // step 1: free distance (0x41080a..0x410871).
+    float d0 = car.pos - car.k14;          // +0x88, +0x14
+    if (car.next_lane_b == nullptr) {      // +0xbc
+        d0 = std::max(d0 - g.cross_stop_offset, 0.0f);   // +0x3140, 0x593580
+    } else if (car.kc0 < 0) {              // +0xc0, lane ref
+        d0 += car.next_lane_b->length;     // +0x38
+    } else {
+        // shortcut: the cross path +0x30 length has no src field; no src car
+        // leaves a lane.
+    }
+    float target = car_target_speed(g, car);   // 0x41086c -> 0x40dc00
+    float leader_speed = -1.0f;                // [EBP-0x20], 0x5935ac
+    // shortcut: steps 2/3/4 (leader slots 0x40d2c0/0x40daa0, obstacle scan
+    // 0x40eff0, lane-change decision 0x40fde0) are later cards; they fill
+    // leader_speed, free and car.k128. g_brake (0x410888) is only read there.
+    float free = d0;                           // [EBP-0x8]
+
+    // step 5: speed integration (live block 0x41110a..0x411448, simple
+    // block 0x411455..0x4114fb; the exe takes the simple block whenever
+    // car.live == 0, whatever k128 is: 0x411075 JZ 0x411455 at the top and
+    // the k128 != 0 jump re-tests +0xdc then JZ 0x411455 at 0x411111).
+    float travelled, new_speed;
+    if (car.live == 0) {
+        // simple block 0x411455..0x4114fb
+        const float limit = 1.5749999f - car.k28;   // 0x593718 = 0x3fc99999
+        car.kac = 0.0f;                             // +0xac
+        if (fabsf(car.lateral) > limit) {           // +0xa8
+            if (car.lateral >= 0.0f) {
+                float v = limit;
+                if (v <= 0.0f) v = 0.0f;
+                car.lateral = v;
+            } else {
+                float v = car.k28 - 1.5749999f;
+                if (v >= 0.0f) v = 0.0f;
+                car.lateral = v;
+            }
+        }
+        travelled = target * dt;
+        car.kb4 = 0.0f;                             // +0xb4
+        if (travelled <= free) {
+            car.speed = target;
+        } else {
+            car.speed = free / dt;
+            travelled = free;
+        }
+        car.pos -= travelled;
+    } else {
+        // live block 0x41110a..0x411448
+        float desired;
+        if (leader_speed <= -0.5f)                  // 0x593744
+            desired = 0.0f;
+        else if (d0 - free <= 0.0f)
+            desired = std::min(0.0f, leader_speed);
+        else
+            desired = std::min(sqrtf(2.0f * car.accel * (d0 - free)), leader_speed);
+        const float old = car.speed;
+        if (target < old) {                          // decelerate, car.k38 (+0x38)
+            const float tt = (old - target) / car.k38;
+            if (tt < dt) {
+                // 0x411207/0x41120f: (old^2 - target^2) * 0.5 / k38 + (dt - tt) * target
+                travelled = (old * old - target * target) * 0.5f / car.k38 +
+                            (dt - tt) * target;
+                new_speed = target;
+            } else {
+                travelled = (old - 0.5f * car.k38 * dt) * dt;
+                new_speed = old - car.k38 * dt;
+            }
+        } else {                                     // accelerate, car.accel (+0x30)
+            const float tt = (target - old) / car.accel;
+            if (dt <= tt) {
+                travelled = (car.accel * 0.5f * dt + old) * dt;
+                new_speed = car.accel * dt + old;
+            } else {
+                travelled = (target * target - old * old) * 0.5f / car.accel +
+                            (dt - tt) * target;
+                new_speed = target;
+            }
+        }
+        if (free > travelled)
+            desired = sqrtf(2.0f * car.accel * (free - travelled) + desired * desired);
+        else
+            travelled = free;
+        car.pos -= travelled;
+        if (car.k128 != 0) {                          // lane-change steering, +0x128
+            const float up = std::min((car.kac + 5.0f * dt) * dt, 0.3f * travelled);
+            const float lo = std::max((car.kac - 5.0f * dt) * dt, -0.3f * travelled);
+            float push = (float)(int32_t)car.k128 * -3.5f - car.lateral;   // 0x593748
+            if (lo <= push) push = std::min(push, up);
+            else push = lo;
+            car.lateral += push;
+            car.kac = push / dt;
+        } else {                                       // lateral centring
+            const float limit = 1.5749999f - car.k28;
+            if (fabsf(car.lateral) > limit || fabsf(car.kac) > 5.0f * dt) {
+                const float up = std::min((car.kac + 5.0f * dt) * dt, 0.3f * travelled);
+                const float lo = std::max((car.kac - 5.0f * dt) * dt, -0.3f * travelled);
+                float push = 0.0f;
+                if (car.lateral > limit) push = car.lateral - limit;
+                else if (car.lateral < -limit) push = car.lateral + limit;
+                push = -push;
+                if (lo <= push) push = std::min(push, up);
+                else push = lo;
+                car.lateral += push;
+                car.kac = push / dt;
+            }
+        }
+        car.speed = std::min(new_speed, desired);      // 0x411431
+        car.kb4 = (car.speed - old) / dt;              // 0x411440
+    }
+
+    // step 6: ref hand-over (0x411503..0x4115ee).
+    if (car.speed < 0.0f) car.speed = 0.0f;
+    if (car.pos < 0.0f) {                              // 0x411519
+        if (car.next_lane_b == nullptr) {              // 0x411526
+            car.pos = 0.0f;
+        } else {
+            // prev = {path_lane (+0xc4), path (+0xc8), dir (+0xcc)}; vf4 reads only
+            // the owner (0x40e710 ignores the idx argument).
+            // shortcut: the exe also copies cur to the prev ref fields
+            // +0xd0/+0xd4/+0xd8 (0x41154c/0x41155c); no src reader yet, card 236
+            // adds them with the leader logic.
+            const uint32_t prev_lane = car.path_lane;
+            car.path_lane = car.next_lane_a;           // 0x411546..
+            car.path = car.next_lane_b;
+            car.dir = car.kc0;
+            car.next_lane_a = 0;
+            car.next_lane_b = nullptr;
+            // +0xc0 (kc0) is NOT cleared (0x411576/0x411580).
+            if (car.path)
+                car.pos += car.dir < 0 ? car.path->length : 0.0f;   // +0x38
+            // shortcut: the cross path +0x30 length has no src field; no src car
+            // leaves a lane.
+            lane_unlink(g, ci);                        // 0x4115bb -> 0x40ca40
+            // 0x40cbd0 append branch: the hand-over appends itself at the lane
+            // tail (lane_attach assumes lane_insert did).
+            // INVENTED: lane id bounds check (the exe dereferences the owner).
+            if (car.path_lane < g.lanes.size()) {
+                g.lanes[car.path_lane].cars.push_back(ci);
+                car.lane = car.path_lane;
+                lane_attach(g, car.path_lane, ci);     // 0x4115c0 cur owner vf3
+            }
+            lane_detach(g, prev_lane, ci);             // 0x4115d2 prev owner vf4
+            car.k12c = 0.0f;                           // 0x4115e4
+        }
+    }
+    // shortcut: steps 7/8 (lane-change completion, target-lane registration
+    // 0x4115f1..) are later cards.
 }
 
 // 0x40d1e0 ctLane__insertCar: insert before the first car with a larger pos,
@@ -1212,12 +1381,13 @@ bool lane_active_step(Graph &g, size_t li)
     Lane &lane = g.lanes[li];
     if (!lane.live) return false;                    // +0xa8
     if (g.sim_time - lane.kc0 <= 0.5f) {             // +0x84, +0xc0
-        for (uint32_t ci : lane.cars) {
-            const Car &car = g.cars[ci];
-            if (car.next_lane_b == 0) {              // +0xbc
-                // shortcut: TrafficCar__step 0x4107c0 and the hand-over to the
-                // next lane 0x40e460 are not ported (no t is needed without them).
-            }
+        // INVENTED: index loop (the exe walks the intrusive car list); car_step
+        // can append to this lane from another lane's hand-over.
+        for (size_t k = 0; k < lane.cars.size(); k++) {
+            const uint32_t ci = lane.cars[k];
+            if (g.cars[ci].next_lane_b != 0) continue;   // +0xbc
+            car_step(g, ci);                             // 0x4107c0
+            // shortcut: the next-lane move 0x40e460 is not ported.
         }
         return true;
     }
@@ -1318,7 +1488,8 @@ uint32_t Graph::spawn_on_road(size_t road, float p1, float p2, float p3, float p
     car.k3c = 0.01f;
     car.k158 = 0;
     car.k14 = p1; car.k18 = p2; car.k20 = p3; car.k24 = p4;
-    car.next_lane_a = car.next_lane_b = 0;
+    car.next_lane_a = 0;
+    car.next_lane_b = nullptr;
     car.lane = (uint32_t)li;
     car.path_lane = (uint32_t)li;
     car.path = &lane.path;
@@ -1382,7 +1553,8 @@ void Graph::remove_car(uint32_t handle)
     lane_unlink(*this, ci);
     // INVENTED: path_lane is an index where 0 is a valid lane; the exe tests the pointer.
     if (car.path_lane < lanes.size()) lane_detach(*this, car.path_lane, ci);
-    car.next_lane_a = car.next_lane_b = 0;
+    car.next_lane_a = 0;
+    car.next_lane_b = nullptr;
     car.path_lane = 0;
     car.path = nullptr;
     car.kd0 = car.kd4 = 0;
@@ -1461,7 +1633,7 @@ void Graph::set_lane_live(size_t li, bool on)
         }
         for (uint32_t ci : lane.cars) car_drop_live(*this, cars[ci]);
         if (!lane.cars.empty()) {
-            float t = car_time_to_lane_end(*this, cars[lane.cars.front()]);
+            float t = car_time_to_lane_end(*this, lane.cars.front());
             if (lane.pending_events == 0) {
                 schedule_lane(*this, t, (uint32_t)li);
                 lane.pending_events++;
