@@ -693,6 +693,14 @@ Lane *lane_at(Graph &g, uint32_t id)
     return const_cast<Lane *>(g.lane_by_node(id));
 }
 
+// 0x4116d3: lane index -> node id, the inverse of Graph::lane_by_node.
+// INVENTED: the exe stores a lane pointer.
+uint32_t lane_node_id(const Graph &g, size_t li)
+{
+    return (uint32_t)(1 + li + g.cross_eq.size() + g.cross_light.size() +
+                      g.roads.size());
+}
+
 // INVENTED: node id -> cross with a bounds check (the exe dereferences the table).
 Cross *cross_by_node(Graph &g, uint32_t id, bool *is_light)
 {
@@ -975,10 +983,15 @@ void car_ctor(Graph &g, uint32_t i)
     c.e0 = c.e4 = c.e8 = g.sim_time;
 }
 
+// 0x41180d..0x4118b0, inlined in TrafficCar__step step 8 (defined below).
+void obstacle_unlink(Graph &g, uint32_t ci);
+
 // 0x40c730 TrafficCar__release: unlink the refs and clear the serial; the
 // caller pushes the slot on the free list.
 void car_release(Graph &g, uint32_t i)
 {
+    // 0x40c74b -> 0x40d3c0 third block: drop the obstacle node.
+    obstacle_unlink(g, i);
     g.cars[i].serial = 0;
     // INVENTED: the +0x130 instance and +0x144 type link unlinks are not modelled.
 }
@@ -1011,6 +1024,8 @@ float car_target_speed(const Graph &g, const Car &car)
 // 0x4107c0 TrafficCar__step; defined after lane_detach (mutual recursion:
 // step 6 -> lane_attach/lane_detach -> car_time_to_lane_end -> car_step).
 void car_step(Graph &g, uint32_t ci);
+// 0x40d1e0 ctLane__insertCar; defined after car_step.
+void lane_insert(Graph &g, size_t li, uint32_t ci);
 
 // 0x40d990 TrafficCar__timeToLaneEnd: step the car first, then 0 on a lane
 // change, else the 2v braking time to the stop offset (min speed 10).
@@ -1541,7 +1556,7 @@ void car_scan_obstacles(Graph &g, uint32_t ci, float dt, float ego_len, float *f
 
 // 0x41180d..0x4118b0, inlined in TrafficCar__step: unlink the car's obstacle node
 // (+0xec/+0xf0 links, +0xf8 owner) from its lane's list.
-[[maybe_unused]] void obstacle_unlink(Graph &g, uint32_t ci)
+void obstacle_unlink(Graph &g, uint32_t ci)
 {
     Car &car = g.cars[ci];
     const uint32_t owner = car.ob_owner;
@@ -1559,7 +1574,7 @@ void car_scan_obstacles(Graph &g, uint32_t ci, float dt, float ego_len, float *f
 
 // 0x411801..0x411859, inlined in TrafficCar__step step 8: head-insert the car's
 // obstacle node into lane li's list (exe owner+4 head).
-[[maybe_unused]] void obstacle_link(Graph &g, uint32_t li, uint32_t ci)
+void obstacle_link(Graph &g, uint32_t li, uint32_t ci)
 {
     Car &car = g.cars[ci];
     // INVENTED: bounds check (the exe dereferences the target lane pointer).
@@ -1672,8 +1687,8 @@ void car_start_lane_change(Graph &g, uint32_t ci, float f)
 
 // 0x4107c0 TrafficCar__step (ECX = car): entry gate, step 1 free distance, step 2
 // leaders, step 3 obstacle scan, step 4 lane-change decision, step 5 speed
-// integration, step 6 ref hand-over. Steps 7/8 (projection, registration) are a
-// later card.
+// integration, step 6 ref hand-over, step 7 lane-change completion, step 8
+// target-lane obstacle registration.
 void car_step(Graph &g, uint32_t ci)
 {
     Car &car = g.cars[ci];
@@ -1719,8 +1734,8 @@ void car_step(Graph &g, uint32_t ci)
     }
     if (leader) car_note_leader(g, ci, leader, 0);   // 0x4108e1..0x4108e6
     // shortcut: target-lane marking 0x4108eb..0x41091b and the flag != 0 refresh
-    // below (0x410948 branch) belong to steps 7/8; car+0x124 is now set by the
-    // step-4 decision (0x40fde0) and car+0xfc is still never written.
+    // below (0x410948 branch) are not ported; car+0x124 is now set by the step-4
+    // decision (0x40fde0) and car+0xfc by step 8 (0x41179c).
     for (int i = 0; i < 4; i++) {
         LeaderSlot &slot = car.leaders[i];
         if (!slot.car) continue;                     // 0x410935..0x410937
@@ -1909,9 +1924,70 @@ void car_step(Graph &g, uint32_t ci)
             car.k12c = 0.0f;                           // 0x4115e4
         }
     }
-    // shortcut: steps 7/8 (lane-change completion, target-lane registration
-    // 0x4115f1..) are later cards, so a k128 set by the step-4 decision never
-    // completes and the car is never registered on the target lane.
+    // step 7: lane-change completion (0x4115f1..0x4116f4).
+    if (car.k128 != 0) {                            // 0x4115f1
+        float x = 0.0f, z = 0.0f;
+        if (car.path) {                             // 0x411617
+            float p[3];
+            car_ref_pos_offset(car.path, car.dir, car.pos, car.lateral, p);
+            x = p[0];
+            z = p[2];
+        }
+        // INVENTED: bounds (the exe dereferences the lane pointer).
+        Lane *tl = lane_at(g, car.k124);
+        float d = 0.0f, lat = 0.0f;
+        bool ok = tl && path_project_strict(tl->path, x, z, &d, &lat);   // 0x414050
+        if (!ok) {
+            car.k128 = 0;                           // 0x411683 -> 0x4116f4
+        } else if (fabsf(lat) < 1.75f) {            // 0x41168a, strict <
+            const uint32_t old = car.path_lane;     // 0x4116a9
+            const uint32_t ti = (uint32_t)(tl - g.lanes.data());
+            car.path_lane = ti;                     // 0x4116b4
+            car.pos = d;                            // 0x4116bd
+            car.lateral = lat;                      // 0x4116c5 (signed)
+            car.path = &tl->path;                   // 0x4116cd
+            car.k124 = lane_node_id(g, old);        // 0x4116d3 swap cur <-> target
+            lane_unlink(g, ci);                     // 0x4116d9 -> 0x40ca40
+            car.lane = ti;                          // 0x40d1e0 writes car+0xc itself
+            lane_insert(g, ti, ci);                 // 0x4116e5 -> 0x40d1e0
+            lane_detach(g, old, ci);                // 0x4116f1 -> vf4 0x40e710
+            car.k128 = 0;                           // 0x4116f4
+        }
+        // |lat| >= 1.75 keeps k128 for the next step.
+    }
+
+    // step 8: target-lane obstacle registration (0x4116fe..0x4118e4), every step.
+    const bool was = car.ob_owner != kNoneLane;     // 0x4116fe
+    bool registered = false;                        // 0x411859 -> done
+    if (car.k124 != 0) {                            // 0x411708
+        float x = 0.0f, z = 0.0f;
+        if (car.path) {                             // 0x411734
+            float p[3];
+            car_ref_pos_offset(car.path, car.dir, car.pos, car.lateral, p);
+            x = p[0];
+            z = p[2];
+        }
+        // INVENTED: bounds (the exe dereferences the lane pointer).
+        Lane *tl = lane_at(g, car.k124);
+        float lat = 0.0f;
+        if (!tl || !path_project_strict(tl->path, x, z, &car.kfc, &lat)) {   // 0x41179c
+            car.kfc = -1.0f;                        // 0x4117a3 -> 0x41185b
+        } else {
+            car.k100 = car.speed;                   // 0x4117b0 raw copy
+            if (car.k128 != 0 || fabsf(lat) < car.k28 + 1.75f) {   // 0x4117be
+                const uint32_t ti = (uint32_t)(tl - g.lanes.data());
+                if (car.ob_owner != ti) {           // 0x4117e0
+                    car.k120 = car.k20;             // 0x4117f2 raw copy
+                    if (car.ob_owner != kNoneLane) obstacle_unlink(g, ci);   // 0x411801
+                    obstacle_link(g, ti, ci);       // 0x411838 head insert
+                }
+                registered = true;                  // 0x411859 -> done
+            }
+        }
+    }
+    if (was && !registered) obstacle_unlink(g, ci); // 0x411861
+    if (car.k124 != 0 && car.k128 == 0 && car.ob_owner == kNoneLane)
+        car.k124 = 0;                               // 0x4118d6
 }
 
 // 0x40d1e0 ctLane__insertCar: insert before the first car with a larger pos,
