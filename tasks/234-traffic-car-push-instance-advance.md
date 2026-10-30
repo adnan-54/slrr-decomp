@@ -61,22 +61,25 @@ are a `shortcut:`; the lane branches call the existing src helpers.
     dist = sqrt(dx*dx + dz*dz);
     if (dist == 0.0f) return;
     L = car->k18;                                    // +0x18
-    if (L / (dt + 1.0f) <= dist) {                   // snapped: take the front from the path
+    // review fix: dt and L are promoted to double, 1.0 is a double (0x4103d0).
+    if ((double)L / ((double)dt + 1.0) <= (double)dist) {  // snapped: front from the path
         dir = CarPathRef__dir(ref, car->pos);        // 0x40dd60
         car->a0 = -dir[0]; car->a4 = -dir[2];        // +0xa0/+0xa4 (dir[1] unused)
         d  = car->pos + L;
         dl = CarPathRef__length(ref);                // 0x40e810
         d2 = d - dl;
-        if (d2 <= 0.0f) d2 = d;
-        q = CarPathRef__posOffset(ref, d2, car->lateral);
+        // review fix: d2 > 0 uses the PREV ref (+0xd0/+0xd4/+0xd8, 0x4105cc);
+        // d2 <= 0 uses the current ref at d (= pos + L, 0x4105ba).
+        q = d2 > 0.0f ? CarPathRef__posOffset(prev_ref, d2, car->lateral)
+                      : CarPathRef__posOffset(ref, d, car->lateral);
         tx = q[0]; tz = q[2];
     } else {
-        if (0.01f < dist) { car->a0 = dx/dist; car->a4 = dz/dist; }
+        if (0.01f < dist) { inv = 1.0f/dist; car->a0 = dx*inv; car->a4 = dz*inv; }  // DIVSS+MULSS
         fx = car->front_x - oldx; fz = car->front_z - oldz;   // +0x98/+0x9c
         h = sqrt(fx*fx + fz*fz);
-        if (1e-05f < h) { fx = fx/h; fz = fz/h; }             // decompiler prints 1e-05
+        if (1e-05 < (double)h) { inv = 1.0f/h; fx = fx*inv; fz = fz*inv; }  // h in double, 0x410461
         dot  = fx*dx + fz*dz;
-        disc = (dot*dot*dist*dist + L*L) - dist*dist;         // keep this order
+        disc = ((dot*dot) * (dist*dist) + L*L) - dist*dist;   // 0x410493: two mulss groups
         root = disc > 0.0f ? sqrt(disc) : 0.0f;
         f = dot*dist + root;
         if (T->front_mode == 1) f = f + (L - f) / (dist + 1.0f);  // global 0x5e6518
@@ -85,7 +88,7 @@ are a `shortcut:`; the lane branches call the existing src helpers.
     }
     nx = tx - car->world[0]; nz = tz - car->world[2];
     n = sqrt(nx*nx + nz*nz);
-    if (1e-05f < n) { nx = nx/n; nz = nz/n; }
+    if (1e-05 < (double)n) { inv = 1.0f/n; nx = nx*inv; nz = nz*inv; }  // 0x41061f
     car->front_x = car->world[0] + nx*L;             // +0x98
     car->front_z = car->world[2] + nz*L;             // +0x9c
     // only x/z of the front point; its y is never stored
