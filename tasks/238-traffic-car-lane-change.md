@@ -1,8 +1,8 @@
 ---
 id: 238
-status: implemented
+status: merged
 branch: card/238
-review:
+review: deepseek-pass
 depends: [237]
 ---
 # traffic: TrafficCar lane-change decision, startLaneChange and lane vf5 side-lane picker
