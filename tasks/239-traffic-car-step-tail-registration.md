@@ -1,8 +1,8 @@
 ---
 id: 239
-status: implemented
+status: merged
 branch: card/239
-review:
+review: deepseek-pass
 depends: [237]
 ---
 # traffic: TrafficCar__step tail — step 7 lane-change completion + step 8 target-lane obstacle registration

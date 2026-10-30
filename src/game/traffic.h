@@ -93,7 +93,8 @@ struct Car {                    // 0x164 bytes in the exe
     uint32_t prev = 0, next = 0;  // +0x04, +0x08 (exe intrusive lane links; unused here)
     uint32_t lane = 0;          // +0x0c (INVENTED: lane index, pointer in the exe)
     // event-1 list next (0x40eff0 head insert): 0 = not listed, kLiveEnd = list
-    // end (a pointer to the Traffic object in the exe). The drain is not ported.
+    // end (a pointer to the Traffic object in the exe). Drained in Graph::step
+    // (0x41b290), which queues event 1 to the instance (dispatch not modelled).
     uint32_t event_next = 0;    // +0x10
     float k14 = 0, k18 = 0, k1c = 0, k20 = 0, k24 = 0, k28 = 0;  // +0x14..+0x28
     float max_speed = 0;        // +0x2c
@@ -172,7 +173,7 @@ struct Graph {
     uint32_t active_eq = kLiveEnd;
     uint32_t active_light = kLiveEnd;
     // +0xc8 head of the event-1 list (0x40eff0 head insert via car+0x10). INVENTED:
-    // 1-based car index, kLiveEnd = end. The Traffic__step drain is not ported.
+    // 1-based car index, kLiveEnd = end. Drained at the end of Graph::step.
     uint32_t event1 = kLiveEnd;
     int32_t live_lanes = 0;                     // global 0x5e6500; INVENTED: per graph
     // +0x70 car pool. INVENTED: deque gives stable addresses, the free list keeps
