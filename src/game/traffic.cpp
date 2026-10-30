@@ -1395,9 +1395,10 @@ void car_check_obstacle(Graph &g, uint32_t ci, const Car &o)
     float dx = car.front_x - car.world[0];          // +0x98 - +0x8c
     float dz = car.front_z - car.world[2];          // +0x9c - +0x94
     const float l = sqrtf(dx * dx + dz * dz);       // the y direction is 0
-    if (l != 0.0f) {
-        dx /= l;
-        dz /= l;
+    if (l != 0.0f) {                                // 0x40f057 DIVSS, then MULSS
+        const float inv = 1.0f / l;
+        dx *= inv;
+        dz *= inv;
     }
     const float back = -car.speed;                  // 0x40f04c -[+0xb0]
     float rx = o.k108[0] - car.world[0];
@@ -1424,10 +1425,9 @@ void car_check_obstacle(Graph &g, uint32_t ci, const Car &o)
 // 0x4107c0 TrafficCar__step step 3 (0x410a57..0x410fbf): the three obstacle-list
 // passes (cur owner, next owner shifted by the next length, lane-change target);
 // fills free / leader_speed and may queue an event-1 check.
-void car_scan_obstacles(Graph &g, uint32_t ci, float dt, float d0, float ego_len,
-                        float *free, float *leader_speed)
+void car_scan_obstacles(Graph &g, uint32_t ci, float dt, float ego_len, float *free,
+                        float *leader_speed)
 {
-    (void)d0;   // used only by the caller's unconditional clamp (0x410fc8..0x410fdd)
     Car &car = g.cars[ci];
     for (int pass = 0; pass < 3; pass++) {
         const std::vector<uint32_t> *obs;
@@ -1479,8 +1479,11 @@ void car_scan_obstacles(Graph &g, uint32_t ci, float dt, float d0, float ego_len
                 const float closing = -(dir[0] * o.k114[0] + dir[1] * o.k114[1] +
                                         dir[2] * o.k114[2]);
                 float brake_d = d;
-                if (car.speed <= 1.0f || 1e-5f > d || closing < 0.0f ||
-                    (closing * closing - car.speed * car.speed) / (d + d) >= -car.k38) {
+                // 0x410e96: speed <= 1 -> leader; 0x410ee8: d < 1e-5 or
+                // closing < 0 or ratio < -k38 -> the bd block.
+                if (car.speed <= 1.0f ||
+                    (d >= 1e-5f && closing >= 0.0f &&
+                     (closing * closing - car.speed * car.speed) / (d + d) >= -car.k38)) {
                     *leader_speed = fmaxf(closing, 0.0f);
                 } else {
                     const float bd = (car.speed <= car.k38 * dt)
@@ -1489,9 +1492,8 @@ void car_scan_obstacles(Graph &g, uint32_t ci, float dt, float d0, float ego_len
                     const float v2 = car.speed - car.k38 * dt;
                     const float bd_raw = bd;
                     brake_d = fmaxf(bd, d);
-                    rear += d;
                     *leader_speed = fmaxf(v2, 0.0f);
-                    if (rear <= bd_raw && closing <= v2)
+                    if (rear + d <= bd_raw && closing <= v2)   // 0x410c3f addss
                         car_check_obstacle(g, ci, o);    // 0x40eff0 (unconditional here)
                 }
                 *free = fminf(*free, brake_d);
@@ -1506,8 +1508,11 @@ void car_scan_obstacles(Graph &g, uint32_t ci, float dt, float d0, float ego_len
                 if (*free <= d) continue;                // 0x410b82 JBE
                 const float os = o.k100;                 // entry +0x14
                 float brake_d = d;
-                if (car.speed <= 1.0f || 1e-5f > d || os < 0.0f ||
-                    (os * os - car.speed * car.speed) / (d + d) >= -car.k38) {
+                // 0x410b9d JBE (speed <= 1 -> leader), 0x410bae/0x410bb8 JA
+                // (d < 1e-5 | os < 0 -> bd), 0x410bdf JBE (ratio >= -k38).
+                if (car.speed <= 1.0f ||
+                    (d >= 1e-5f && os >= 0.0f &&
+                     (os * os - car.speed * car.speed) / (d + d) >= -car.k38)) {
                     *leader_speed = fmaxf(os, 0.0f);
                 } else {
                     const float bd = (car.speed <= car.k38 * dt)
@@ -1516,15 +1521,14 @@ void car_scan_obstacles(Graph &g, uint32_t ci, float dt, float d0, float ego_len
                     const float v2 = car.speed - car.k38 * dt;
                     const float bd_raw = bd;
                     brake_d = fmaxf(bd, d);
-                    rear += d;
                     *leader_speed = fmaxf(v2, 0.0f);
-                    if (rear <= bd_raw && os <= v2) {
-                        if (o.k104) {                    // 0x410c63
+                    if (rear + d <= bd_raw && os <= v2) {     // 0x410c3f addss
+                        if (o.k104) {                    // 0x410c63 CMP byte
                             car_check_obstacle(g, ci, o);
                         } else {
                             // shortcut: the k104 writer is not traced, so src only
                             // reaches this branch with k104 == 0.
-                            brake_d = rear;
+                            brake_d = rear;   // XMM7 at 0x410c7b: the pre-+d value
                             *leader_speed = fmaxf(os, 0.0f);
                         }
                     }
@@ -1648,7 +1652,7 @@ void car_step(Graph &g, uint32_t ci)
     }
 
     // step 3: obstacle scan (0x410a57..0x410fbf).
-    car_scan_obstacles(g, ci, dt, d0, brake, &free, &leader_speed);
+    car_scan_obstacles(g, ci, dt, brake, &free, &leader_speed);
     // 0x410fc8..0x410fdd: the clamp is unconditional; 0x410fc1 only sets the
     // flags that 0x410fe2 JNZ tests for the lane-change branch.
     free = fminf(fmaxf(free, 0.0f), d0);

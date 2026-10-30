@@ -130,7 +130,7 @@ struct Car {                    // 0x164 bytes in the exe
     uint32_t ob_owner = kNoneLane; // +0xf8 lane index whose obstacle list holds the node
     float kfc = 0.0f;              // +0xfc lane-change projection distance (-1 = none)
     float k100 = 0.0f;             // +0x100 speed captured at obstacle registration (0x4117b6)
-    float k104 = 0.0f;             // +0x104 obstacle flag; UNRESOLVED: writer not traced
+    uint8_t k104 = 0;              // +0x104 obstacle flag (a byte; 0x410c63 CMP byte); UNRESOLVED: writer not traced
     float k108[3] = {};            // +0x108..+0x110 obstacle body position; UNRESOLVED writer
     float k114[3] = {};            // +0x114..+0x11c obstacle body velocity; UNRESOLVED writer
     float k120 = 0.0f;             // +0x120 obstacle radius (= k20 written at registration, 0x4117fb)
