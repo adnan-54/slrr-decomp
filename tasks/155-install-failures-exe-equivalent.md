@@ -1,7 +1,8 @@
 ---
 id: 155
-status: implemented
+status: merged
 branch: card/155
+review: deepseek-pass
 depends: [150, 153, 154]
 ---
 # Part install failures: report per car, prove each one is an exe failure, bolt corpus check
