@@ -95,11 +95,16 @@ if (ok[1]) return lane.node88[3];                    // 0x4101d9
 return 0;                                            // 0x4101e9
 ```
 `before` / `after` = nearest obstacle entry of `side+4` with `pos < d` (largest pos;
-`pos > -0.5` filter, 0x593744) / `pos > d` (smallest pos). **That list has no src
-service** (`lane+4`, filled by the unported step 8 0x4115f1): it is always empty here,
-so `before = after = 0` and both obstacle guards pass. `side`'s path projection and the
-list walk are the only consumers of the side lane; return 0 makes startLaneChange a
-no-op (k124/k128/k12c untouched).
+`pos > -0.5` filter, 0x593744) / `pos > d` (smallest pos). Card 237 landed the list
+service: `Lane::obstacles` (vector of car indices, LIFO head insert, `INVENTED`; exe
+intrusive node at car+0xec) and the per-entry fields `Car::kfc` (+0x10 path distance,
+-1 = off-path, excluded by the `> -0.5` filter), `Car::k100` (+0x14 captured speed) and
+`Car::k120` (+0x34 radius). Port `before`/`after` as a scan of `side->obstacles`
+comparing `g.cars[oi].kfc`; on a tie the exe keeps the first walk hit (head insert order
+is LIFO, so the walk order is newest-first) - keep the first strict comparison winner.
+When the list is empty `before = after = 0` and both obstacle guards pass. `side`'s path
+projection and this list walk are the only consumers of the side lane; return 0 makes
+startLaneChange a no-op (k124/k128/k12c untouched).
 
 ### 0x40dde0 CarPathRef__posOffset (ECX = &car.cur_ref {owner,path,dir}; out, d, off)
 ```
