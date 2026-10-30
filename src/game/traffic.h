@@ -87,6 +87,7 @@ struct Car {                    // 0x164 bytes in the exe
     float pos = 0;              // +0x88 (distance on the lane path; counts down to the lane end)
     float world[3] = {};        // +0x8c
     float front_x = 0, front_z = 0;  // +0x98, +0x9c
+    float heading_x = 0, heading_z = 0;  // +0xa0, +0xa4 (0x4102d0)
     float lateral = 0;          // +0xa8
     float kac = 0;              // +0xac
     float speed = 0;            // +0xb0
@@ -99,7 +100,9 @@ struct Car {                    // 0x164 bytes in the exe
     uint32_t path_lane = 0;     // +0xc4 PathRef lane (INVENTED: index)
     const Path *path = nullptr; // +0xc8 (&lane.path)
     int32_t dir = 0;            // +0xcc
-    uint32_t kd0 = 0, kd4 = 0;  // +0xd0, +0xd4 second ref
+    uint32_t kd0 = 0;                // +0xd0 prev ref lane/owner
+    const Path *prev_path = nullptr; // +0xd4 prev ref path
+    int32_t prev_dir = 0;            // +0xd8 prev ref dir
     uint8_t live = 0;           // +0xdc
     uint8_t notify = 0;         // +0xdd
     float e0 = 0, e4 = 0, e8 = 0;  // +0xe0..+0xe8 step times
@@ -120,6 +123,9 @@ struct Graph {
     std::vector<Road> roads;                    // +0x40
     std::vector<Lane> lanes;                    // +0x58
     float sim_time = 0;                         // +0x84
+    // global 0x5e6518 front-point mode of 0x4102d0 (0/1/2). INVENTED: per graph,
+    // initial 0 (BSS); the setter is not traced.
+    int32_t front_mode = 0;
     std::vector<uint8_t> road_enabled;          // +0xc4: enable flag per road group
     float max_road_width = 0;                   // +0x312c
     float cross_stop_offset = 0;                // +0x3140 (ctor 0x416000: 0)
