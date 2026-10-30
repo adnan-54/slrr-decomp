@@ -53,7 +53,8 @@ free = d0;                                                 // [EBP-0x8]
 0x4108b9..0x411105: leader slots, obstacle scan, lane-change decision. They only modify
 `leader_speed`, `free`, the candidate gaps and `car.k128`.
 ### step 5: speed integration (0x411068..0x41144b)
-Simple block (0x411455..0x4114fb), taken when `car.k128 == 0 && car.live (+0xdc) == 0`:
+Simple block (0x411455..0x4114fb), taken when `car.live (+0xdc) == 0` (review fix: the
+k128 != 0 jump re-tests +0xdc at 0x411111, so k128 alone does not select the live block):
 ```
 limit = 1.5749999 - car.k28;                               // 0x593718 = 0x3fc99999, +0x28
 car.kac = 0;                                               // +0xac
@@ -75,7 +76,7 @@ desired = (leader_speed <= -0.5) ? 0.0                     // 0x593744 = -0.5
 old = car.speed;
 if (target < old) {                        // decelerate, car.k38 (+0x38)
     tt = (old - target) / car.k38;
-    if (tt < dt) { travelled = (target*target - old*old) * 0.5 / car.k38 + (dt - tt) * target;
+    if (tt < dt) { travelled = (old*old - target*target) * 0.5 / car.k38 + (dt - tt) * target;  // review fix: sign
                    new_speed = target; }
     else         { travelled = (old - 0.5 * car.k38 * dt) * dt;
                    new_speed = old - car.k38 * dt; }

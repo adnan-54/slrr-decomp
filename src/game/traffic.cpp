@@ -1187,9 +1187,12 @@ void car_step(Graph &g, uint32_t ci)
     // leader_speed, free and car.k128. g_brake (0x410888) is only read there.
     float free = d0;                           // [EBP-0x8]
 
-    // step 5: speed integration (0x411068..0x41144b simple, 0x411455.. live).
+    // step 5: speed integration (live block 0x41110a..0x411448, simple
+    // block 0x411455..0x4114fb; the exe takes the simple block whenever
+    // car.live == 0, whatever k128 is: 0x411075 JZ 0x411455 at the top and
+    // the k128 != 0 jump re-tests +0xdc then JZ 0x411455 at 0x411111).
     float travelled, new_speed;
-    if (car.k128 == 0 && car.live == 0) {
+    if (car.live == 0) {
         // simple block 0x411455..0x4114fb
         const float limit = 1.5749999f - car.k28;   // 0x593718 = 0x3fc99999
         car.kac = 0.0f;                             // +0xac
@@ -1226,7 +1229,8 @@ void car_step(Graph &g, uint32_t ci)
         if (target < old) {                          // decelerate, car.k38 (+0x38)
             const float tt = (old - target) / car.k38;
             if (tt < dt) {
-                travelled = (target * target - old * old) * 0.5f / car.k38 +
+                // 0x411207/0x41120f: (old^2 - target^2) * 0.5 / k38 + (dt - tt) * target
+                travelled = (old * old - target * target) * 0.5f / car.k38 +
                             (dt - tt) * target;
                 new_speed = target;
             } else {
@@ -1284,6 +1288,9 @@ void car_step(Graph &g, uint32_t ci)
         } else {
             // prev = {path_lane (+0xc4), path (+0xc8), dir (+0xcc)}; vf4 reads only
             // the owner (0x40e710 ignores the idx argument).
+            // shortcut: the exe also copies cur to the prev ref fields
+            // +0xd0/+0xd4/+0xd8 (0x41154c/0x41155c); no src reader yet, card 236
+            // adds them with the leader logic.
             const uint32_t prev_lane = car.path_lane;
             car.path_lane = car.next_lane_a;           // 0x411546..
             car.path = car.next_lane_b;
