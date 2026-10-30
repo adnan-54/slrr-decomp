@@ -74,6 +74,13 @@ struct Lane {
     float kc0 = 0, kc8 = 0, kcc = 0;                      // +0xc0 sim time, +0xc8, +0xcc path length
 };
 
+struct LeaderSlot {             // car+0x48..0x84, 4 x 16 bytes (0x40d2c0)
+    uint32_t serial = 0;        // +0x00 serial copy (validity check)
+    uint32_t car = 0;           // +0x04 INVENTED: 1-based car index, 0 = empty (a Car* in the exe)
+    uint8_t flag = 0;           // +0x08 0 = lane leader, 1 = target-lane slot
+    float dist = 0.0f;          // +0x0c
+};
+
 struct Car {                    // 0x164 bytes in the exe
     uint32_t serial = 0;        // +0x00 (++g_car_serial; also the free-list link)
     uint32_t prev = 0, next = 0;  // +0x04, +0x08 (exe intrusive lane links; unused here)
@@ -84,6 +91,7 @@ struct Car {                    // 0x164 bytes in the exe
     float k34 = 0, k38 = 0, k3c = 0;  // +0x34..+0x3c
     int32_t k40 = 0;            // +0x40 (ctor 0x40c400 stores the int -1)
     uint32_t live_next = 0;     // +0x44 (0 = not listed, kLiveEnd = list end)
+    LeaderSlot leaders[4];      // +0x48 leader slots (0x40d2c0 / 0x410920)
     float pos = 0;              // +0x88 (distance on the lane path; counts down to the lane end)
     float world[3] = {};        // +0x8c
     float front_x = 0, front_z = 0;  // +0x98, +0x9c

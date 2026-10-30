@@ -1289,10 +1289,107 @@ void lane_detach(Graph &g, size_t li, uint32_t ci)
     if (lane.k34 == 0xffffffffu) car.k124 = 0;
 }
 
+// 0x40d2c0 TrafficCar__noteLeader: record a lane leader (flag 0) or a
+// target-lane car (flag 1) in one of the four slots. INVENTED: the leader is a
+// 1-based car index, 0 = none (the exe stores a Car*).
+void car_note_leader(Graph &g, uint32_t ci, uint32_t leader, uint8_t flag)
+{
+    LeaderSlot *slot = g.cars[ci].leaders;
+    for (int i = 0; i < 4; i++) {                          // 0x40d2d0..0x40d2e8
+        if (slot[i].car == leader &&
+            (leader == 0 || slot[i].serial == g.cars[leader - 1].serial)) {
+            slot[i].flag = flag;                           // 0x40d308
+            return;
+        }
+    }
+    int i;
+    for (i = 0; i < 3; i++) {                              // 0x40d2f0..0x40d304
+        if (slot[i].car == 0) break;                       // 0x40d2f3
+        if (slot[i].serial != g.cars[slot[i].car - 1].serial) {   // 0x40d2f9
+            slot[i].serial = slot[i].car = 0; slot[i].flag = 0;   // 0x40d319..0x40d326
+            break;
+        }
+    }
+    if (leader) { slot[i].serial = g.cars[leader - 1].serial; slot[i].car = leader; }  // 0x40d359/0x40d361
+    else        { slot[i].serial = 0; slot[i].car = 0; slot[i].flag = 0; }            // 0x40d339..0x40d347
+    slot[i].flag = flag;                                   // 0x40d36a
+}
+
+// 0x40c270 ctLeaderSlot__sort: min-heap build + heapsort, dist only. Empty
+// slots (car == 0, the exe's null) compare smallest, so the result is
+// descending dist with the empty slots last.
+void slot_sort(LeaderSlot *a, int n)
+{
+    for (int i = 1; i < n; i++) {                          // 0x40c284..0x40c2ec
+        const LeaderSlot e = a[i];
+        int j = i;
+        while (j != 0) {
+            const int p = (j - 1) / 2;
+            if (a[p].car == 0) break;                      // 0x40c2b1
+            if (e.car != 0 && !(e.dist < a[p].dist)) break;   // 0x40c2b8..0x40c2c5
+            a[j] = a[p];
+            j = p;
+        }
+        a[j] = e;
+    }
+    for (int end = n - 1; end > 0; end--) {                // 0x40c2ee..0x40c3d3
+        const LeaderSlot temp = a[0];
+        int i = 0, left = 1;
+        while (left < end) {                               // 0x40c30a, 0x40c3a6
+            const int right = 2 * i + 2;
+            int child;
+            if (right >= end || a[left].car == 0 ||
+                (a[right].car != 0 && a[left].dist <= a[right].dist))
+                child = left;                              // 0x40c319..0x40c33e
+            else
+                child = right;
+            if (a[end].car == 0 ||
+                (a[child].car != 0 && a[end].dist <= a[child].dist))
+                break;                                     // 0x40c343..0x40c38c
+            a[i] = a[child];
+            i = child;
+            left = 2 * i + 1;
+        }
+        a[i] = a[end];
+        a[end] = temp;                                     // 0x40c3b9..0x40c3c7
+    }
+}
+
+// 0x40daa0 TrafficCar__distanceOnRef (ECX = leader car): distance of the
+// leader's position measured on ref1 (or ref2), 0 = the refs do not match.
+bool car_distance_on_ref(Graph &g, uint32_t ci, const Path *ref1, const Path *ref2,
+                         float *out)
+{
+    car_step(g, ci);                                       // 0x40daa6
+    const Car &c = g.cars[ci];
+    if (c.path == ref1) { *out = c.pos; return true; }
+    if (c.prev_path == ref1) {
+        *out = c.pos - car_ref_length(c.path, c.dir);      // 0x40dad2..0x40db04
+        return true;
+    }
+    if (c.next_lane_b == ref1) {
+        *out = c.pos + car_ref_length(c.next_lane_b, c.kc0);   // 0x40db18..0x40db46
+        return true;
+    }
+    if (ref2) {
+        if (c.path == ref2) {
+            *out = c.pos - car_ref_length(c.path, c.dir);  // 0x40db5f..0x40db74
+            return true;
+        }
+        if (c.prev_path == ref2) {
+            *out = (c.pos - car_ref_length(c.path, c.dir)) -
+                   car_ref_length(c.prev_path, c.prev_dir);    // 0x40db80..0x40dba6
+            return true;
+        }
+        if (c.next_lane_b == ref2) { *out = c.pos; return true; }  // 0x40dbae
+    }
+    return false;                                          // 0x40dbb6
+}
+
 // 0x4107c0 TrafficCar__step (ECX = car): lane motion slice - entry gate, step 1
-// free distance, step 5 speed integration, step 6 ref hand-over. Steps 2/3/4
-// (leaders, obstacles, lane change) and 7/8 (projection, registration) are later
-// cards; they only fill leader_speed / free / car.k128.
+// free distance, step 2 leaders, step 5 speed integration, step 6 ref hand-over.
+// Steps 3/4 (obstacles, lane change) and 7/8 (projection, registration) are
+// later cards; they only fill leader_speed / free / car.k128.
 void car_step(Graph &g, uint32_t ci)
 {
     Car &car = g.cars[ci];
@@ -1316,10 +1413,64 @@ void car_step(Graph &g, uint32_t ci)
     }
     float target = car_target_speed(g, car);   // 0x41086c -> 0x40dc00
     float leader_speed = -1.0f;                // [EBP-0x20], 0x5935ac
-    // shortcut: steps 2/3/4 (leader slots 0x40d2c0/0x40daa0, obstacle scan
-    // 0x40eff0, lane-change decision 0x40fde0) are later cards; they fill
-    // leader_speed, free and car.k128. g_brake (0x410888) is only read there.
     float free = d0;                           // [EBP-0x8]
+
+    // step 2: leader slots and the nearest gap (0x41087b..0x410a55).
+    const float brake =                              // 0x410888
+        (std::max(car.speed - 2.0f, 0.0f) * 0.5f + 1.0f) * car.k24;
+    uint32_t leader = 0;
+    if (car.dir == -1) {                             // 0x4108b9
+        // INVENTED: the exe reads car+4 (prev in the intrusive lane list); src
+        // lane.cars is ascending pos, so the element before ci is ahead.
+        if (car.lane < g.lanes.size()) {
+            const std::vector<uint32_t> &list = g.lanes[car.lane].cars;
+            std::vector<uint32_t>::const_iterator it =
+                std::find(list.begin(), list.end(), ci);
+            if (it != list.end() && it != list.begin()) leader = *(it - 1) + 1;
+        }
+    }
+    if (!leader && car.next_lane_b) {
+        // shortcut: the exe takes the leader from the next ref's owner vf0
+        // (0x4108db indirect vtable call); no src car has a next ref yet.
+    }
+    if (leader) car_note_leader(g, ci, leader, 0);   // 0x4108e1..0x4108e6
+    // shortcut: target-lane marking 0x4108eb..0x41091b and the flag != 0 refresh
+    // below (0x410948 branch): car+0x124 is the lane-change target (a later card,
+    // 0 for all src data) and car+0xfc its projection distance.
+    for (int i = 0; i < 4; i++) {
+        LeaderSlot &slot = car.leaders[i];
+        if (!slot.car) continue;                     // 0x410935..0x410937
+        if (slot.serial != g.cars[slot.car - 1].serial) {   // 0x41093d..0x410942
+            slot.serial = slot.car = 0; slot.flag = 0;      // 0x4109cc
+            continue;
+        }
+        if (slot.flag != 0) {
+            // shortcut: target-lane refresh not modelled (see above).
+        } else {
+            if (!car_distance_on_ref(g, slot.car - 1, car.path, car.next_lane_b,
+                                     &slot.dist)) {  // 0x41099c..0x4109b6
+                slot.serial = slot.car = 0; slot.flag = 0;
+                continue;
+            }
+            slot.dist += g.cars[slot.car - 1].k20;   // 0x4109b8..0x4109c5
+        }
+    }
+    slot_sort(car.leaders, 4);                       // 0x4109ec
+    if (car.leaders[0].car) {                        // 0x4109f7
+        LeaderSlot &slot = car.leaders[0];
+        if (slot.serial != g.cars[slot.car - 1].serial) {   // 0x410a0b..0x410a0f
+            slot.serial = slot.car = 0; slot.flag = 0;      // 0x410a11
+        } else {
+            const float gap = (car.pos - car.k14) - brake - slot.dist;  // 0x410a24..0x410a35
+            if (gap < free) {                                    // 0x410a3a..0x410a52
+                free = gap;
+                leader_speed = g.cars[slot.car - 1].speed;
+            }
+        }
+    }
+
+    // shortcut: steps 3/4 (obstacle scan 0x40eff0, lane-change decision
+    // 0x40fde0) are later cards; they further fill leader_speed / free / car.k128.
 
     // step 5: speed integration (live block 0x41110a..0x411448, simple
     // block 0x411455..0x4114fb; the exe takes the simple block whenever
