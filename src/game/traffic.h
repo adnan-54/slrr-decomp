@@ -48,6 +48,9 @@ struct Cross {                  // ctCross 0x40e850
     uint32_t active_next = 0;         // +0x54 (eq) / +0x60 (light)
     // +0x44 ResRefLink. INVENTED: id of the bound object's instance, 0 = none.
     uint32_t object = 0;
+    // +0x8/+0xc intrusive car list (tail append, 0x40cb60); INVENTED: car
+    // indices, tail = back().
+    std::vector<uint32_t> cars;
     std::vector<PathState> path_state; // +0x58, one zeroed pair per path (count +0x20)
     uint32_t cycle = 0;               // +0x5c (light_init 0x415700 zeroes it)
     float light_remain = 0;           // +0x64 (light only, ctor 0x4154b0)
@@ -95,6 +98,9 @@ struct Car {                    // 0x164 bytes in the exe
     uint32_t serial = 0;        // +0x00 (++g_car_serial; also the free-list link)
     uint32_t prev = 0, next = 0;  // +0x04, +0x08 (exe intrusive lane links; unused here)
     uint32_t lane = 0;          // +0x0c (INVENTED: lane index, pointer in the exe)
+    // +0x0c owner when it is a cross (exe stores one owner pointer); INVENTED:
+    // cross node id, 0 = owner is Car::lane.
+    uint32_t cross_node = 0;
     // event-1 list next (0x40eff0 head insert): 0 = not listed, kLiveEnd = list
     // end (a pointer to the Traffic object in the exe). Drained in Graph::step
     // (0x41b290), which queues event 1 to the instance (dispatch not modelled).
@@ -221,6 +227,7 @@ struct Graph {
 void segment_pos(const Segment &s, float d, float out[3]);   // 0x4134e0
 void segment_dir(const Segment &s, float d, float out[3]);   // 0x412f60
 void segment_side(const Segment &s, float d, float out[3]);  // 0x4131a0
+void segment_pos_offset(const Segment &s, float d, float off, float out[3]);  // 0x413660
 void path_pos_at(const Path &p, float d, float out[3]);      // 0x413360
 void path_dir_at(const Path &p, float d, float out[3]);      // 0x412ed0
 bool segment_project(const Segment &s, float x, float z, float *d, float *lat);  // 0x414480
