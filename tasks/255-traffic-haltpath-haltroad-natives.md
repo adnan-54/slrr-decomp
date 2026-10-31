@@ -1,7 +1,8 @@
 ---
 id: 255
-status: implemented
+status: merged
 branch: card/255
+review: deepseek-pass
 depends: [253]
 ---
 # traffic: Traffic__haltPath / Traffic__haltRoad + the two halt natives
