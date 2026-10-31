@@ -1,7 +1,8 @@
 ---
 id: 249
-status: implemented
+status: merged
 branch: card/249
+review: deepseek-pass
 depends: []
 ---
 # traffic: ctCross vf1 (live_refs gate) and the Cross+0x40 route-block writer
