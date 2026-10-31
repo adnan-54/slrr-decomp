@@ -1,7 +1,8 @@
 ---
 id: 250
-status: implemented
+status: merged
 branch: card/250
+review: deepseek-pass
 depends: []
 ---
 # traffic: ctCross__halt (Cross+0x40 writer) and the GroundRef.haltTrafficCross native

@@ -7526,7 +7526,8 @@ bool gr_set_traffic_car_behaviour(Vm &, const Args &a, Value *out, std::string *
 // with Instance__getFloatField 0x4ec980 (missing -> 0), then
 // Traffic__nearestCross 0x419050(t, x, y, z, 0.0f, 0) and ctCross__halt 0x40de70
 // (delay, all = 1) at 0x4de408. Void; the exe does not check the cross.
-// INVENTED: null arg object / null cross => no halt (the exe dereferences both).
+// INVENTED: a null Vector3 argument reads as the origin and a null cross skips the halt
+// (the exe dereferences both).
 bool gr_halt_traffic_cross(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     if (!want("GroundRef.haltTrafficCross", a, 3, err)) return false;

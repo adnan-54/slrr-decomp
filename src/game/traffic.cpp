@@ -2805,7 +2805,7 @@ void Graph::halt_cross(Cross &c, float delay, bool all)
                 car.live = 0;
                 if (car.k128) car.k128 = 0;
             }
-            recycle_halted_car(*this, c, ci);
+            recycle_halted_car(*this, c, ci);           // 0x40fae0, at 0x40e009
         }
     }
 }
