@@ -63,6 +63,29 @@ In progress: nothing unmerged (cards 232/233 merged: all four `Graph::step` walk
 Known open spots: Resource nodes are never freed after destroy (side tables keyed by Resource*), ids not recycled (0x5173e0); render typed data collapsed onto Runtime::Resource (text_*, bones, camera_*, fog_*: INVENTED mapping); physics: mode 6->7 conversion still after the loop (exe: inside, via 0x4ffd20 when 0x4fc610 fires), contact list rebuilt per sub-iteration (exe keeps creation order); audio: pan/doppler not ported (INVENTED), bus 2D flag and per-sound mindist/maxdist not wired; Chassis subsystem natives (mass/CM/OSD/SFX/force update) and Part getLogo/getMass/flap/install_OK stay explicit stubs; 4 Axis part refs ship only as `scripts/src/*.java`: the exe compiles them at load (0x51fcc0 -> 0x55aca0 -> 0x55bec0 -> JVM::compileSource 0x5598f0: recompile when the .class is missing, mtime differs from the source, or the header is not TUFA v4 build 0x11ae1/0x24f9d); src compiler exists but is not yet hooked into class load; 237 native stubs; CMaterial partial classes/font atlas; VM `>>>`; engine/service startup (GameType, type registry, streaming); no way to run PE32 here (no wine32). Audio service-sort tie order is deterministic but not qsort-identical; DS8/DirectShow runtime untested (hooks only). `make -C src clean check` raced under -j (ar saw classfile.o missing; recurred 2026-10-30); sequenced `make clean && make check` is green - use it.
 
 ## Next-steps queue (in order)
+0A4. **2026-10-31, DeepSeek-only round 5: cross state + script-driven halt.**
+    - Card 249: `cross_active` = cross vf1 `0x40e380` (`CMP [ECX+0x38],0; SETNZ AL; RET`,
+      -1 counts as active) and `car_live_step 0x40f350` now dispatches the owner vf1 for
+      lane and cross owners alike. **Owner kind is `car.cross_node != 0`, not `car.dir`**:
+      step 7 rewrites `+0xc4` to a lane without clearing `+0xcc`, so `dir >= 0` can still
+      have a lane owner (this was a real review catch). `Cross::k40`'s sole writer is
+      `0x40de70` (store `0x40de90`), gate at `0x40e408` load / `0x40e40d` COMISS /
+      `0x40e414` JBE; both callers need unmodelled services, so `k40` stays -1 in src.
+    - Card 250: `Graph::halt_cross` (`0x40de70 ctCross__halt`: `k40 = sim_time + delay`,
+      then recycles the cross's car list and the flagged link-lane lists through
+      `0x40fae0`), and the public native `GroundRef.haltTrafficCross(Vector3,F)V`
+      (`0x4de360` -> getInfo 0x39 -> `nearest_cross 0x419050` -> halt(all=1) at 0x4de408)
+      is no longer a stub. Instance-side services stay `shortcut:`.
+    - Not ported, deliberately: `0x419980`/`0x419ab0` and the global lane worklist
+      (`0x5e6538/3c/40`) — reachable only from `Traffic__haltPath 0x4196f0`, which needs
+      the untraced `Traffic__findRoute 0x417e50`.
+    Remaining:
+    a. `Traffic__findRoute 0x417e50` (unblocks haltPath/haltRoad: `GroundRef.haltTrafficPath`
+       and `haltTrafficRoad` are still stubs, natives.cpp).
+    b. `0x410680`'s four services (`0x4ec210`, `0x417080`, `0x488080`, `0x41a500`) +
+       counters `0x5e64f4/f8/fc`.
+    c. `Car+0x124` owner in `car_target_speed 0x40dc00` (last `shortcut:` there).
+    d. Unchanged bigger blockers: city2 mount `0x519940` (notes/38), event-code-1 sink.
 0A3. **2026-10-30/31, DeepSeek-only round 4: the cross chain is EXERCISED end to end.**
     - Card 247: cross vf4 `0x4883e0` is an empty `RET 8` (the real detach is `0x40ca40`);
       cross vf5 `0x46acd0` returns 0; cross vf6 `0x40dd00` = `max(links[paths[i].a].k98,
