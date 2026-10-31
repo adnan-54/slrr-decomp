@@ -712,17 +712,19 @@ uint32_t lane_node_id(const Graph &g, size_t li)
 }
 
 // INVENTED: node id -> cross with a bounds check (the exe dereferences the table).
-Cross *cross_by_node(Graph &g, uint32_t id, bool *is_light)
+// INVENTED: takes const Graph& so read-only callers bind without a cast; the exe
+// stores mutable Cross*, so the located element is const_cast back for writers.
+Cross *cross_by_node(const Graph &g, uint32_t id, bool *is_light)
 {
     if (id == 0) return nullptr;
     if (id <= g.cross_eq.size()) {
         if (is_light) *is_light = false;
-        return &g.cross_eq[id - 1];
+        return const_cast<Cross *>(&g.cross_eq[id - 1]);
     }
     size_t i = id - 1 - g.cross_eq.size();
     if (i < g.cross_light.size()) {
         if (is_light) *is_light = true;
-        return &g.cross_light[i];
+        return const_cast<Cross *>(&g.cross_light[i]);
     }
     return nullptr;
 }
@@ -1006,28 +1008,69 @@ void car_release(Graph &g, uint32_t i)
     // INVENTED: the +0x130 instance and +0x144 type link unlinks are not modelled.
 }
 
+// 0x40dd00 ctCross__vf6: max of the two link lanes' +0x98 for path idx.
+// INVENTED: missing index/node guards (the exe indexes and dereferences unchecked).
+float cross_vf6(const Graph &g, const Cross &c, size_t idx)
+{
+    if (idx >= c.paths.size()) return 0.0f;
+    const CrossPath &p = c.paths[idx];
+    if (p.a >= c.links.size() || p.b >= c.links.size()) return 0.0f;
+    const Lane *a = g.lane_by_node(c.links[p.a].node);
+    const Lane *b = g.lane_by_node(c.links[p.b].node);
+    const float va = a ? a->k98 : 0.0f;
+    const float vb = b ? b->k98 : 0.0f;
+    return vb < va ? va : vb;   // COMISS + JBE: keep vb on NaN
+}
+
 // 0x40dc00 TrafficCar__targetSpeed: lane speed limit and next-lane/cross objects.
-float car_target_speed(const Graph &g, const Car &car)
+float car_target_speed(Graph &g, const Car &car)
 {
     float s = car.max_speed;
-    // +0xc4 PathRef lane. INVENTED: dir/bounds check; an index (a pointer in the
-    // exe). A cross current ref (dir >= 0) keeps a cross node id in path_lane.
-    if (car.dir < 0 && car.path_lane < g.lanes.size() && g.lanes[car.path_lane].k98 < s)
-        s = g.lanes[car.path_lane].k98;   // ctLane vf6 0x40dd50
+    if (car.path) {                    // INVENTED proxy for car+0xc4 != 0
+        float v = s;
+        bool have = false;
+        if (car.dir < 0) {             // lane vf6 0x40dd50
+            // INVENTED: bounds check (the exe dereferences the lane pointer).
+            if (car.path_lane < g.lanes.size()) {
+                v = g.lanes[car.path_lane].k98;
+                have = true;
+            }
+        } else {                       // cross vf6 0x40dd00
+            Cross *c = cross_by_node(g, car.path_lane, nullptr);
+            // INVENTED: null/path-index guard (the exe dereferences the cross).
+            if (c && (size_t)car.dir < c->paths.size()) {
+                v = cross_vf6(g, *c, (size_t)car.dir);
+                have = true;
+            }
+        }
+        if (have && v < s) s = v;
+    }
     float f = 0.0f;
-    if (!car.next_lane_b) {          // +0xbc, next lane
+    if (!car.next_lane_b) {            // +0xbc, next lane
         if (car.k124) {
-            // shortcut: +0x124 vf6(-1) not modelled (a cross's vf6 0x40dd00 would read
-            // paths[-1]); reachable since the lane-change decision 0x40fde0 sets +0x124
+            // shortcut: +0x124 owner vf6(-1) not modelled (src has no owner
+            // there); reachable since the lane-change decision 0x40fde0 sets +0x124
             s = (0.0f + s) * 0.5f;
         }
     } else {
         f = car.max_speed;
-        if (car.next_lane_a) {       // +0xb8, cross object (kb8 in the exe)
-            // shortcut: cross vf6 0x40dd00 not traced; 0 for spawned cars
-            f = 0.0f;
-            return f <= s ? s : f;
+        float v = 0.0f;
+        bool have = false;
+        if (car.kc0 < 0) {             // lane next owner = lane index
+            // INVENTED: bounds check (the exe dereferences the lane pointer).
+            if (car.next_lane_a < g.lanes.size()) {
+                v = g.lanes[car.next_lane_a].k98;   // ctLane vf6 0x40dd50
+                have = true;
+            }
+        } else {                       // cross next owner = cross node id
+            Cross *c = cross_by_node(g, car.next_lane_a, nullptr);
+            // INVENTED: null/path-index guard (the exe dereferences the cross).
+            if (c && (size_t)car.kc0 < c->paths.size()) {
+                v = cross_vf6(g, *c, (size_t)car.kc0);
+                have = true;
+            }
         }
+        if (have && v < f) f = v;
     }
     return f <= s ? s : f;
 }
@@ -1431,8 +1474,8 @@ void car_set_ref(Graph &g, uint32_t ci, size_t li, const Path *path, int32_t dir
                 if (car.path_lane < g.lanes.size())
                     lane_detach(g, car.path_lane, ci);    // 0x40e710 (dir ignored)
             }
-            // shortcut: cross vf4 0x4883e0 not traced (dir >= 0 detaches the car
-            // from its cross owner).
+            // 0x4883e0 ctCross__vf4: no-op RET 8 (writes and calls nothing);
+            // the car left the cross list in lane_unlink 0x40ca40 above.
             car.path_lane = (uint32_t)li;            // +0xc4
             car.path = path;                         // +0xc8
             car.dir = dir;                           // +0xcc
@@ -1461,6 +1504,19 @@ void car_set_ref(Graph &g, uint32_t ci, size_t li, const Path *path, int32_t dir
     car.kc0 = dir;                                   // +0xc0
 }
 
+/* Cross-vtable slots (image bytes at 0x5936bc ctCross, 0x59377c ctCrossEq,
+ * 0x5937c0 ctCrossLight; all three share +0x0c..+0x18):
+ *   +0x00 vf0 0x40dbd0  not traced here
+ *   +0x04 vf1 0x40e380  live_refs test (notes/40 §4.6)
+ *   +0x08 vf2 0x477320  empty RET 4 (not re-verified)
+ *   +0x0c vf3 0x40cb60  tail append -> cross_attach
+ *   +0x10 vf4 0x4883e0  no-op RET 8 (writes and calls nothing)
+ *   +0x14 vf5 0x46acd0  XOR EAX,EAX; RET 8 -> returns int 0
+ *   +0x18 vf6 0x40dd00  max of the two link lanes' +0x98 -> cross_vf6
+ * The base ctor slots +0x1c/+0x20/+0x28 are the purecall stub 0x56ee6f; ctCrossEq
+ * overrides +0x1c..+0x2c with the route vfs and its dtor, ctCrossLight with
+ * 0x415f40/0x415570 (class names are Ghidra's, the addresses are from the image).
+ */
 // 0x40cb60 ctCross__vf3 (ECX = cross; args Car *car, uint32_t path): tail-append
 // the car to the cross's +8/+0xc list, hand it to the exit lane with 0x40f950,
 // then sync its instance with the cross's bound object (+0x44).
@@ -1506,7 +1562,7 @@ void cross_path_ref(Graph &g, uint32_t ci, uint32_t cross_node, Cross &c, size_t
         if (c.live_refs != 0) car_set_live(g, ci, true);   // cross vf1 0x40e380
         // shortcut: 0x40f950's immediate branch for a cross owner (cross vf2
         // 0x477320 is an empty RET 4; vf3 0x40cb60 is cross_attach; vf4 0x4883e0
-        // is not traced). Unreachable from 0x4157a0, which runs live_refs > 0.
+        // is a no-op RET 8). Unreachable from 0x4157a0, which runs live_refs > 0.
     }
     car.next_lane_a = cross_node;                        // +0xb8 owner
     car.next_lane_b = reinterpret_cast<const Path *>(&c.paths[i].seg);  // +0xbc
@@ -2281,8 +2337,9 @@ void car_step(Graph &g, uint32_t ci)
                 cross_attach(g, car.path_lane, ci, (size_t)car.dir);   // 0x40cb60
             }
             if (car.prev_dir < 0) lane_detach(g, prev_lane, ci);   // 0x4115d2 prev vf4
-            // shortcut: a cross prev owner (prev_dir >= 0) detaches through cross
-            // vf4 0x4883e0, not lane_detach 0x40e710.
+            // A cross prev owner (prev_dir >= 0) calls vf4 0x4883e0, a no-op
+            // RET 8 (writes and calls nothing); the car already left its list in
+            // lane_unlink 0x40ca40 above.
             car.k12c = 0.0f;                           // 0x4115e4
         }
     }
@@ -2686,7 +2743,8 @@ void Graph::remove_car(uint32_t handle)
                                    // spawned src car is on a lane until released
     lane_unlink(*this, ci);
     // INVENTED: dir/bounds check; the exe tests the owner pointer. A cross owner
-    // (dir >= 0) detaches through cross vf4 0x4883e0, not lane_detach 0x40e710.
+    // (dir >= 0) already left the cross list in lane_unlink 0x40ca40 above; its
+    // vf4 0x4883e0 is a no-op RET 8, not lane_detach 0x40e710.
     if (car.dir < 0 && car.path_lane < lanes.size()) lane_detach(*this, car.path_lane, ci);
     car.next_lane_a = 0;
     car.next_lane_b = nullptr;

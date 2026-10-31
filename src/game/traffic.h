@@ -48,8 +48,8 @@ struct Cross {                  // ctCross 0x40e850
     uint32_t active_next = 0;         // +0x54 (eq) / +0x60 (light)
     // +0x44 ResRefLink. INVENTED: id of the bound object's instance, 0 = none.
     uint32_t object = 0;
-    // +0x8/+0xc intrusive car list (tail append, 0x40cb60); INVENTED: car
-    // indices, tail = back().
+    // +0x8/+0xc intrusive car list (tail append 0x40cb60, detach 0x40ca40;
+    // vf4 0x4883e0 is a no-op); INVENTED: car indices, tail = back().
     std::vector<uint32_t> cars;
     std::vector<PathState> path_state; // +0x58, one zeroed pair per path (count +0x20)
     uint32_t cycle = 0;               // +0x5c (light_init 0x415700 zeroes it)
@@ -124,7 +124,9 @@ struct Car {                    // 0x164 bytes in the exe
     // kc0 < 0 = lane owner (next_lane_a is a lane index); kc0 >= 0 = cross owner
     // (next_lane_a is the cross node id, kc0 the path index, and next_lane_b =
     // reinterpret_cast<const Path *>(&c.paths[i].seg), the exe's raw &Segment;
-    // nothing may dereference it as a Path while kc0 >= 0).
+    // nothing may dereference it as a Path while kc0 >= 0). The next-owner speed
+    // limit 0x40dc00 is cross vf6 0x40dd00 for a cross (kc0 >= 0) and the lane's
+    // k98 for a lane (kc0 < 0); the current ref uses dir the same way.
     uint32_t next_lane_a = 0;          // +0xb8 next owner
     const Path *next_lane_b = nullptr; // +0xbc next path (&lane.path / &cross segment)
     int32_t kc0 = 0;                   // +0xc0 next idx (-1 = lane)
