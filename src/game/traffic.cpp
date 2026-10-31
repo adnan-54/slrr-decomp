@@ -1048,9 +1048,10 @@ float car_target_speed(Graph &g, const Car &car)
     float f = 0.0f;
     if (!car.next_lane_b) {            // +0xbc, next lane
         if (car.k124) {
-            // shortcut: +0x124 owner vf6(-1) not modelled (src has no owner
-            // there); reachable since the lane-change decision 0x40fde0 sets +0x124
-            s = (0.0f + s) * 0.5f;
+            // 0x40dc00: +0x124 target lane vf6 (0x40dd50 = lane+0x98), averaged with s.
+            // INVENTED: null guard (the exe dereferences a non-null target lane pointer).
+            const Lane *target = g.lane_by_node(car.k124);
+            if (target) s = (target->k98 + s) * 0.5f;
         }
     } else {
         f = car.max_speed;
