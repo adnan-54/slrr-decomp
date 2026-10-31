@@ -235,6 +235,16 @@ struct Graph {
     // route. Non-const: writes Cross::route_g and the two score globals.
     bool find_route(const float p1[3], const float p2[3], bool flag1, bool flag2,
                     Path *out);
+    // 0x4196f0 Traffic__haltPath: clear every lane halt, route p2 -> p1, halt
+    // the crosses along the route and drain the resulting lane worklist.
+    void halt_path(const float p1[3], const float p2[3]);
+    // 0x419ba0 Traffic__haltRoad: halt each lane shared by the crosses nearest
+    // to p1 and p2 (no halt reset, no routing).
+    void halt_road(const float p1[3], const float p2[3]);
+    // exe 0x5e6538 data / 0x5e653c count / 0x5e6540 cap, a temporary lane
+    // worklist grown by 0x400 entries through 0x5679b0 and freed by 0x567950.
+    // INVENTED: per graph, lane indices instead of Lane*, geometric growth.
+    std::vector<uint32_t> halt_worklist;
 };
 
 void segment_pos(const Segment &s, float d, float out[3]);   // 0x4134e0
