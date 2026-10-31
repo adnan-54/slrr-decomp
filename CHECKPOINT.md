@@ -63,6 +63,35 @@ In progress: nothing unmerged (cards 232/233 merged: all four `Graph::step` walk
 Known open spots: Resource nodes are never freed after destroy (side tables keyed by Resource*), ids not recycled (0x5173e0); render typed data collapsed onto Runtime::Resource (text_*, bones, camera_*, fog_*: INVENTED mapping); physics: mode 6->7 conversion still after the loop (exe: inside, via 0x4ffd20 when 0x4fc610 fires), contact list rebuilt per sub-iteration (exe keeps creation order); audio: pan/doppler not ported (INVENTED), bus 2D flag and per-sound mindist/maxdist not wired; Chassis subsystem natives (mass/CM/OSD/SFX/force update) and Part getLogo/getMass/flap/install_OK stay explicit stubs; 4 Axis part refs ship only as `scripts/src/*.java`: the exe compiles them at load (0x51fcc0 -> 0x55aca0 -> 0x55bec0 -> JVM::compileSource 0x5598f0: recompile when the .class is missing, mtime differs from the source, or the header is not TUFA v4 build 0x11ae1/0x24f9d); src compiler exists but is not yet hooked into class load; 237 native stubs; CMaterial partial classes/font atlas; VM `>>>`; engine/service startup (GameType, type registry, streaming); no way to run PE32 here (no wine32). Audio service-sort tie order is deterministic but not qsort-identical; DS8/DirectShow runtime untested (hooks only). `make -C src clean check` raced under -j (ar saw classfile.o missing; recurred 2026-10-30); sequenced `make clean && make check` is green - use it.
 
 ## Next-steps queue (in order)
+0A2. **2026-10-30, DeepSeek-only round 3: the cross chain is in and PROVEN to run.**
+    - Card 242: `0x40e400` dispatch + `0x40e3a0` room + the three routes (`0x4157a0` >0,
+      `0x4159d0` <0, `0x40e590` ==0) + the INVENTED next-ref tag (`kc0 < 0` lane index,
+      `kc0 >= 0` cross node id + path index, `next_lane_b` = `&paths[i].seg`).
+    - Card 244: `0x413660 segment_pos_offset` (`dir >= 0` refs now use the Segment),
+      cross vf3 `0x40cb60` (`cross_attach`: tail append + exit-lane re-ref + sync),
+      `0x410680 syncInstance` skeleton wired into `lane_attach`/`set_lane_live`,
+      cross branch in `lane_unlink`.
+    - Card 245: evidence only — `0x415b40 claimPath` was already ported exactly; the
+      `0x40f900`/`0x40f930` wrappers are `car_set_ref` with dir = path index / -1.
+    - Card 246 (harness): per-frame road touch + up to 300 frames. **A real hand-over now
+      happens at frame 3** (car serial 137, lane 1303, `kc0` 0 -> 7 = cross path 7), and the
+      checks assert it, that every car stays inside its ref, and that the heap stays valid.
+      `--city` 68 checks, `--selfcheck` 174, `--race` 168 with **race 659.414 s, lap 2
+      244.969 s unchanged**.
+    - Fix on main after 244's review: `car_step` step 1 now adds the cross Segment length
+      (`0x41082b`/`0x410834`) instead of 0.
+    Next (in this order, all bounded):
+    a. cross vf4 `0x4883e0` (untraced release half of `0x40cb60`).
+    b. `Cross::k40` writer (gates `0x40e400`; ctor 0x40c590 = -1.0f; -1 means never blocked,
+       so behaviour-equal until a writer is found).
+    c. `0x410680`'s four services (`0x4ec210` reparent, `0x417080` park, `0x488080` link
+       unlink, `0x41a500` queueSpawn) + counter globals `0x5e64f4/f8/fc`.
+    d. Harness variant worth trying: stop touching ONE road so its lanes expire (> 0.5 s),
+       which routes its cars through `0x40fcf0` (no next-ref skip) and lets step 6 commit a
+       cross **current** ref — the only way a car gets onto a cross segment today.
+    Note on the active walk: `0x40f4e0` skips cars that already carry a next ref, and the
+    harness touches every frame, so a routed car stays parked with its next ref — this is
+    the exe's own behaviour, not a port gap.
 0A. **2026-10-30, DeepSeek-only round 2: cards 241 + 243 merged; lanes are LIVE in `--city`.**
     - Card 241 (traffic.cpp/.h): lane-end move `0x40e460` (cross branch = documented
       SERVICE MISSING false stub), ref set `0x40f950`, lane vf2 `0x411f00`, `0x40f5e0`
