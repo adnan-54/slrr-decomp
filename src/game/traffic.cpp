@@ -2066,8 +2066,8 @@ void car_step(Graph &g, uint32_t ci)
     } else if (car.kc0 < 0) {              // +0xc0, lane ref
         d0 += car.next_lane_b->length;     // +0x38
     } else {
-        // shortcut: step 1 does not add the cross segment length (+0x30) for a
-        // cross next ref; the ref getters (0x40e810 etc.) do read it.
+        // 0x41082b: kc0 >= 0 = cross path, length is the Segment's +0x30.
+        d0 += reinterpret_cast<const Segment *>(car.next_lane_b)->len;
     }
     float target = car_target_speed(g, car);   // 0x41086c -> 0x40dc00
     float leader_speed = -1.0f;                // [EBP-0x20], 0x5935ac
@@ -2378,8 +2378,8 @@ void car_bind_object(Graph &g, uint32_t ci, uint32_t object)
         if (inst) {
             // shortcut: the car_rem event (T+0x3130) is not modelled.
             car.e8 = g.sim_time;
-            // shortcut: Traffic__parkInstance 0x41a500 and the +0x130
-            // type link unlink are not modelled.
+            // shortcut: Traffic__parkInstance 0x417080 and the +0x130
+            // type link unlink 0x488080 are not modelled.
             car.inst_id = 0;
             // shortcut: counters 0x5e64f4/0x5e64fc are not modelled.
         }

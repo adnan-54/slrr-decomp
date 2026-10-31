@@ -1,7 +1,8 @@
 ---
 id: 244
-status: implemented
+status: merged
 branch: card/244
+review: deepseek-pass
 depends: [242]
 ---
 # traffic: cross vf3 0x40cb60 + segment posOffset 0x413660 + syncInstance 0x410680
