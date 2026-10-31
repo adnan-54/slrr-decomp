@@ -1,7 +1,8 @@
 ---
 id: 253
-status: implemented
+status: merged
 branch: card/253
+review: deepseek-pass
 depends: []
 ---
 # traffic: Traffic__findRoute route assembly (parent chain + end connectors)
