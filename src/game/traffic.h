@@ -219,6 +219,9 @@ struct Graph {
     // 0x419050: cross_eq first, then cross_light; first strict minimum wins.
     const Cross *nearest_cross(float x, float y, float z, float dist, bool yflag) const;
     void clear_halts();   // 0x417c50: every lane's halt flag (+0xc4) = 0
+    // 0x40de70 ctCross__halt: k40 = sim_time + delay, then recycle the cross's cars
+    // and (all / flagged link lanes) each link lane's cars.
+    void halt_cross(Cross &c, float delay, bool all);
     // 0x40f6d0 ctLane__setLive: cars and the road's two cross refcounts follow.
     void set_lane_live(size_t lane, bool on);
     // 0x40f8e0 ctRoad__vf1 -> 0x40eed0 lane vf7: keep every lane of the road live.
