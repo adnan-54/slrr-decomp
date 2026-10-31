@@ -646,6 +646,51 @@ bool g_race_mode = false;
 // (cmd 109 -> java.game.Valocity) and stops at the city checks.
 bool g_city_mode = false;
 
+// INVENTED HARNESS: (serial, lane, kc0) per traffic car. car+0xc0 is written
+// only by car_set_ref 0x40f950 (lane owner, dir -1) and cross_path_ref 0x40f900
+// (cross owner, kc0 = path index), and car+0x0c moves when a hand-over commits.
+struct CarRefTag {
+    uint32_t serial;
+    uint32_t lane;
+    int32_t kc0;
+};
+
+std::vector<CarRefTag> car_positions(const traffic::Graph &g)
+{
+    std::vector<CarRefTag> out;
+    for (const traffic::Car &car : g.cars)
+        if (car.serial != 0) out.push_back({car.serial, car.lane, car.kc0});
+    return out;
+}
+
+bool any_car_handed_over(const traffic::Graph &g,
+                         const std::vector<CarRefTag> &start)
+{
+    for (const traffic::Car &car : g.cars) {
+        if (car.serial == 0) continue;
+        for (const CarRefTag &s : start)
+            if (s.serial == car.serial && (s.lane != car.lane || s.kc0 != car.kc0))
+                return true;
+    }
+    return false;
+}
+
+// INVENTED HARNESS: pos must stay inside the car's current ref. dir < 0 is a
+// lane (0x414050 path length, +0x38); kc0 >= 0 is a cross path segment
+// (0x413660, the raw Segment the +0xbc/+0xc0 encoding stores, len at +0x30).
+// Cars with no current ref are skipped.
+bool all_positions_sane(const traffic::Graph &g)
+{
+    for (const traffic::Car &car : g.cars) {
+        if (car.serial == 0 || car.path == nullptr) continue;
+        const float len = car.dir < 0
+                              ? car.path->length
+                              : reinterpret_cast<const traffic::Segment *>(car.path)->len;
+        if (!(car.pos >= 0.0f && car.pos <= len)) return false;
+    }
+    return true;
+}
+
 // Card 211: the Garage handler changed the section to Valocity (Garage.java
 // :1693-1700); Valocity.java:30 builds map = new GroundRef(maps.city:1r) and
 // :41 sets Integrator.isCity. The ground's .trc went through Traffic__load
@@ -769,6 +814,34 @@ void city_checks(Boot &boot, Checker &c, Object *state, FrameLoop &loop)
             "city: one pending event per non-empty lane (0x40cbd0, got " +
                 std::to_string(graph->heap.size()) + " heap entries for " +
                 std::to_string(events) + " non-empty lanes)");
+
+    // INVENTED HARNESS: the exe's render LOD walk touches the road nodes every
+    // frame (0x45f180 -> 0x461980 -> 0x4d44d0 -> lane vf7 0x40eed0); a one-shot
+    // touch expires after 0.5 s in ctLane__activeStep 0x40f4e0.
+    const std::vector<CarRefTag> start_pos = car_positions(*graph);
+    int handed_over = 0, handover_frame = -1;
+    for (int k = 0; k < 300; k++) {
+        boot.runtime()->touch_road_nodes(mh->target);   // every frame
+        loop.frame(loop.last_control_ms() + 16);
+        if (any_car_handed_over(*graph, start_pos)) {
+            handed_over = 1;
+            handover_frame = k + 1;
+            break;
+        }
+    }
+    bool heap_ok_again = true;
+    for (size_t i = 1; i < graph->heap.size(); i++)
+        if (!(graph->heap[(i - 1) / 2].time <= graph->heap[i].time))
+            heap_ok_again = false;
+    c.check(handed_over,
+            "city: within 300 frames some live-lane car is handed over "
+            "(0x40e460 -> 0x40e400)");
+    c.check(all_positions_sane(*graph),
+            "city: every traffic car stays inside its current ref (lanes "
+            "0x414050, cross segments 0x413660)");
+    c.check(heap_ok_again,
+            "city: the lane event heap is still a min-heap after the run (0x41a950)");
+    std::printf("  city: hand-over at frame %d (INVENTED report)\n", handover_frame);
 
     int failed = 0;
     for (const natives::ThreadInfo &t : natives::thread_report(*boot.vm()))
