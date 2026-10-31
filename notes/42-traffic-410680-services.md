@@ -122,16 +122,109 @@ cross(+0xc4)+0x50`) is unbound; **0 (kept)** only when no parked instance and `b
 else creates/reuses the instance (`createScripted(type, "%.3f,...,%d", "traffic_car")` or
 `takeParked` + matrix "ffffff" + reparent + `getInfo(0x3c, seed)`), `getInfo(inst, 0x38, &car)`,
 `car_add`, returns 1.
-UNRESOLVED: the writer of road `+0x74` / cross `+0x50` (not in 0x41a3e0 Traffic__bindObject,
-which only binds `+0x68`/`+0x44`), `0x40da20`, `0x40ef70`, `0x567250`, and the camera
-position source in src.
+Resolved 2026-10-31 (§11-§13): road `+0x74` / cross `+0x50` are the `+0xc` object word of
+the `+0x68` / `+0x44` ResRefLinks that 0x41a3e0 Traffic__bindObject binds (no separate writer);
+0x40da20/0x4136e0/0x413b00 are the path height probes, 0x40ef70 a normalized copy, 0x567250
+Mat34 set-column; the camera position is a main-loop copy of the first camera snapshot.
 
 ## 10. Consequence for src
 - Cardable now (card 257): the counters, the spawn queue append, and the `inst_id = 0` fix.
   Pure Graph bookkeeping; typed City cars (addTrafficN) on live, bound roads do reach the
   queue branch in `--city`.
-- Without the flush the queue only grows; the flush (card 258, draft) is blocked on
-  materialize's parent link (`road+0x74`/`cross+0x50`) and instance creation.
+- Without the flush the queue only grows. Cards: 260 height probes (§12) + load_priority
+  accessor, 258 flush + materialize decision/pose with an INVENTED instance-create hook,
+  261 (draft) the hook in Runtime (createScripted under the road/cross object, getInfo 0x38/0x3c).
 - The reparent/park side (card 259, draft) only acts on real instances: type-0 script cars
   (addTrafficCar) and materialized cars. Needs `T+0x311c` CarContainer and a Graph -> Runtime
   bridge (traffic::Graph holds ids only).
+
+## 11. 0x40d4e0 TrafficCar__materialize, asm-checked (ECX = ESI = car, arg &budget)
+```
+if (!car.live(+0xdc) || !car.type_id(+0x14c) || car.inst_id(+0x138)) return 1   // 0x40d501..0x40d52d
+parent = {0,0,0,0} ResRefLink (EBP-0x40)
+0x40cac0 ResRefLink__set(&parent, dir(+0xcc) == -1 ? [[car+0xc4]+0x10]+0x74 : [car+0xc4]+0x50)  // 0x40d54c..0x40d572
+if (parent.id(+8, EBP-0x38) == 0) return 1                                           // 0x40d577 -> 0x40d948
+p = {front_x(+0x98), world_y(+0x90), front_z(+0x9c)}                                 // EBP-0x24/-0x20/-0x1c
+if (!0x40da20(ECX = &car+0xc4 {path_lane, path, dir}, front_x, front_z, &p.y))      // 0x40d5ba
+    0x40da20(ECX = &car+0xd0 {kd0, prev_path, prev_dir}, front_x, front_z, &p.y)    // 0x40d5d9, result ignored
+d = p - world(+0x8c/+0x90/+0x94)                                                     // EBP-0x68
+f = 0x40ef70 normalizedCopy(d)                                                       // EBP-0x30
+s = (f.z, 0, -f.x); n = sqrt(s.x^2 + s.z^2); if (n != 0) s *= 1.0f / n               // 0x593570 sign mask, 0x593598 = 1.0f
+u = f x s = (f.y*s.z - s.y*f.z, s.x*f.z - s.z*f.x, s.y*f.x - f.y*s.x)               // EBP-0x74/-0x70/-0x6c
+M (EBP-0xa4, Mat34): 0x567250 column 0 = s, column 1 = u, column 2 = f               // 0x40d6e9/0x40d6fa/0x40d70b
+h = car.k18(+0x18) * 0.5f (0x593590 = 0x3f000000); pos = world + f * h              // EBP-0x18/-0x14/-0x10
+ypr = 0x569970 Math__matToYpr(M)                                                     // EBP-0x58/-0x54/-0x50
+if (0x418f60 Traffic__takeParked(ECX = T, type_id, &car+0x130)) {                    // 0x40d77c
+    getInfo(ECX = 0x5fde90, &car+0x130, 0x38, &car_ptr)                              // 0x40d798
+    params = 0x56a000("ffffff", pos.x, pos.y, pos.z, ypr[0], ypr[1], ypr[2])        // fmt 0x59360c, heap block at EBP+8
+    0x4eb3f0(ECX = &car+0x130, &params)   // typed(0xa0000000) -> typed+0x44 type typed(0x80000000)->+0xc mgr vf7(+0x1c)(typed+0x4c, params)
+    0x4ec210(ECX = &car+0x130, &parent)   // reparent
+    getInfo(&car+0x130, 0x3c, seed(+0x154)); free params (0x569f10)
+} else {
+    if (*budget == 0) return 0                                                       // 0x40d84a..0x40d851 (kept)
+    (*budget)--
+    buf = sprintf("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d" (0x593614), pos.x, pos.y, pos.z, ypr[0], ypr[1], ypr[2], seed)
+    obj = 0x523c80 GameObject__createScripted(&parent, &car+0x144 /*type link*/, buf, "traffic_car" (0x593638))
+    0x40cac0 ResRefLink__set(ECX = &car+0x130, obj)                                  // inst_id = obj+0x80
+    getInfo(&car+0x130, 0x38, &car_ptr)                                              // 0x40d8fd type_car take-over
+}
+if (car.notify(+0xdd)) queue(T+0x3130, 0, 0x10, sprintf("car_add %d %d" (0x593644), inst_id, car), 0)  // 0x40d943
+return 1   // 0x40d948; 0x488080 dtor of the parent link on every exit past 0x40d52f
+```
+- `0x40cac0 ResRefLink__set(ECX = link, obj)`: unlink from the old target (`obj+0x78` list),
+  then `link+0xc = obj; link+8 = obj+0x80` (id) and head-insert into `obj+0x78`; obj 0 clears.
+  So road `+0x74` = road `+0x68` link `+0xc` (the bound object) and cross `+0x50` = cross
+  `+0x44` link `+0xc`: written by 0x41a3e0 Traffic__bindObject (src `road.object` /
+  `cross.object`, traffic.cpp:2487/2499). "Bound" = `obj+0x80 != 0` = src `object != 0`.
+- The owner is chosen by `dir`, like 0x40dde0/0x40dd60. src notes (traffic.cpp:1385) that
+  0x4107c0 step 7 can leave `dir >= 0` on a lane owner; the exe then reads lane `+0x50` =
+  lane.path(+0x3c) `+0x14` = Path end[0] (a float) as an object pointer. No evidence the
+  materialize path meets that state; a port needs an INVENTED guard there.
+- The y probe writes `p.y` whenever the underlying probe finds a segment, even when the
+  `|lat| < 10` test then fails, so the fallback probe and the final p.y can come from a
+  failed first probe. With both failing p.y keeps `world_y`.
+- `0x40ef70 Vec3__normalizedCopy(ECX = src, out)`: `out = src; n = |out|; if (n != 0) out *= 1/n`.
+- `0x567250 Mat34__setColumn(ECX = M, i, v)`: `M.m[i] = v[0]; M.m[4+i] = v[1]; M.m[8+i] = v[2]`.
+- `0x569f00` zeroes a pointer, `0x569f10` frees it (thunk 0x575a7e): the "ffffff" param block.
+- `0x56a000(&block, fmt, ...)`: frees the old block, sizes (0x56a050(0, fmt, 0)), allocs
+  (0x545e50), fills (0x56a050(block, fmt, va)). Format "ffffff" = six floats; not traced deeper.
+
+## 12. Path height probes (ECX-checked from asm)
+### 0x40da20 CarPathRef__heightAt(ECX = ref {owner, path, dir}, x, z, float *y) -> bool
+```
+if (!ref.path(+4)) return 0
+ok = ref.dir(+8) < 0 ? 0x4136e0(ECX = path, x, z, y, &lat) : 0x413b00(ECX = (Segment *)path, x, z, y, &lat)
+return ok && |lat| < 10.0f            // 0x5935c0 abs mask, 0x59373c = 0x41200000 = 10.0f, COMISS/SETA
+```
+### 0x413b00 ctSegment__heightAt(ECX = seg, x, z, float *y, float *lat) -> bool (asm read in full)
+```
+if (!seg.curved(+0x38)) {                                   // 0x413de6
+    n = sqrt(m0.x^2 + m0.z^2); dx = m0.x/n; dz = m0.z/n     // no zero guard
+    t = dz*(z - p0.z) + dx*(x - p0.x); L = seg.len(+0x30) * n
+    if (t < 0.0f (0x593580) || L < t) return 0              // COMISS/JC
+    t /= L; *y = (1 - t)*p0.y + p1.y*t; *lat = |dx*(z - p0.z) - dz*(x - p0.x)|; return 1
+}
+curved: identical to src segment_project's curved branch (traffic.cpp:350..388; same constants
+1e-5 double 0x593588, 0.01 double 0x593560, 0.9f 0x59370c, 0.1 double 0x593568, k = 1.0f) with
+outputs *lat = (x - pos.x)*side.x + (z - pos.z)*side.z (signed) and *y = pos.y (pos from the
+last 0x4134e0 evaluation, side = 0x4131a0 at the final d); return 1.
+```
+Note the straight branch differs from 0x414480: it uses `len * |m0.xz|` (not flat_len) and has
+no 1e-5 guard.
+### 0x4136e0 ctPath__heightAt(ECX = path {count +0, segs +4, stride 0x54}, x, z, y, lat) (decompile)
+```
+best = -1
+for i in segs: body of 0x413b00 inlined on seg i -> (yi, lati) when it succeeds;
+    if (best == -1 || |lati| < |*lat|) { *lat = lati; *y = yi; best = i }
+return best != -1
+```
+No endpoint fallback (unlike 0x414830 path_project).
+
+## 13. Camera position for flushSpawns (0x5fe110, count 0x5f1e44)
+`0x5fe110..0x5fe118` (12 bytes) is written only in Game__mainLoop 0x47d760 (`0x47dbab` MOVQ +
+the +8 dword): when `DAT_005f1e44 > 0` it copies `0x5fe130..0x5fe138` = the first camera
+follow snapshot's position (entries 0x58 @0x5fe120, notes/08), the same value the listener
+uses (notes/14). The copy runs **after** `0x47ba10` (the animate pass that reaches type_ground
+vf13 0x4bac10), so flushSpawns scores against the previous frame's camera. Second reader
+0x4bad6a (the 0x4bac10 call site). src has no camera snapshots (boot.cpp:222: the
+`0x5f1e44 <= 0` branch, listener at the origin), so in src `cam = null` and every score is 0.0f.

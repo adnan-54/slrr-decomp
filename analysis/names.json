@@ -2088,5 +2088,9 @@
   "0x40d2c0": "TrafficCar__noteLeader",
   "0x40daa0": "TrafficCar__distanceOnRef",
   "0x414050": "ctPath__projectXZ",
-  "0x40d970": "CarPathRef__crossObject"
+  "0x40d970": "CarPathRef__crossObject",
+  "0x40ef70": "Vec3__normalizedCopy",
+  "0x40da20": "CarPathRef__heightAt",
+  "0x4136e0": "ctPath__heightAt",
+  "0x413b00": "ctSegment__heightAt"
 }
