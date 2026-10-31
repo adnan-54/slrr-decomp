@@ -43,6 +43,8 @@ struct Cross {                  // ctCross 0x40e850
     float pos[3] = {}; uint32_t k30 = 0;
     float radius = 0;                 // +0x34 (cross_init 0x415650)
     int32_t live_refs = 0;            // +0x38 live-lane refcount, -1 = going inactive
+    float k40 = -1.0f;                // +0x40 route gate vs T+0x84 (0x40e400); ctor
+                                      // 0x40c590 stores -1.0f, writer UNRESOLVED
     uint32_t active_next = 0;         // +0x54 (eq) / +0x60 (light)
     // +0x44 ResRefLink. INVENTED: id of the bound object's instance, 0 = none.
     uint32_t object = 0;
@@ -112,10 +114,13 @@ struct Car {                    // 0x164 bytes in the exe
     float kac = 0;              // +0xac
     float speed = 0;            // +0xb0
     float kb4 = 0;              // +0xb4
-    // +0xb8/+0xbc/+0xc0 next ref {owner, path, idx} (notes/37 §3). INVENTED:
-    // the owner is a lane index (a pointer in the exe).
+    // +0xb8/+0xbc/+0xc0 next ref {owner, path, idx} (notes/37 §3). INVENTED tag:
+    // kc0 < 0 = lane owner (next_lane_a is a lane index); kc0 >= 0 = cross owner
+    // (next_lane_a is the cross node id, kc0 the path index, and next_lane_b =
+    // reinterpret_cast<const Path *>(&c.paths[i].seg), the exe's raw &Segment;
+    // nothing may dereference it as a Path while kc0 >= 0).
     uint32_t next_lane_a = 0;          // +0xb8 next owner
-    const Path *next_lane_b = nullptr; // +0xbc next path (&lane.path)
+    const Path *next_lane_b = nullptr; // +0xbc next path (&lane.path / &cross segment)
     int32_t kc0 = 0;                   // +0xc0 next idx (-1 = lane)
     uint32_t path_lane = 0;     // +0xc4 PathRef lane (INVENTED: index)
     const Path *path = nullptr; // +0xc8 (&lane.path)
