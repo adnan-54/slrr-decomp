@@ -1,6 +1,6 @@
 ---
 id: 248
-status: todo
+status: implemented
 branch: card/248
 depends: [246]
 ---
@@ -81,3 +81,19 @@ Rules for this card:
   time (must stay 659.414 s), plus how many frames the expiry phase needed
 - no unit tests, no hand-made expected values
 - card frontmatter: status implemented, branch card/248
+
+## Implementation finding (card 248)
+The card's 60-frame (0.96 s) window is **not enough**: the check failed with 144 cars still
+holding a cross next ref at frame 60 (e.g. serial 15, lane 1030: pos 1.82, k14 2.00,
+kc0 9, current lane path 461.56, dir -1, next owner cross node 25).
+
+Cause (exe behaviour, not a src gap): `0x40f6d0` reschedules an expiring lane only when
+`lane+0xac == 0`. The routed cars' lanes still hold the event `addTraffic` queued at spawn
+(timeToLaneEnd from the then-front car), so expiry schedules nothing; lane 1030's event sat
+at sim 487.26 (11.8 s after the last touch). The timer event itself is fine: lanes did
+expire (live_lanes 1572 -> 0 at ~0.5 s) and the heap kept firing (~2 events/frame), the
+routed cars just step ~1 event per lane per second.
+
+Fix in the harness only: the phase cap is 300 frames (same as card 246's loop) with a break
+on the first cross current ref. The commit lands at **frame 95** (deterministic, two runs);
+`--city` is 70 checks / 0 failures.
