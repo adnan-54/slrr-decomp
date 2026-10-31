@@ -1,7 +1,8 @@
 ---
 id: 242
-status: implemented
+status: merged
 branch: card/242
+review: deepseek-pass
 depends: [241]
 ---
 # traffic: cross routing 0x40e400 + the three cross vf routes (0x4157a0/0x4159d0/0x40e590) + lane room 0x40e3a0
