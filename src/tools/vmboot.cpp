@@ -691,6 +691,16 @@ bool all_positions_sane(const traffic::Graph &g)
     return true;
 }
 
+// INVENTED HARNESS: a car whose current ref is a cross path (path index, not a
+// lane). car+0xcc >= 0 tags a cross owner (car+0xc8 is then the raw &Segment of
+// cross path +0x58+i*0x60, 0x413660); lane refs carry dir -1 (0x40f950).
+bool any_car_on_cross_ref(const traffic::Graph &g)
+{
+    for (const traffic::Car &car : g.cars)
+        if (car.serial != 0 && car.path != nullptr && car.dir >= 0) return true;
+    return false;
+}
+
 // Card 211: the Garage handler changed the section to Valocity (Garage.java
 // :1693-1700); Valocity.java:30 builds map = new GroundRef(maps.city:1r) and
 // :41 sets Integrator.isCity. The ground's .trc went through Traffic__load
@@ -842,6 +852,31 @@ void city_checks(Boot &boot, Checker &c, Object *state, FrameLoop &loop)
     c.check(heap_ok_again,
             "city: the lane event heap is still a min-heap after the run (0x41a950)");
     std::printf("  city: hand-over at frame %d (INVENTED report)\n", handover_frame);
+
+    // INVENTED HARNESS: the exe's render walk keeps a visible road's lanes alive;
+    // dropping the touch for 0.5 s (0x40f4e0, 0x593590) makes
+    // ctLane__activeStep 0x40f4e0 expire them, which lets ctLane__timedEvent
+    // 0x40fcf0 step the cars without the next-ref skip and lets
+    // TrafficCar__step 0x4107c0 step 6 commit a recorded cross next ref.
+    // Finding (card 248): 0x40f6d0 only reschedules an expiring lane when it has
+    // no pending event (+0xac); the routed cars' lanes still hold the event that
+    // addTraffic queued, so the first step lands ~1.5 s after the last touch
+    // (commit at frame 95), not inside the card's 60 frames.
+    int committed = 0, commit_frame = -1;
+    for (int k = 0; k < 300; k++) {
+        loop.frame(loop.last_control_ms() + 16);
+        if (any_car_on_cross_ref(*graph)) {
+            committed = 1;
+            commit_frame = k + 1;
+            break;
+        }
+    }
+    std::printf("  city: cross commit at expiry frame %d (INVENTED report)\n",
+                commit_frame);
+    c.check(committed, "city: after the lanes expire a routed car commits its cross ref "
+                       "(0x4107c0 step 6, cross geometry 0x413660)");
+    c.check(all_positions_sane(*graph), "city: every traffic car stays inside its current ref "
+                                        "after the expiry phase (lanes 0x414050, segments 0x413660)");
 
     int failed = 0;
     for (const natives::ThreadInfo &t : natives::thread_report(*boot.vm()))
