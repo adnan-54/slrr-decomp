@@ -7551,21 +7551,39 @@ bool gr_halt_traffic_cross(Vm &vm, const Args &a, Value *out, std::string *err)
 
 // 0x4dd700 GroundRef.haltTrafficPath(Vector3,Vector3)V: if (p1 && p2 && getInfo)
 // Traffic__haltPath(p1, p2).
-// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
-bool gr_halt_traffic_path(Vm &, const Args &a, Value *out, std::string *err)
+bool gr_halt_traffic_path(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     if (!want("GroundRef.haltTrafficPath", a, 3, err)) return false;
     *out = Value::make_null();
+    if (a[1].kind != Value::Obj || !a[1].obj) return true;   // 0x4dd700: p1 == 0
+    if (a[2].kind != Value::Obj || !a[2].obj) return true;   // p2 == 0
+    float p1[3] = {dd_get_f(vm, a[1].obj, "x"), dd_get_f(vm, a[1].obj, "y"),
+                   dd_get_f(vm, a[1].obj, "z")};
+    float p2[3] = {dd_get_f(vm, a[2].obj, "x"), dd_get_f(vm, a[2].obj, "y"),
+                   dd_get_f(vm, a[2].obj, "z")};
+    Runtime *rt = game_rt();
+    traffic::Graph *t = rt ? rt->ground_traffic(value_handle(a[0])) : nullptr;
+    if (!t) return true;                      // getInfo 0x39 == 0 -> no-op
+    t->halt_path(p1, p2);                     // 0x4196f0
     return true;
 }
 
 // 0x4de270 GroundRef.haltTrafficRoad(Vector3,Vector3)V: if (p1 && p2 && getInfo)
 // Traffic__haltRoad(p1, p2).
-// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
-bool gr_halt_traffic_road(Vm &, const Args &a, Value *out, std::string *err)
+bool gr_halt_traffic_road(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     if (!want("GroundRef.haltTrafficRoad", a, 3, err)) return false;
     *out = Value::make_null();
+    if (a[1].kind != Value::Obj || !a[1].obj) return true;   // p1 == 0
+    if (a[2].kind != Value::Obj || !a[2].obj) return true;   // p2 == 0
+    float p1[3] = {dd_get_f(vm, a[1].obj, "x"), dd_get_f(vm, a[1].obj, "y"),
+                   dd_get_f(vm, a[1].obj, "z")};
+    float p2[3] = {dd_get_f(vm, a[2].obj, "x"), dd_get_f(vm, a[2].obj, "y"),
+                   dd_get_f(vm, a[2].obj, "z")};
+    Runtime *rt = game_rt();
+    traffic::Graph *t = rt ? rt->ground_traffic(value_handle(a[0])) : nullptr;
+    if (!t) return true;                      // getInfo 0x39 == 0 -> no-op
+    t->halt_road(p1, p2);                     // 0x419ba0
     return true;
 }
 

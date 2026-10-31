@@ -3303,6 +3303,129 @@ void Graph::halt_cross(Cross &c, float delay, bool all)
     }
 }
 
+// Inner block of 0x419980 and the body of 0x419ab0 after the halted write: from
+// the lane's road read the far cross (road node[1 + lane.k18]) and queue every
+// unhalted flagged link lane that no open path of that cross reaches.
+static void halt_push_far_links(Graph &g, Lane &lane)
+{
+    Road *rn = road_by_node(g, lane.road);              // lane+0x10
+    if (!rn) return;                                    // INVENTED: null guard
+    // 0x4199c6/0x4199c9 read *(road + 0x8 + 4*k18); the road nodes sit at
+    // +0x4/+0x8/+0xc, so that is node[1 + k18]. (lane_end_move 0x40e460 reads
+    // node[2 - k18] instead; the halt trace wins here.)
+    size_t ni = 1 + (size_t)lane.k18;
+    if (ni > 2) return;                                 // INVENTED: k18 guard
+    Cross *c2 = cross_by_node(g, rn->node[ni], nullptr);
+    if (!c2) return;                                    // INVENTED: null guard
+    for (size_t j = 0; j < c2->links.size(); j++) {     // cross+0x18
+        if (c2->links[j].flag == 0) continue;           // 0x4199d3
+        Lane *lj = lane_at(g, c2->links[j].node);       // INVENTED: null guard
+        if (!lj || lj->halted) continue;                // +0xc4
+        bool open = false;
+        for (const CrossPath &p : c2->paths) {          // cross+0x1c / +0x20
+            if ((size_t)p.a != j) continue;
+            // INVENTED: link index guard; the exe reads links[b] unchecked.
+            if (p.b >= c2->links.size()) continue;
+            Lane *lb = lane_at(g, c2->links[p.b].node);
+            if (lb && !lb->halted) { open = true; break; }
+        }
+        if (open) continue;                             // goto skip_push
+        // The exe grows the global by 0x400 entries (0x5679b0); a vector grows
+        // geometrically and holds lane indices. INVENTED: index, growth.
+        g.halt_worklist.push_back((uint32_t)(lj - g.lanes.data()));
+    }
+}
+
+// 0x419980 halt_cross_propagate (ECX = cross): halt the cross with delay
+// 0.001f on every link, then halt each link lane and expand through its far
+// cross. Called only from Traffic__haltPath 0x4196f0.
+static void halt_cross_propagate(Graph &g, const Cross *cp)
+{
+    if (!cp) return;                                    // 0x419980 null check
+    Cross &c = const_cast<Cross &>(*cp);
+    g.halt_cross(c, 0.001f, true);                      // 0x3a83126f, all = 1
+    for (const CrossLink &link : c.links) {
+        Lane *lane = lane_at(g, link.node);             // INVENTED: null guard
+        if (!lane) continue;
+        lane->halted = true;                            // 0x4199bf
+        halt_push_far_links(g, *lane);
+    }
+}
+
+// 0x419ab0 halt_lane_propagate (ECX = lane): the same expansion from one lane,
+// without the halt_cross call.
+static void halt_lane_propagate(Graph &g, Lane &lane)
+{
+    lane.halted = true;
+    halt_push_far_links(g, lane);
+}
+
+// 0x4196f0 Traffic__haltPath (ECX = T; p1, p2): clear every lane halt, flag an
+// endpoint that lies inside 0.7 * its cross radius, route p2 -> p1, halt the
+// crosses along the route, then drain the lane worklist.
+void Graph::halt_path(const float p1[3], const float p2[3])
+{
+    for (Lane &l : lanes) l.halted = false;             // clear ALL halts first
+    bool flag2 = false;
+    const Cross *c2 = nearest_cross(p2[0], p2[1], p2[2], 0.0f, true);
+    if (c2) {
+        float r = 0.7f * c2->radius;                    // +0x34, 0x3f333333
+        float dx = c2->pos[0] - p2[0];
+        float dy = c2->pos[1] - p2[1];
+        float dz = c2->pos[2] - p2[2];
+        if (r * r > dx * dx + dy * dy + dz * dz) flag2 = true;
+    }
+    bool flag1 = false;
+    const Cross *c1 = nearest_cross(p1[0], p1[1], p1[2], 0.0f, true);
+    if (c1) {
+        float r = 0.7f * c1->radius;
+        float dx = c1->pos[0] - p1[0];
+        float dy = c1->pos[1] - p1[1];
+        float dz = c1->pos[2] - p1[2];
+        if (r * r > dx * dx + dy * dy + dz * dz) flag1 = true;
+    }
+    Path P;
+    if (find_route(p1, p2, flag1, flag2, &P)) {
+        // 0x4198xx: free the worklist (0x567950) before it is refilled.
+        halt_worklist.clear();
+        halt_cross_propagate(*this,
+            nearest_cross(P.start[0], P.start[1], P.start[2], 0.0f, true));
+        for (const Segment &s : P.segs) {
+            halt_cross_propagate(*this,
+                nearest_cross(s.p1[0], s.p1[1], s.p1[2], 0.0f, true));
+        }
+        // 0x511140 / 0x56a42f free the path; P dies at scope exit.
+        // The count is re-read every step: the walk may append to the list.
+        for (size_t i = 0; i < halt_worklist.size(); i++) {
+            Lane &l = lanes[halt_worklist[i]];
+            if (!l.halted) halt_lane_propagate(*this, l);   // 0x419ab0
+        }
+    }
+    halt_worklist.clear();                              // final 0x567950
+}
+
+// 0x419ba0 Traffic__haltRoad (ECX = T; p1, p2): halt every lane shared by the
+// crosses nearest to p1 and p2. No halt reset, no halt_cross, no routing.
+// INVENTED: null-cross guards; the exe dereferences both unchecked.
+void Graph::halt_road(const float p1[3], const float p2[3])
+{
+    const Cross *c1 = nearest_cross(p1[0], p1[1], p1[2], 0.0f, false);
+    const Cross *c2 = nearest_cross(p2[0], p2[1], p2[2], 0.0f, false);
+    if (!c1 || !c2) return;
+    for (size_t i = 0; i < c1->links.size(); i++) {
+        Lane *lane = lane_at(*this, c1->links[i].node);      // INVENTED: null guard
+        if (!lane) continue;
+        for (size_t j = 0; j < c2->links.size(); j++) {
+            Lane *other = lane_at(*this, c2->links[j].node); // INVENTED: null guard
+            if (!other) continue;
+            if (lane == other && !lane->halted) halt_lane_propagate(*this, *lane);
+        }
+    }
+    // shortcut: the exe pushes onto the global worklist here and never drains
+    // it (haltRoad has no worklist loop); the entries stay until the next
+    // haltPath clears them, as here.
+}
+
 // 0x40f290 TrafficCar__remove: unlink the car (GroundRef.remTrafficCar 0x4de520).
 void Graph::remove_car(uint32_t handle)
 {
