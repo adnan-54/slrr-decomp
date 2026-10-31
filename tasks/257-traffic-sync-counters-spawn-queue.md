@@ -1,8 +1,8 @@
 ---
 id: 257
-status: implemented
+status: merged
 branch: card/257
-review:
+review: claude
 depends: []
 ---
 # traffic: syncInstance bookkeeping — counters 0x5e64f4/f8/fc, queueSpawn 0x41a500, inst_id clear
