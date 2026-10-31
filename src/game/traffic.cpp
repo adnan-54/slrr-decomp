@@ -1349,19 +1349,32 @@ void car_push_instance(Graph &g, Car &car)
     // src has no traffic_car typed object, so nothing observes the push.
 }
 
-// 0x40f350 TrafficCar__liveStep: a live car stays listed while its current lane
-// is live; the cross-claim branches (idx >= 0) have no src state.
+// 0x40e380 ctCross__vf1 (vtable +0x04; ECX = cross): CMP [ECX+0x38],0;
+// SETNZ AL; RET. Reads only live_refs (+0x38); no writes, no calls.
+// -1 (dying) is active, only 0 is not.
+bool cross_active(const Cross &c) { return c.live_refs != 0; }
+
+// 0x40f350 TrafficCar__liveStep: a live car stays listed while its current ref
+// owner is live; the cross-claim branches (idx >= 0) have no src state.
 bool car_live_step(Graph &g, Car &car)
 {
     if (!car.live) {              // +0xdc
         car_push_instance(g, car);    // 0x4118f0 -> 0x4102d0
         return false;
     }
-    // shortcut: cross vf1 0x40e380 (live_refs test) is not modelled; a car on a
-    // cross is kept live by the next ref that cross_attach 0x40cb60 sets.
-    // INVENTED: a car not on a lane (dir >= 0) counts as not live here.
-    const bool cur_live = car.dir < 0 && car.path_lane < g.lanes.size() &&
-                          g.lanes[car.path_lane].live;   // lane vf1 0x40e390 = +0xa8
+    // 0x40f3f3: vf1 dispatched on the object at *(Car+0xc4). The owner kind is
+    // tracked by cross_node (set by cross_attach 0x40cb60, cleared by
+    // lane_unlink 0x40ca40), not by dir: 0x4107c0 step 7 rewrites +0xc4 to a
+    // lane without touching +0xcc, so dir can stay >= 0 on a lane owner.
+    bool cur_live;
+    if (car.cross_node != 0) {
+        const Cross *c = cross_by_node(g, car.cross_node, nullptr);  // INVENTED null guard
+        cur_live = c != nullptr && cross_active(*c);                 // cross vf1 0x40e380
+    } else {
+        // lane vf1 0x40e390 = lane+0xa8 live
+        cur_live = car.path_lane < g.lanes.size() && g.lanes[car.path_lane].live;
+    }
+    // 0x40f402: drop the car when the owner is not live and there is no next ref.
     if (!car.next_lane_b && !cur_live && car.live) {
         g.live_count--;
         if (!car.type_id && car.inst_id && car.notify) {
@@ -1695,7 +1708,7 @@ bool cross_dispatch(Graph &g, uint32_t cross_node, uint32_t ci, float t, uint32_
     Cross *c = cross_by_node(g, cross_node, nullptr);
     // INVENTED: a road/lane node id is not a cross (the exe calls a vtable on it).
     if (!c) return false;
-    if (c->k40 > g.sim_time) return false;               // +0x40 vs T+0x84
+    if (c->k40 > g.sim_time) return false;               // 0x40e40d COMISS / 0x40e414 JBE; writer 0x40de70
     const int32_t r = c->live_refs;                      // +0x38
     if (r > 0) return cross_route_live(g, cross_node, *c, ci, t, link);   // vt+0x1c
     if (r < 0) return cross_route_dying(g, *c, ci, link);                 // vt+0x20
