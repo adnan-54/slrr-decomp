@@ -1,8 +1,8 @@
 ---
 id: 260
-status: implemented
+status: merged
 branch: card/260
-review:
+review: claude
 depends: []
 ---
 # traffic: path height probes 0x413b00 / 0x4136e0 / 0x40da20 + natives::load_priority accessor
