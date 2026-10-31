@@ -8046,6 +8046,8 @@ namespace natives {
 // 0x60251c: the same clock System.simTime (0x4e5810) returns.
 double sim_time(Vm &) { return process_world().time; }
 
+int load_priority(Vm &vm) { return sched(vm).load_priority; }
+
 // Public alias of the per-resource controller block for the game control list
 // (Vehicle__updateControls 0x498300 reads the driver's Controller axes).
 input::Controller *controller_of(Runtime::Resource *r) { return ::controller_of(r); }

@@ -328,27 +328,13 @@ void path_dir_at(const Path &p, float d, float out[3])
     segment_dir(p.segs[i], d, out);
 }
 
-// 0x414480 ctSegment__project — xz projection; d in [0, len], lat = signed side.
-bool segment_project(const Segment &s, float x, float z, float *d, float *lat)
+// Curved branch shared by 0x414480 and 0x413b00: Newton solve of the foot point.
+// `dir` is the already normalized m0 xz span; d and the last pos/side come back.
+static bool segment_curved_project(const Segment &s, float x, float z, const float dir[2],
+                                   float *d, float pos[3], float side[3])
 {
-    float dir[2] = {s.m0[0], s.m0[2]};
-    float n = sqrtf(dir[0] * dir[0] + dir[1] * dir[1]);
-    if ((double)n > 1e-5) {
-        float inv = 1.0f / n;
-        dir[0] *= inv;
-        dir[1] *= inv;
-    }
-    if (!s.curved) {
-        float dx = x - s.p0[0], dz = z - s.p0[2];
-        float proj = dir[1] * dz + dir[0] * dx;
-        if (proj < 0.0f) return false;
-        if (s.flat_len < proj) return false;
-        *d = proj / s.flat_len * s.len;
-        *lat = s.m1[2] * dz + s.m1[0] * dx;
-        return true;
-    }
     float nrm[2] = {-s.m1[0], -s.m1[2]};
-    n = sqrtf(nrm[0] * nrm[0] + nrm[1] * nrm[1]);
+    float n = sqrtf(nrm[0] * nrm[0] + nrm[1] * nrm[1]);
     if ((double)n > 1e-5) {
         float inv = 1.0f / n;
         nrm[0] *= inv;
@@ -360,7 +346,7 @@ bool segment_project(const Segment &s, float x, float z, float *d, float *lat)
     if (!(a >= 0.0f) || !(b >= 0.0f)) return false;
     *d = s.len * a / (b + a);
     float prev_err = 0.0f, k = 1.0f;
-    float pos[3], d3[3], side[3];
+    float d3[3];
     segment_pos(s, *d, pos);
     segment_dir(s, *d, d3);
     float err = (x - pos[0]) * d3[0] + (z - pos[2]) * d3[2];
@@ -385,8 +371,79 @@ bool segment_project(const Segment &s, float x, float z, float *d, float *lat)
         err = (x - pos[0]) * d3[0] + (z - pos[2]) * d3[2];
     }
     segment_side(s, *d, side);
+    return true;
+}
+
+// 0x414480 ctSegment__project — xz projection; d in [0, len], lat = signed side.
+bool segment_project(const Segment &s, float x, float z, float *d, float *lat)
+{
+    float dir[2] = {s.m0[0], s.m0[2]};
+    float n = sqrtf(dir[0] * dir[0] + dir[1] * dir[1]);
+    if ((double)n > 1e-5) {
+        float inv = 1.0f / n;
+        dir[0] *= inv;
+        dir[1] *= inv;
+    }
+    if (!s.curved) {
+        float dx = x - s.p0[0], dz = z - s.p0[2];
+        float proj = dir[1] * dz + dir[0] * dx;
+        if (proj < 0.0f) return false;
+        if (s.flat_len < proj) return false;
+        *d = proj / s.flat_len * s.len;
+        *lat = s.m1[2] * dz + s.m1[0] * dx;
+        return true;
+    }
+    float pos[3], side[3];
+    if (!segment_curved_project(s, x, z, dir, d, pos, side)) return false;
     *lat = (x - pos[0]) * side[0] + (z - pos[2]) * side[2];   // pos from the last evaluation
     return true;
+}
+
+// 0x413b00 ctSegment__heightAt — road-surface y and |lateral| at (x, z).
+bool segment_height(const Segment &s, float x, float z, float *y, float *lat)
+{
+    float dir[2] = {s.m0[0], s.m0[2]};
+    if (!s.curved) {
+        // 0x413de6: no 1e-5 guard on this normalization.
+        float n = sqrtf(dir[0] * dir[0] + dir[1] * dir[1]);
+        float inv = 1.0f / n;
+        float dx = dir[0] * inv, dz = dir[1] * inv;
+        float t = dz * (z - s.p0[2]) + dx * (x - s.p0[0]);
+        float L = s.len * n;                      // len (+0x30), not flat_len
+        // !(x >= 0) also catches NaN, matching the exe's carry-flag test.
+        if (!(t >= 0.0f) || !(L >= t)) return false;
+        t = t / L;
+        *y = (1.0f - t) * s.p0[1] + s.p1[1] * t;
+        *lat = fabsf(dx * (z - s.p0[2]) + (-dz) * (x - s.p0[0]));
+        return true;
+    }
+    float n = sqrtf(dir[0] * dir[0] + dir[1] * dir[1]);
+    if ((double)n > 1e-5) {
+        float inv = 1.0f / n;
+        dir[0] *= inv;
+        dir[1] *= inv;
+    }
+    float d, pos[3], side[3];
+    if (!segment_curved_project(s, x, z, dir, &d, pos, side)) return false;
+    *lat = (x - pos[0]) * side[0] + (z - pos[2]) * side[2];   // signed
+    *y = pos[1];
+    return true;
+}
+
+// 0x4136e0 ctPath__heightAt — best segment by |lat|; no endpoint fallback.
+bool path_height(const Path &p, float x, float z, float *y, float *lat)
+{
+    int best = -1;
+    for (size_t i = 0; i < p.segs.size(); i++) {
+        float yi = 0, lati = 0;
+        if (segment_height(p.segs[i], x, z, &yi, &lati) &&
+            (best == -1 || fabsf(lati) < fabsf(*lat))) {
+            *lat = lati;
+            *y = yi;
+            best = (int)i;
+        }
+    }
+    return best != -1;
 }
 
 // 0x414830 ctPath__project — nearest segment by |lat|; d is path length so far + sd.
@@ -1245,6 +1302,17 @@ void car_ref_pos_offset(const Path *path, int32_t dir, float d, float off, float
         return;
     }
     path_pos_offset_at(*path, d, off, out);      // 0x4133f0 ctPath__posOffsetAt
+}
+
+// 0x40da20 CarPathRef__heightAt (ECX = ref): road-surface y at (x, z); *y stays
+// written when the caller's |lat| < 10 test then fails.
+bool car_ref_height(const Path *path, int32_t dir, float x, float z, float *y)
+{
+    if (!path) return false;
+    float lat = 0.0f;
+    bool ok = dir < 0 ? path_height(*path, x, z, y, &lat)      // 0x4136e0
+                      : segment_height(*reinterpret_cast<const Segment *>(path), x, z, y, &lat);
+    return ok && fabsf(lat) < 10.0f;             // 0x59373c = 10.0f
 }
 
 // 0x40dd60 CarPathRef__dir (ECX = ref): path direction at d.

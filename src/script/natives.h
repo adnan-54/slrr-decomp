@@ -25,6 +25,8 @@ const std::vector<Entry> &table();
 void install(Vm &vm);
 // 0x60251c: process world time, the clock behind System.simTime (0x4e5810).
 double sim_time(Vm &vm);
+// 0x5fe3bc Scheduler::load_priority, set by System.setLdPriority (0x4e56b0).
+int load_priority(Vm &vm);
 // 0x55caf0 JavaMachine::runThreads: one pass over the thread run list.
 void run_threads(Vm &vm, float budget_ms, int min_prio);
 // 0x5612f0 + 0x562d70(0): register a scheduler thread (prio, flags 0) and run it
