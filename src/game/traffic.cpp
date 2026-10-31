@@ -2620,16 +2620,20 @@ void path_add_straight(Path &p, const float p0[3], const float p1[3], float w,
         d[i] = p1[i] - p0[i];
     }
     float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    float flat = sqrtf(d[0] * d[0] + d[2] * d[2]);   // 0x414ecc: horizontal
     for (int i = 0; i < 3; i++) s.m0[i] = d[i];
-    normalize(s.m0);
-    // exe 0x414e5e..0x414f93: m1 is the horizontal side vector (the card said
-    // -m0; exe wins), which segment_side 0x4131a0 returns for straight segments.
+    // exe 0x414e5e..0x414f93 normalizes m0/m1 in place and skips the division
+    // when the length is 0 or NaN (0x414f12, 0x414f70), keeping the raw vector;
+    // the card's "normalizes a zero vector" is wrong, exe wins.
+    if (len > 0.0f) normalize(s.m0);
+    // m1 is the horizontal side vector (the card said -m0; exe wins), which
+    // segment_side 0x4131a0 returns for straight segments.
     s.m1[0] = -d[2];
     s.m1[1] = 0.0f;
     s.m1[2] = d[0];
-    normalize(s.m1);
+    if (flat > 0.0f) normalize(s.m1);
     s.len = len;
-    s.flat_len = sqrtf(d[0] * d[0] + d[2] * d[2]);   // 0x414ecc: horizontal
+    s.flat_len = flat;
     s.curved = false;
     s.width = w;
     s.k40 = f1;
