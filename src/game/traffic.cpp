@@ -1,8 +1,10 @@
 #include "game/traffic.h"
+#include "game/car.h"          // mat_to_ypr 0x569970 (materialize pose)
 #include "game/pedestrians.h"
 
 #include <algorithm>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 // 0x571110 MSVC CRT rand, shared with java.lang.Math.random (natives.cpp).
@@ -3512,6 +3514,142 @@ void Graph::halt_road(const float p1[3], const float p2[3])
     // shortcut: the exe pushes onto the global worklist here and never drains
     // it (haltRoad has no worklist loop); the entries stay until the next
     // haltPath clears them, as here.
+}
+
+namespace {
+
+// 0x40e6e0 WeakCarRef__valid: the entry's car is set and its serial still
+// matches the slot. A stale entry is cleared (serial and car, then flag).
+bool weak_car_valid(Graph &g, LeaderSlot &e)
+{
+    // INVENTED: bounds check (the exe indexes the car array unchecked).
+    if (e.car != 0 && e.car <= g.cars.size() &&
+        e.serial == g.cars[e.car - 1].serial)
+        return true;
+    if (e.car != 0) {
+        e.serial = 0;
+        e.car = 0;
+        e.flag = 0;
+    }
+    return false;
+}
+
+// 0x40ef70 Vec3__normalizedCopy: out = src, scaled by 1/|src| when non-zero.
+void vec_normalized_copy(const float src[3], float out[3])
+{
+    out[0] = src[0];
+    out[1] = src[1];
+    out[2] = src[2];
+    const float n = sqrtf(out[0] * out[0] + out[1] * out[1] + out[2] * out[2]);
+    if (n != 0.0f) {
+        const float inv = 1.0f / n;
+        out[0] *= inv;
+        out[1] *= inv;
+        out[2] *= inv;
+    }
+}
+
+// 0x40d4e0 TrafficCar__materialize (ECX = car, arg &budget): 1 = drop the queue
+// entry, 0 = keep it for the next frame (budget exhausted).
+int materialize(Graph &g, uint32_t ci, int32_t *budget, const Graph::Creator &create)
+{
+    Car &car = g.cars[ci];
+    if (!car.live || car.type_id == 0 || car.inst_id != 0) return 1;   // 0x40d501
+    uint32_t parent = 0;
+    if (car.dir == -1) {                 // lane owner: lane +0x10 -> road +0x74
+        // INVENTED: lane bounds check (the exe dereferences the lane pointer).
+        if (car.path_lane < g.lanes.size()) {
+            Road *r = road_by_node(g, g.lanes[car.path_lane].road);
+            if (r) parent = r->object;
+        }
+    } else {
+        // INVENTED: dir >= 0 without a cross owner (a lane owner, see
+        // car_live_step) or a missing node -> no parent; the exe reads lane
+        // +0x50 = Path::end[0] bits as an object pointer.
+        Cross *c = car.cross_node ? cross_by_node(g, car.cross_node, nullptr) : nullptr;
+        if (c) parent = c->object;
+    }
+    if (parent == 0) return 1;                     // 0x40d577: link id +8 == 0
+    float p[3] = {car.front_x, car.world[1], car.front_z};
+    // 0x40da20 twice on the current and the previous ref; the fallback's result
+    // is ignored and p.y keeps whatever either probe wrote.
+    if (!car_ref_height(car.path, car.dir, p[0], p[2], &p[1]))
+        car_ref_height(car.prev_path, car.prev_dir, p[0], p[2], &p[1]);
+    const float d[3] = {p[0] - car.world[0], p[1] - car.world[1], p[2] - car.world[2]};
+    float f[3];
+    vec_normalized_copy(d, f);                     // 0x40ef70
+    float s[3] = {f[2], 0.0f, -f[0]};
+    const float n = sqrtf(s[0] * s[0] + s[2] * s[2]);
+    if (n != 0.0f) {
+        const float inv = 1.0f / n;
+        s[0] *= inv;
+        s[1] = 0.0f * inv;
+        s[2] *= inv;
+    }
+    const float u[3] = {f[1] * s[2] - s[1] * f[2],   // u = f x s
+                        s[0] * f[2] - s[2] * f[0],
+                        s[1] * f[0] - f[1] * s[0]};
+    Mat34 m = {};
+    for (int i = 0; i < 3; i++) {                  // 0x567250: columns s, u, f
+        m.m[i] = s[i];
+        m.m[4 + i] = u[i];
+        m.m[8 + i] = f[i];
+    }
+    float ypr[3];
+    game::mat_to_ypr(m, ypr);                      // 0x569970
+    const float h = car.k18 * 0.5f;                // +0x18 * 0x3f000000
+    const float pos[3] = {car.world[0] + f[0] * h, car.world[1] + f[1] * h,
+                          car.world[2] + f[2] * h};
+    // shortcut: no park map (Traffic__takeParked 0x418f60, card 259); always the
+    // create branch.
+    if (*budget == 0) return 0;                    // 0x40d84a: keep for next frame
+    (*budget)--;
+    char params[128];
+    snprintf(params, sizeof params, "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d", pos[0],
+             pos[1], pos[2], ypr[0], ypr[1], ypr[2], (int32_t)car.seed);
+    car.inst_id = create(car, parent, params);     // 0x40cac0 ResRefLink__set
+    // shortcut: getInfo(&car+0x130, 0x38, &car) type_car take-over (card 261).
+    if (car.notify) {
+        // shortcut: the T+0x3130 notify sink ("car_add %d %d") is not modelled.
+    }
+    return 1;
+}
+
+}  // namespace
+
+// 0x417c90 Traffic__flushSpawns (ECX = T): score the spawn queue by camera
+// distance, sort it, materialize up to `budget` entries and keep the rest.
+void Graph::flush_spawns(int32_t budget, const float *cam, bool load_priority,
+                         const Creator &create)
+{
+    const size_t count = spawn_queue.size();
+    if (count == 0) return;
+    if (load_priority) budget = -1;                // 0x417c9c
+    for (size_t i = 0; i < count; i++) {           // pass 1: score
+        LeaderSlot &e = spawn_queue[i];
+        if (!weak_car_valid(*this, e)) continue;
+        if (!cam) {
+            e.dist = 0.0f;
+            continue;
+        }
+        const Car &car = cars[e.car - 1];
+        float p[3];
+        car_ref_pos_offset(car.path, car.dir, car.pos, car.lateral, p);  // 0x40dde0
+        const float dx = p[0] - cam[0], dy = p[1] - cam[1], dz = p[2] - cam[2];
+        e.dist = -(dx * dx + dy * dy + dz * dz);   // squared, nearest first
+    }
+    slot_sort(spawn_queue.data(), (int)count);    // 0x40c270
+    size_t kept = 0;
+    for (size_t i = 0; i < count; i++) {           // pass 2
+        if (!weak_car_valid(*this, spawn_queue[i])) break;   // stale tail dropped
+        // The exe clears a materialized entry's serial/car/flag (dist +0xc left);
+        // that slot lies outside the new count, so the resize below drops it.
+        if (materialize(*this, spawn_queue[i].car - 1, &budget, create) == 0) {
+            if (kept != i) spawn_queue[kept] = spawn_queue[i];
+            kept++;
+        }
+    }
+    spawn_queue.resize(kept);                      // count = kept
 }
 
 // 0x40f290 TrafficCar__remove: unlink the car (GroundRef.remTrafficCar 0x4de520).

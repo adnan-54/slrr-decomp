@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include <deque>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -177,6 +178,18 @@ struct Graph {
     // +0x310c/+0x3110/+0x3114 spawn queue appended by 0x41a500. INVENTED:
     // std::vector; an entry is the 16-byte WeakCarRef (LeaderSlot layout).
     std::vector<LeaderSlot> spawn_queue;        // +0x310c
+    // 0x40d4e0 creates an instance through 0x523c80 GameObject__createScripted
+    // in the exe. INVENTED bridge: the caller supplies the creation (card 261);
+    // it gets the new instance id back (0 = none). Parent is the object id of
+    // the road (+0x68 link) or cross (+0x44 link) the car is bound to.
+    using Creator = std::function<uint32_t(const Car &car, uint32_t parent,
+                                           const std::string &params)>;
+    // 0x417c90 Traffic__flushSpawns: score the queue by camera distance, sort,
+    // materialize; a budget-blocked entry stays queued for the next frame.
+    // budget -1 = unlimited (load_priority 0x5fe3bc), cam = 0 scores every
+    // entry 0.0f. `create` is the INVENTED instance-creation bridge above.
+    void flush_spawns(int32_t budget, const float *cam, bool load_priority,
+                      const Creator &create);
     float max_road_width = 0;                   // +0x312c
     float cross_stop_offset = 0;                // +0x3140 (ctor 0x416000: 0)
     // +0x00 lane event min-heap (schedule 0x417050, push 0x41a950). INVENTED:

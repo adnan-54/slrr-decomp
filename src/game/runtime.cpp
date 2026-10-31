@@ -1233,8 +1233,17 @@ void Runtime::run_animate_callbacks(float)
             continue;
         }
         if (inst->traffic) {
-            // 0x4bac10 type_ground vf13: 0x41b290 with the process world time.
+            // 0x4bac10 type_ground vf13: 0x41b290 with the process world time,
+            // then 0x417c90 flushSpawns(T, 1, cam) on the same object.
             inst->traffic->step(process_world().time);
+            // cam: src has no camera snapshots (boot.cpp:222), so the exe's
+            // `*0x5f1e44 > 0 ? &0x5fe110 : null` is always null (notes/42 §13).
+            inst->traffic->flush_spawns(
+                1, nullptr, vm() && natives::load_priority(*vm()) != 0,
+                // shortcut: instance creation is card 261, so no instance.
+                [](const traffic::Car &, uint32_t, const std::string &) {
+                    return 0u;
+                });
         } else {
             // shortcut: script "animate" and other native vf13 not dispatched;
             // no shipped script registers mode 0x1c (only Chassis.java calls
