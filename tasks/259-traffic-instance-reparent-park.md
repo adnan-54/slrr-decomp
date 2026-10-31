@@ -1,8 +1,8 @@
 ---
 id: 259
-status: implemented
+status: merged
 branch: card/259
-review:
+review: claude
 depends: [258]
 ---
 # traffic: CarContainer T+0x311c + instance reparent hook (0x416000, 0x410680, 0x40ed30/0x40ebb0, 0x40fae0)
