@@ -1,7 +1,7 @@
 ---
 id: 244
-status: draft
-branch:
+status: todo
+branch: card/244
 depends: [242]
 ---
 # traffic: cross vf3 0x40cb60 + segment posOffset 0x413660 + syncInstance 0x410680
@@ -12,9 +12,16 @@ Complete the cross hand-over side that card 242 leaves as `// SERVICE MISSING:`:
 0x40cb60 `ctCross__vf3` (append the car to the cross's car list +8/+0xc, re-reference it
 onto its exit lane, then sync its instance) and 0x410680 `TrafficCar__syncInstance`
 (instance / spawn-queue / park bookkeeping; the instance side has no src service, so it
-stays a branch skeleton with `// shortcut:` marks). No observable change today: no src
-car reaches a cross (card 242 is still draft) and nothing binds `road+0x68`/`cross+0x44`,
-so syncInstance is a no-op in every src branch.
+stays a branch skeleton with `// shortcut:` marks).
+
+Promotion note (orchestrator): card 242 merged, so a lane-end move can now route a car onto
+a cross path (`kc0 >= 0` tagged ref) — and that car has **no world position** until
+`0x413660` lands here. Implement all three functions in this card; the syncInstance side
+stays a documented skeleton (its callees `0x4ec210`/`0x417080`/`0x488080`/`0x41a500` and
+the counter globals `0x5e64f4/f8/fc` are untraced). Replace the stale `0x40cb60`/`0x4883e0`/
+`0x410680` `SERVICE MISSING` comments card 242 left in `car_step` step 6, and refresh the
+`car_ref_pos_offset` / `car_path_dir` / `car_path_length` comments that still say no car
+can be on a cross.
 
 ## Exe evidence (cleaned pseudocode, renumbered fields are our names)
 Helpers 0x4134e0 `segment_pos` and 0x4131a0 `segment_side` are already ported in
