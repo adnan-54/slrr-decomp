@@ -1,7 +1,7 @@
 ---
 id: 242
-status: draft
-branch:
+status: todo
+branch: card/242
 depends: [241]
 ---
 # traffic: cross routing 0x40e400 + the three cross vf routes (0x4157a0/0x4159d0/0x40e590) + lane room 0x40e3a0
@@ -22,18 +22,21 @@ lanes, so `lane_end_move` always reaches this branch once a lane is live. No har
 makes a lane live yet (CHECKPOINT), so this card must leave race 659.414 s / `--city 63`
 unchanged; do not fake a harness and do not hardcode the map fact.
 
-## Promotion note (orchestrator): NOT promoted, stays draft
-Traced 2026-10-30 in DeepSeek-only mode; kept as `draft` because it cannot change any
-observable behaviour today and its remaining gaps are load-bearing:
-- every shipped city lane reaches this branch only once a lane is **live**, and no harness
-  makes one live (CHECKPOINT 0z/0y) — so it is unverifiable until the lane-live work lands;
-- it needs the unported cross vf3 `0x40cb60` (cross car list + exit-lane hand-over) and the
-  `dir >= 0` cross geometry `0x413660`; without them a car routed onto a cross sits at world
-  (0,0,0), i.e. the port would be visibly wrong the moment it runs;
-- the INVENTED next-ref tag (`reinterpret_cast` of `&CrossPath.seg` into `Car::next_lane_b`
-  plus guards in five call sites) is invasive; re-check it against notes/37 §3 before
-  implementing, a cleaner encoding may be available once `0x413660` is traced.
-Promote only after a lane goes live, or after `0x40cb60` + `0x413660` are traced.
+## Promotion note (orchestrator): promoted 2026-10-30, round 3
+Card 243 merged: the city harness now touches every `native road` node, so **1,572/1,572
+lanes are live** and `lane_end_move` reaches this branch every time a car hits a lane end —
+the "unverifiable" objection is gone. The other two objections are handled by scope:
+- `claimPath 0x415b40` is **already ported** (`cross_claim_path`; card 245 confirms the
+  body matches: `count += 10` unconditionally, `block = paths[i].c` on crossing paths, no
+  other field). `0x40f900`/`0x40f930` are the wrapper argument sets recorded in card 245:
+  `cross_claim_path` then `car_set_ref(cdx, cross, &paths[i].seg, i)` and
+  `car_set_ref(ci, lane, &lane.path, -1)`.
+- the cross-owner ref (`dir >= 0`) is set here (tag below) but a car routed onto a cross
+  path has no world position until **card 244** (`0x413660`) lands; that is accepted only
+  because 244 follows immediately in this round — do not ship 242 without 244.
+- the INVENTED tag stands: the exe itself stores a raw `&Segment` in the +0xbc path slot,
+  so a tagged pointer in `Car::next_lane_b` is faithful; what matters is that nothing
+  dereferences it as a `Path` while `kc0 >= 0`, and that every such site is guarded.
 
 ## Struct map (exe offset -> src field)
 
