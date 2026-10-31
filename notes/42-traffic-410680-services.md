@@ -76,18 +76,33 @@ ResRefLink__set(new+0x130?, car+0x13c); inline dtor of car+0x130; copy +0x2c/+0x
 getInfo(new+0x130, 0x38, &new); 0x410680(new, new.lane(+0xc4).road(+0x10)+0x68);
 if (new+0xdd && new+0xdc) queue "car_add %d %d"; TrafficCar__remove(car)
 ```
-UNRESOLVED (asm not read): ECX of the `0x417080` call (decompile shows `in_ECX` = cross; the
-callee needs T) and of `ResRefLink__set`. The counters are unconditional in the typed branch
-(even when `car+0x138 == 0`), unlike 0x410680.
+Asm-checked 2026-10-31 (ECX/EDI at entry = the 0x40de70 receiver = cross, `0x40df26`/`0x40e007`):
+- `0x40faf7` ECX = `[0x5e652c]` = T for `0x417080(car+0x14c, &car+0x130)`.
+- `0x40fbbf` `ResRefLink__set(ECX = &new+0x130, old+0x13c)`: the new car takes the old car's
+  instance object (src: `new.inst_id = old.inst_id`; object 0 clears it), then the old link is
+  unlinked inline and `old+0x138 = 0`.
+- `0x40fc79` `getInfo(ECX = 0x5fde90, &new+0x130, 0x38, &new)`; `0x40fc8e`
+  `0x410680(ECX = new, new.lane(+0xc4).road(+0x10)+0x68)`.
+- `0x40fcb8` `"car_add %d %d"` (0x5935d8) args `(new+0x138, EDI)`: the **second value is the cross
+  pointer**, not the new car (unlike materialize/0x410680). Gate `new+0xdd && new+0xdc`.
+The counters are unconditional in the typed branch (even when `car+0x138 == 0`), unlike 0x410680.
 
-## 6. 0x417080 Traffic__parkInstance(ECX = T, typeId, link)
+## 6. 0x417080 Traffic__parkInstance(ECX = T, typeId, link) — asm-checked
 ```
-if (getInfo(link, 0xf, 0) < 0x5a) { 0x4e9450 Handle__queueDelete(link?); return }   // UNRESOLVED ECX
-p = 0x51df40() /* 16-byte pool alloc, free list +0x10, pages of 0x400 */; p[0..3] = 0;
-ResRefLink__set(p, link+0xc); getInfo(p, 0x38, T+0x3118 /*pseudo-car*/);
-matrix "fffffffffffffff" with y-translation 0xc0c3880000000000 = -10000.0 (double); 0x4eb3f0(&m);
-0x4ec210(p?, T+0x311c);  ParkMap__insert(T+0xe0 (0x400 buckets x 12), &typeId, &p)
+if (getInfo(ECX = 0x5fde90, link, 0xf, 0) < 0x5a) { 0x4e9450 Handle__queueDelete(ECX = link); return }  // 0x4170b4
+p = 0x51df40(ECX = T+0xcc) /* 16-byte pool alloc */; p[0..3] = 0;          // 0x4170ce
+0x40cac0 ResRefLink__set(ECX = p, link+0xc);                                // 0x4170fb
+getInfo(ECX = 0x5fde90, p, 0x38, &T+0x3118 /*pseudo-car*/);                 // 0x41710f
+params = 0x56a000("fffffffffffffff" (0x593820, 15 f), 0, -10000.0 (double 0x593860 =
+         0xc0c3880000000000), 13 x 0)                                       // 0x417169
+0x4eb3f0(ECX = p, &params); 0x4ec210(ECX = p, &T+0x311c);                   // 0x41717a / 0x417188
+ParkMap__insert(ECX = T+0xe0, &typeId, &p); free params (0x569f10)          // 0x4171a4
 ```
+- `getInfo(.., 0xf)` on a car is type_car vf15 0x4a15c0 case 0xf: `return (int)(M[0x2d] * 100.0)`,
+  `M+0xb4` = the car part payload tear (src `PartData::tear`, car.cpp `part_tear` 0x4b1cd0). So a
+  car below 90% condition is deleted, not parked. The `100.0` width is from the decompile only.
+- `T+0xcc` is the parked-link pool (the "halt-handle list" of notes/19 §95); 0x417350 walks it.
+- The caller's link is not touched here; 0x410680/0x40fae0 unlink it right after (0x488080).
 `0x4171d0 ParkMap__insert`: bucket `typeId & 0x3ff`; empty bucket -> store key, alloc value
 cell (0x41a560), next = 0; else prepend a chained node (0x41dfb0). Reader: `0x418f60
 Traffic__takeParked(typeId, &dest)` (pops the cell, moves the instance link into dest, puts
@@ -98,10 +113,22 @@ Already documented as GameRef.setParent (notes/18 §306; src `Runtime::reparent`
 runtime.cpp:887). Returns 0 when the parent link is unbound (`+8 == 0`), 1 when already
 under that parent. In traffic it is only reached with a real instance (`+0x138 != 0`).
 
-## 8. T+0x311c CarContainer (0x416000 Traffic__ctor)
-`ResRefLink(T+0x311c) = GameObject__createScripted(&0x5fde50 /*game root*/, &nulltype,
-DAT_0059380d, "CarContainer")`; `obj+0x84 |= 0x10`; `0x51f7f0(link)`; then `0x417350()`.
-UNRESOLVED: `DAT_0059380d` text, the 0x10 flag, `0x51f7f0`, `0x417350`.
+## 8. T+0x311c CarContainer (0x416000 Traffic__ctor, asm 0x416223..0x416270)
+```
+obj = 0x523c80 GameObject__createScripted(&0x5fde50 /*game root*/, &null_link, "" (0x59380d),
+                                          "CarContainer" (0x593810))
+0x40cac0 ResRefLink__set(ECX = &T+0x311c, obj)
+if (obj = [T+0x311c+0xc]) { obj+0x84 |= 0x10; 0x51f7f0(ECX = obj, &T+0x311c) }
+0x417350 Traffic__reset(ECX = T)
+```
+- `0x59380d` is a NUL byte (bytes at 0x593808: `"d,%d\0" 00 00 00 "CarContainer"`): empty params.
+- `0x51f7f0(ECX = obj, link)`: `0x40cac0(ECX = obj+0xf0, link+0xc)`, i.e. `obj+0xf0` link = obj
+  itself. `obj+0xfc` (the link's object word) is the world-tree root (src `Resource::world_root`,
+  `ResourceRef.getWTRoot` 0x4e3c00). Bit 0x10 of `+0x84` = "world-tree root": the same pair is
+  done by `GameRef.setFlags` 0x4db900 (`flags & 0x10 -> 0x51f7f0`) and for the game root in
+  0x47cd20. So the CarContainer is its own world-tree root; car instances parked under it get it
+  as world root, and `car_rem`/`car_add` from type_car (notes/25 §2.2, `parent+0xf0`) go to it.
+  src: `r->flags |= 0x10; r->world_root = r` (gr_set_flags does not model the second half).
 
 ## 9. Consumer: 0x417c90 Traffic__flushSpawns(ECX = T, budget, cam) and 0x40d4e0
 Called once per frame by type_ground vf13 0x4bac10 (`budget = 1`, cam = camera pos 0x5fe110 when
@@ -134,9 +161,9 @@ Mat34 set-column; the camera position is a main-loop copy of the first camera sn
 - Without the flush the queue only grows. Cards: 260 height probes (§12) + load_priority
   accessor, 258 flush + materialize decision/pose with an INVENTED instance-create hook,
   261 (draft) the hook in Runtime (createScripted under the road/cross object, getInfo 0x38/0x3c).
-- The reparent/park side (card 259, draft) only acts on real instances: type-0 script cars
-  (addTrafficCar) and materialized cars. Needs `T+0x311c` CarContainer and a Graph -> Runtime
-  bridge (traffic::Graph holds ids only).
+- The reparent/park side only acts on real instances: type-0 script cars (addTrafficCar) and
+  materialized cars. Split (§15): 259 CarContainer + reparent hook (todo), 262 type_car 0x38
+  take-over (draft), 263 park/takeParked (draft), 261 creator (todo, after 262).
 
 ## 11. 0x40d4e0 TrafficCar__materialize, asm-checked (ECX = ESI = car, arg &budget)
 ```
@@ -228,3 +255,35 @@ uses (notes/14). The copy runs **after** `0x47ba10` (the animate pass that reach
 vf13 0x4bac10), so flushSpawns scores against the previous frame's camera. Second reader
 0x4bad6a (the 0x4bac10 call site). src has no camera snapshots (boot.cpp:222: the
 `0x5f1e44 <= 0` branch, listener at the origin), so in src `cam = null` and every score is 0.0f.
+
+## 14. 0x417350 Traffic__reset (ECX = T; callers ctor 0x416000, dtor 0x416400, load 0x41a000)
+Asm-read in full. Frees and empties every graph array (cross/road vf `+0x2c(1)`, lanes
+0x40c930/0x40c900, `+0x9c` (0x40f1e0 per 0x18 entry), `+0xb0`, `+0x70` car pool (0x40d3c0
+TrafficCar__unlinkRefs per 0x164 car), the four 0x412900 tables at +0x10/+0x28/+0x40/+0x58,
+`+0xc4`), relinks `+0x88..+0x94` to T, then:
+```
+pc = pool alloc (DAT_005e6504 = T+0x70 pool: free list +0x10, pages of 0x400 x 0x164 bytes)
+T+0x3118 = pc ? 0x40c400 TrafficCar__ctor(ECX = pc) : 0                  // 0x4176a6
+pc+0x88 = 0; pc.live(+0xdc) = 0; pc.world(+0x8c/+0x90/+0x94) = (0, -10000.0f (0xc61c4000), 0)
+pc+0xe0 = pc+0xe4 = pc+0xe8 = T+0x84 + 1.0f (0x593598)
+for e in T+0xcc pool (16-byte links, count T+0xd4): if (e+8) getInfo(ECX = 0x5fde90, e, 0x38, &T+0x3118)
+0x40d3c0 TrafficCar__unlinkRefs(ECX = T+0x3118)                          // 0x41777c
+```
+So the pseudo-car exists from the ctor on (it is the 0x38 owner of every parked instance, parked
+out of sight at y = -10000). **Correction:** src `Graph::init` (traffic.cpp, "T+0x3118 (player
+pseudo-car) is null right after the ctor") is wrong; notes/28/31 "player pseudo-car" is the parked
+instance owner, not the player.
+
+## 15. src design for the instance side (cards 259, 261, 262, 263)
+traffic::Graph keeps ids: `Car::inst_id` = instance id (Runtime::resolve works for 0x8000.. ids),
+`Road::object`/`Cross::object` = map-object **record** ids (runtime.cpp `map_node_touched` ->
+`bind_object(m.params, m.record)`). src creates no road/cross instance (type_road vf3 0x4d42a0
+only binds; the exe's map node instance comes from 0x5195a0, notes/31). Smallest bridge:
+- Graph gets `uint32_t car_container` (the CarContainer instance id, T+0x311c) and one INVENTED
+  member hook `std::function<void(uint32_t inst, uint32_t parent)> reparent` set by
+  runtime.cpp `load_ground` right after `init`. `parent == car_container` -> that instance;
+  any other non-zero id (a road/cross record id) -> INVENTED stand-in: the ground instance that
+  owns the Graph (the exe's road/cross map instance is a child of the ground world, 0x5195a0).
+- The materialize Creator (card 258, `flush_spawns`) uses the same parent stand-in.
+- Park/takeParked (0x417080/0x418f60) need the pseudo-car 0x38 take-over and 0x4eb3f0 (typed
+  manager vf7 pose apply, notes §11) — card 263 (draft).

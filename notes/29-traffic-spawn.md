@@ -221,7 +221,7 @@ read the type data only.
 - 0x417080 `Traffic__parkInstance(typeId, inst)`: `getInfo(inst, 0xf) < 0x5a` -> queueDelete; else
   new 16-byte link, `getInfo(link, 0x38, &T+0x3118)` (the pseudo-car holds every parked instance),
   matrix at y = -10000, reparent under T+0x311c, insert in the 0x400-bucket map T+0xe0 keyed by type id.
-  type_car vf15 0xf = `(int)(inst+0xb4 * 100)` (meaning unknown).
+  type_car vf15 0xf = `(int)(inst+0xb4 * 100)` = condition % (`+0xb4` = PartData::tear; notes/42 §6).
 
 ## 6. Per-car step 0x4107c0 — entry points only
 Callers: 0x40d990 timeToLaneEnd, 0x40daa0, 0x40e150 lane init, 0x40e710 ctLane vf4, 0x40f4e0
