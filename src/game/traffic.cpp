@@ -1210,6 +1210,14 @@ static void queue_spawn(Graph &g, uint32_t ci)
     g.spawn_queue.push_back(e);
 }
 
+// 0x4ec210 ResRefLink reparent through the INVENTED Graph::reparent bridge
+// (Runtime::reparent is its body). src has no road/cross map instance yet, so
+// the bridge maps their record ids to the ground instance.
+static void link_reparent(Graph &g, uint32_t inst, uint32_t parent)
+{
+    if (inst && g.reparent) g.reparent(inst, parent);
+}
+
 // 0x410680 TrafficCar__syncInstance (ECX = car, arg ResRefLink *link): bring the
 // instance link, the spawn queue and the park side in step with the owner link.
 // bound = link+8 != 0 (our object id != 0). Returns nothing in every branch.
@@ -1222,9 +1230,9 @@ void car_sync_instance(Graph &g, uint32_t ci, uint32_t link_object)
     if (type == 0) {                                // 0x41069c
         if (!inst) return;
         if (!car.live || !bound) {
-            // shortcut: 0x4ec210 link_reparent(&car+0x130, T+0x311c) not ported.
+            link_reparent(g, inst, g.car_container);              // 0x4106b8
         } else {
-            // shortcut: 0x4ec210 link_reparent(&car+0x130, link) not ported.
+            link_reparent(g, inst, link_object);                  // 0x410701
         }
         return;
     }
@@ -1247,7 +1255,7 @@ void car_sync_instance(Graph &g, uint32_t ci, uint32_t link_object)
         queue_spawn(g, ci);                         // 0x4106f4
         return;
     }
-    // shortcut: 0x4ec210 link_reparent(&car+0x130, link) not ported.
+    link_reparent(g, inst, link_object);             // 0x410707
 }
 
 // 0x40cbd0 ctLane__vf3: live/not-live bookkeeping, first-event scheduling and
@@ -2529,8 +2537,8 @@ void car_bind_object(Graph &g, uint32_t ci, uint32_t object)
     const uint32_t inst = car.inst_id;   // +0x138
     if (car.type_id == 0) {              // +0x14c
         if (inst) {
-            // shortcut: 0x4ec210 reparent under (car.live && linked ? obj
-            // : T+0x311c CarContainer) is not ported.
+            // 0x40ed30/0x40ebb0: live and bound -> under the object, else container.
+            link_reparent(g, inst, car.live && object ? object : g.car_container);
         }
     } else if (!car.live || object == 0) {   // exe: obj+8 == 0 (not linked). INVENTED: object id 0 stands in for it
         if (inst) {
@@ -2543,7 +2551,7 @@ void car_bind_object(Graph &g, uint32_t ci, uint32_t object)
             g.parked_count += 1;                     // 0x40eea1 / 0x40ed11
         }
     } else if (inst) {
-        // shortcut: 0x4ec210 reparent under obj is not ported.
+        link_reparent(g, inst, object);          // 0x40ed30/0x40ebb0
     } else {
         g.inst_count += 1;                       // 0x40edda / 0x40ec4a
         g.spawn_count += 1;                      // 0x40ede0 / 0x40ec50
@@ -3328,8 +3336,9 @@ uint32_t Graph::spawn_on_road(size_t road, float p1, float p2, float p3, float p
 // car stopped by the halt. type_id == 0 spawns a replacement near the cross and
 // copies its fields; type_id != 0 parks the script instance. Both end in
 // TrafficCar__remove 0x40f290.
-// shortcut: +0x130/+0x134/+0x13c instance links, 0x417080 parkInstance,
-// 0x40cac0, 0x47c640 getInfo 0x38, 0x410680 syncInstance and car_add are not
+// shortcut: the +0x130/+0x134/+0x13c link words are not modelled (inst_id is),
+// Traffic__parkInstance 0x417080 is card 263, the 0x47c640 getInfo 0x38
+// take-over is card 262, and the T+0x3130 "car_add"/"car_rem" sink is not
 // modelled (src has no materialized cars).
 static void recycle_halted_car(Graph &g, const Cross &c, uint32_t ci)
 {
@@ -3341,11 +3350,18 @@ static void recycle_halted_car(Graph &g, const Cross &c, uint32_t ci)
         // removes the old car here.
         if (nc) {
             Car &n = g.cars[nc - 1];
+            n.inst_id = car.inst_id;       // 0x40fbc5 ResRefLink__set(new+0x130, old+0x13c)
             n.max_speed = car.max_speed;   // +0x2c
             n.accel = car.accel;           // +0x30
             n.lateral = car.lateral;       // +0xa8
             n.seed = car.seed;             // +0x154
             n.notify = car.notify;         // +0xdd
+            // shortcut: 0x40fc79 getInfo(0x5fde90, &new+0x130, 0x38, &new) is card 262.
+            // 0x40fc8e: new.lane(+0xc4).road(+0x10)+0x68. INVENTED: bounds guard.
+            Road *road = n.path_lane < g.lanes.size()
+                             ? road_by_node(g, g.lanes[n.path_lane].road) : nullptr;
+            car_sync_instance(g, nc - 1, road ? road->object : 0);   // 0x410680
+            // shortcut: T+0x3130 "car_add %d %d" when new+0xdd && new+0xdc.
         }
     } else {
         // typed branch: counters are unconditional (no +0x138 test), unlike 0x410680.

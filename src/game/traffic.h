@@ -178,6 +178,13 @@ struct Graph {
     // +0x310c/+0x3110/+0x3114 spawn queue appended by 0x41a500. INVENTED:
     // std::vector; an entry is the 16-byte WeakCarRef (LeaderSlot layout).
     std::vector<LeaderSlot> spawn_queue;        // +0x310c
+    // +0x311c CarContainer instance, created by the ctor 0x416000; a type-0 car
+    // instance is reparented under it while not live or not bound.
+    uint32_t car_container = 0;
+    // INVENTED bridge for 0x4ec210: reparent instance `inst` under the object
+    // id `parent` (car_container = the CarContainer, any other non-zero id =
+    // the ground instance stand-in, see runtime.cpp load_ground).
+    std::function<void(uint32_t inst, uint32_t parent)> reparent;
     // 0x40d4e0 creates an instance through 0x523c80 GameObject__createScripted
     // in the exe. INVENTED bridge: the caller supplies the creation (card 261);
     // it gets the new instance id back (0 = none). Parent is the object id of

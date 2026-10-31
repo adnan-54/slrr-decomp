@@ -1,7 +1,7 @@
 ---
 id: 259
-status: todo
-branch:
+status: implemented
+branch: card/259
 review:
 depends: [258]
 ---

@@ -490,6 +490,24 @@ static void load_ground(Runtime &rt, Runtime::Resource *r, Runtime::Handle *h)
     }
     // 0x4bb2b8: Traffic__init(T, *0x5dadf0) right after the load.
     g->init(process_world().time);
+    // 0x416000 Traffic__ctor tail: createScripted(game root, null type, "",
+    // "CarContainer"), then +0x84 |= 0x10 and 0x51f7f0 makes it its own
+    // world-tree root. INVENTED: the exe creates it in the ctor before the
+    // load; src builds the graph lazily, so it goes here.
+    Runtime::Resource *cc =
+        rt.instantiate(nullptr, rt.game_root(), "CarContainer", "", true, nullptr);  // 0x523c80
+    if (cc) {
+        cc->flags |= 0x10;
+        cc->world_root = cc;    // 0x51f7f0: obj+0xf0 link = obj
+    }
+    g->car_container = cc ? cc->id : 0;    // T+0x311c
+    g->reparent = [&rt, r, cc](uint32_t inst, uint32_t parent) {
+        Runtime::Resource *i = rt.resolve(inst);   // 0x4ec210 body: GameRef.setParent
+        // INVENTED: road/cross objects are map record ids in src (no map node
+        // instance, 0x5195a0 not ported); the ground instance r stands in.
+        Runtime::Resource *p = cc && parent == cc->id ? cc : parent ? r : nullptr;
+        if (i && p) rt.reparent(i, p);
+    };
     r->traffic = g;
     // 0x4bb2e8 Game__registerCallback(ground, 0x1c): the exe does this at
     // instance create, src at the first handle lookup (see ground_traffic).
