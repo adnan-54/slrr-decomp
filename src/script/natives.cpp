@@ -7521,13 +7521,30 @@ bool gr_set_traffic_car_behaviour(Vm &, const Args &a, Value *out, std::string *
     return true;
 }
 
-// 0x4de360 GroundRef.haltTrafficCross(Vector3,F)V: if (getInfo) { nearestCross(pos);
-// cross->halt(time, 1) }.
-// SERVICE MISSING: no native ground object, Game__getInfo(self, 0x39) is 0 (notes/19).
-bool gr_halt_traffic_cross(Vm &, const Args &a, Value *out, std::string *err)
+// 0x4de360 GroundRef.haltTrafficCross(Vector3,F)V: self -> instanceToHandle 0x4ecc70,
+// Game__getInfo 0x47c640 id 0x39; 0 -> return (void). Reads Vector3 "x"/"y"/"z"
+// with Instance__getFloatField 0x4ec980 (missing -> 0), then
+// Traffic__nearestCross 0x419050(t, x, y, z, 0.0f, 0) and ctCross__halt 0x40de70
+// (delay, all = 1) at 0x4de408. Void; the exe does not check the cross.
+// INVENTED: null arg object / null cross => no halt (the exe dereferences both).
+bool gr_halt_traffic_cross(Vm &vm, const Args &a, Value *out, std::string *err)
 {
     if (!want("GroundRef.haltTrafficCross", a, 3, err)) return false;
     *out = Value::make_null();
+    float pos[3] = {0.0f, 0.0f, 0.0f}, delay = 0.0f;
+    if (a[1].kind == Value::Obj && a[1].obj) {
+        pos[0] = dd_get_f(vm, a[1].obj, "x");
+        pos[1] = dd_get_f(vm, a[1].obj, "y");
+        pos[2] = dd_get_f(vm, a[1].obj, "z");
+    }
+    if (!get_f("GroundRef.haltTrafficCross", a[2], &delay, err)) return false;
+    Runtime *rt = game_rt();
+    traffic::Graph *t = rt ? rt->ground_traffic(value_handle(a[0])) : nullptr;
+    if (!t) return true;                            // getInfo 0x39 == 0 -> no-op
+    const traffic::Cross *c =
+        t->nearest_cross(pos[0], pos[1], pos[2], 0.0f, false);
+    if (!c) return true;                            // INVENTED: exe dereferences it
+    t->halt_cross(const_cast<traffic::Cross &>(*c), delay, true);
     return true;
 }
 

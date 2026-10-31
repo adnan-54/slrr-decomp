@@ -2745,6 +2745,71 @@ uint32_t Graph::spawn_on_road(size_t road, float p1, float p2, float p3, float p
     return ci + 1;
 }
 
+// 0x40fae0, the per-car helper of 0x40de70 (ECX = cross, arg = car): recycle a
+// car stopped by the halt. type_id == 0 spawns a replacement near the cross and
+// copies its fields; type_id != 0 parks the script instance. Both end in
+// TrafficCar__remove 0x40f290.
+// shortcut: +0x130/+0x134/+0x13c instance links, 0x417080 parkInstance,
+// 0x40cac0, 0x47c640 getInfo 0x38, 0x410680 syncInstance, car_add and the
+// 0x5e64f4/0x5e64fc counters are not modelled (src has no materialized cars).
+static void recycle_halted_car(Graph &g, const Cross &c, uint32_t ci)
+{
+    Car &car = g.cars[ci];
+    if (car.type_id == 0) {                          // +0x14c
+        uint32_t nc = g.spawn_near(c.pos[0], c.pos[1], c.pos[2], 100.0f,
+                                   car.k14, car.k18, car.k20, car.k24);  // 0x416800
+        // INVENTED: the exe writes new+0x130 unchecked; a failed spawn only
+        // removes the old car here.
+        if (nc) {
+            Car &n = g.cars[nc - 1];
+            n.max_speed = car.max_speed;   // +0x2c
+            n.accel = car.accel;           // +0x30
+            n.lateral = car.lateral;       // +0xa8
+            n.seed = car.seed;             // +0x154
+            n.notify = car.notify;         // +0xdd
+        }
+    }
+    car.inst_id = 0;                                 // +0x138, both branches
+    g.remove_car(ci + 1);                            // 0x40f290
+}
+
+// 0x40de70 ctCross__halt (ECX = cross; args float delay, char all): the only
+// writer of Cross::k40. It writes no lane field: lane+0xc4 is set by 0x419980/
+// 0x419ab0 (haltPath) only.
+void Graph::halt_cross(Cross &c, float delay, bool all)
+{
+    c.k40 = sim_time + delay;                        // 0x40de90
+    std::vector<uint32_t> own = c.cars;              // INVENTED: snapshot (exe follows car+0x8)
+    for (uint32_t ci : own) {
+        Car &car = cars[ci];
+        if (car.notify && car.live) {                // 0x40dea3/0x40deac
+            live_count--;                            // 0x40deb5 (global 0x5e6514)
+            // shortcut: T+0x3130 "car_rem %d %d" (0x528030/0x47d550) not modelled
+            car.live = 0;                            // 0x40df10
+            if (car.k128) car.k128 = 0;              // 0x40df19
+        }
+        recycle_halted_car(*this, c, ci);            // 0x40fae0, always
+    }
+    std::vector<CrossLink> links = c.links;          // INVENTED: snapshot of +0x14/+0x18
+    for (size_t i = 0; i < links.size(); i++) {
+        if (!all && links[i].flag == 0) continue;    // 0x40df50..0x40df5b
+        Lane *lane = lane_at(*this, links[i].node);  // INVENTED: null guard
+        if (!lane) continue;
+        std::vector<uint32_t> list = lane->cars;     // INVENTED: snapshot (exe re-reads +0x8)
+        for (uint32_t ci : list) {
+            Car &car = cars[ci];
+            if (!all && car.next_lane_b == nullptr) continue;   // +0xbc
+            if (car.notify && car.live) {
+                live_count--;
+                // shortcut: car_rem sink not modelled
+                car.live = 0;
+                if (car.k128) car.k128 = 0;
+            }
+            recycle_halted_car(*this, c, ci);
+        }
+    }
+}
+
 // 0x40f290 TrafficCar__remove: unlink the car (GroundRef.remTrafficCar 0x4de520).
 void Graph::remove_car(uint32_t handle)
 {
