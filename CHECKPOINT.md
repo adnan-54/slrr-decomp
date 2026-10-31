@@ -63,6 +63,25 @@ In progress: nothing unmerged (cards 232/233 merged: all four `Graph::step` walk
 Known open spots: Resource nodes are never freed after destroy (side tables keyed by Resource*), ids not recycled (0x5173e0); render typed data collapsed onto Runtime::Resource (text_*, bones, camera_*, fog_*: INVENTED mapping); physics: mode 6->7 conversion still after the loop (exe: inside, via 0x4ffd20 when 0x4fc610 fires), contact list rebuilt per sub-iteration (exe keeps creation order); audio: pan/doppler not ported (INVENTED), bus 2D flag and per-sound mindist/maxdist not wired; Chassis subsystem natives (mass/CM/OSD/SFX/force update) and Part getLogo/getMass/flap/install_OK stay explicit stubs; 4 Axis part refs ship only as `scripts/src/*.java`: the exe compiles them at load (0x51fcc0 -> 0x55aca0 -> 0x55bec0 -> JVM::compileSource 0x5598f0: recompile when the .class is missing, mtime differs from the source, or the header is not TUFA v4 build 0x11ae1/0x24f9d); src compiler exists but is not yet hooked into class load; 237 native stubs; CMaterial partial classes/font atlas; VM `>>>`; engine/service startup (GameType, type registry, streaming); no way to run PE32 here (no wine32). Audio service-sort tie order is deterministic but not qsort-identical; DS8/DirectShow runtime untested (hooks only). `make -C src clean check` raced under -j (ar saw classfile.o missing; recurred 2026-10-30); sequenced `make clean && make check` is green - use it.
 
 ## Next-steps queue (in order)
+0A3. **2026-10-30/31, DeepSeek-only round 4: the cross chain is EXERCISED end to end.**
+    - Card 247: cross vf4 `0x4883e0` is an empty `RET 8` (the real detach is `0x40ca40`);
+      cross vf5 `0x46acd0` returns 0; cross vf6 `0x40dd00` = `max(links[paths[i].a].k98,
+      links[paths[i].b].k98)`, now `cross_vf6` and used by `car_target_speed 0x40dc00`,
+      which was rewritten to the exe order (the old test also missed lane index 0).
+    - Card 248 (harness): an expiry phase (no road touch, up to 300 frames) lets
+      `0x40f4e0` kill the lanes, so `0x40fcf0` steps their cars without the next-ref skip
+      and `0x4107c0` step 6 commits a **cross current ref at frame 95** (deterministic in
+      two runs; the delay is exe behaviour — `0x40f6d0` only re-schedules when
+      `lane+0xac == 0` and the routed lanes still hold their addTraffic event).
+    - Harness counts now: `--city` 70 checks, `--selfcheck` 174, `--race` 168 with race
+      659.414 s / lap 2 244.969 s unchanged. notes/40 §4/§5 updated.
+    Remaining (bounded, in order):
+    a. cross vf1 `0x40e380` (`live_refs != 0`, used by `car_live_step`) — needed to keep a
+       cross-owner car live.
+    b. `Cross::k40` writer (gates `0x40e400`; ctor 0x40c590 = -1.0f).
+    c. `0x410680`'s four services (`0x4ec210` reparent, `0x417080` park, `0x488080` link
+       unlink, `0x41a500` queueSpawn) + counter globals `0x5e64f4/f8/fc`.
+    d. `Car+0x124` owner in `0x40dc00` (last `shortcut:` in `car_target_speed`).
 0A2. **2026-10-30, DeepSeek-only round 3: the cross chain is in and PROVEN to run.**
     - Card 242: `0x40e400` dispatch + `0x40e3a0` room + the three routes (`0x4157a0` >0,
       `0x4159d0` <0, `0x40e590` ==0) + the INVENTED next-ref tag (`kc0 < 0` lane index,
