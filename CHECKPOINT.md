@@ -63,6 +63,26 @@ In progress: nothing unmerged (cards 232/233 merged: all four `Graph::step` walk
 Known open spots: Resource nodes are never freed after destroy (side tables keyed by Resource*), ids not recycled (0x5173e0); render typed data collapsed onto Runtime::Resource (text_*, bones, camera_*, fog_*: INVENTED mapping); physics: mode 6->7 conversion still after the loop (exe: inside, via 0x4ffd20 when 0x4fc610 fires), contact list rebuilt per sub-iteration (exe keeps creation order); audio: pan/doppler not ported (INVENTED), bus 2D flag and per-sound mindist/maxdist not wired; Chassis subsystem natives (mass/CM/OSD/SFX/force update) and Part getLogo/getMass/flap/install_OK stay explicit stubs; 4 Axis part refs ship only as `scripts/src/*.java`: the exe compiles them at load (0x51fcc0 -> 0x55aca0 -> 0x55bec0 -> JVM::compileSource 0x5598f0: recompile when the .class is missing, mtime differs from the source, or the header is not TUFA v4 build 0x11ae1/0x24f9d); src compiler exists but is not yet hooked into class load; 237 native stubs; CMaterial partial classes/font atlas; VM `>>>`; engine/service startup (GameType, type registry, streaming); no way to run PE32 here (no wine32). Audio service-sort tie order is deterministic but not qsort-identical; DS8/DirectShow runtime untested (hooks only). `make -C src clean check` raced under -j (ar saw classfile.o missing; recurred 2026-10-30); sequenced `make clean && make check` is green - use it.
 
 ## Next-steps queue (in order)
+0A6. **2026-10-31, DeepSeek-only round 7: `findRoute` ported, halt family wired.**
+    - Card 253 (merged): `Graph::find_route 0x417e50` with the node table `0x4167a0`, the
+      open heap `0x41a8b0`/`0x41a6f0` on `g+h`, heuristic `0x419c50`, `Cross::route_g +0x3c`
+      as the only visited mark, the parent-chain assembly `0x4189b0..0x4189ee` and all six
+      end-of-route connectors; plus `path_add_straight 0x4120d0`/`0x414e00` and
+      `path_append 0x412960`. **Corrections the review forced** (the tracer's card was
+      wrong): a straight segment's `m1` is the horizontal side vector `(-dz, 0, dx)`
+      normalized, `flat_len` is the horizontal `sqrt(dx^2+dz^2)` while `len` stays 3D,
+      `start_dir`/`end_dir` copy `m0`/`-m0` verbatim, the `0x412960` gap connector has no
+      source-count test, `Road::k64` compares **signed**, and `0x414e00` **skips** the
+      m0/m1 normalization on a zero/NaN length (`0x414f12`/`0x414f70`) instead of dividing.
+    - Card 255 (in review): `Graph::halt_path 0x4196f0`, `Graph::halt_road 0x419ba0`, the
+      propagation `0x419980`/`0x419ab0` and a graph-local worklist replacing the exe globals
+      `0x5e6538/3c/40`; the natives `GroundRef.haltTrafficPath 0x4dd700` /
+      `haltTrafficRoad 0x4de270` are no longer stubs.
+    Note: **nothing in the check suite calls the halt natives**, so this family is
+    exe-verified by review only (build + unchanged race/city numbers).
+    Remaining in traffic: the four `0x410680` services (`0x4ec210`, `0x417080`, `0x488080`,
+    `0x41a500`) + counters `0x5e64f4/f8/fc`; and the big blockers outside the subsystem
+    (city2 mount `0x519940`, event-code-1 sink).
 0A5. **2026-10-31, DeepSeek-only round 6: the per-car traffic port has no `shortcut:` left
     in `car_target_speed`, and `findRoute` is scoped as its own multi-card effort.**
     - Card 252: `car_target_speed 0x40dc00` now has the `+0x124` lane-change-target branch
