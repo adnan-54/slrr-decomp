@@ -43,6 +43,7 @@ struct Cross {                  // ctCross 0x40e850
     float pos[3] = {}; uint32_t k30 = 0;
     float radius = 0;                 // +0x34 (cross_init 0x415650)
     int32_t live_refs = 0;            // +0x38 live-lane refcount, -1 = going inactive
+    float route_g = -1.0f;            // +0x3c findRoute g-score (0x417e50)
     float k40 = -1.0f;                // +0x40 route-block deadline: 0x40e408 loads k40,
                                       // 0x40e40d COMISS / 0x40e414 JBE (0x40e400 returns 0
                                       // iff k40 > sim_time); ctor 0x40c590 stores -1.0f; sole
@@ -230,6 +231,10 @@ struct Graph {
     const Lane *nearest_lane_pos(float x, float y, float z, float *d, float *lat) const;
     // 0x419410: snap pos onto the nearest lane's road path; dir = path direction.
     bool align_to_road(float pos[3], float dir[3]) const;
+    // 0x417e50: A*-style cross/road route from p2 to p1 (a new Path), false = no
+    // route. Non-const: writes Cross::route_g and the two score globals.
+    bool find_route(const float p1[3], const float p2[3], bool flag1, bool flag2,
+                    Path *out);
 };
 
 void segment_pos(const Segment &s, float d, float out[3]);   // 0x4134e0

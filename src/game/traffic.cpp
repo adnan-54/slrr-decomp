@@ -2584,6 +2584,482 @@ void lane_timed_event(Graph &g, uint32_t li)
 
 }  // namespace
 
+// 0x5e6530 / 0x5e6534: route score offsets, process-wide BSS. DAT534 keeps a
+// stale value when p2 was not snapped (tasks/251).
+static float route_530;
+static float route_534;
+
+namespace {
+
+// INVENTED: the exe compares Cross* directly; roads store cross node ids, so
+// this maps a cross pointer back to its node id (inverse of cross_by_node).
+uint32_t cross_id_of(const Graph &g, const Cross *c)
+{
+    const uintptr_t a = (uintptr_t)c;
+    const uintptr_t eq = (uintptr_t)g.cross_eq.data();
+    if (a >= eq && a < eq + g.cross_eq.size() * sizeof(Cross))
+        return (uint32_t)((a - eq) / sizeof(Cross)) + 1;
+    const uintptr_t light = (uintptr_t)g.cross_light.data();
+    if (a >= light && a < light + g.cross_light.size() * sizeof(Cross))
+        return (uint32_t)(g.cross_eq.size() + (a - light) / sizeof(Cross)) + 1;
+    return 0;
+}
+
+// 0x4120d0 ctPath__addStraight + 0x414e00 ctSegment__buildStraight.
+void path_add_straight(Path &p, const float p0[3], const float p1[3], float w,
+                       float f1, int32_t i1, float f2, float f3, int32_t i2)
+{
+    Segment s;
+    float d[3];
+    for (int i = 0; i < 3; i++) {
+        s.p0[i] = p0[i];
+        s.p1[i] = p1[i];
+        d[i] = p1[i] - p0[i];
+    }
+    float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    for (int i = 0; i < 3; i++) s.m0[i] = d[i];
+    normalize(s.m0);
+    for (int i = 0; i < 3; i++) s.m1[i] = -s.m0[i];
+    s.len = len;
+    s.flat_len = len;
+    s.curved = false;
+    s.width = w;
+    s.k40 = f1;
+    s.i1 = i1;
+    s.f2 = f2;
+    s.f3 = f3;
+    s.i2 = i2;
+    p.segs.push_back(s);
+    p.length = s.len + p.length;
+    if (p.segs.size() == 1) {
+        for (int i = 0; i < 3; i++) {
+            p.start[i] = p0[i];
+            p.start_dir[i] = s.m0[i];
+        }
+        normalize(p.start_dir);
+    }
+    for (int i = 0; i < 3; i++) {
+        p.end[i] = p1[i];
+        p.end_dir[i] = s.m1[i];
+    }
+    normalize(p.end_dir);
+}
+
+// 0x412960 ctPath__append: append src (reversed when reverse), bridging the gap
+// with a 0x4122b0 connector when the ends are more than 0.001 apart.
+void path_append(Path &p, const Path &src, bool reverse)
+{
+    const size_t n = src.segs.size();
+    if (p.segs.empty()) {
+        if (reverse) {
+            for (int i = 0; i < 3; i++) {
+                p.start[i] = src.end[i];
+                p.start_dir[i] = -src.end_dir[i];
+            }
+        } else {
+            for (int i = 0; i < 3; i++) {
+                p.start[i] = src.start[i];
+                p.start_dir[i] = src.start_dir[i];
+            }
+        }
+    } else if (n != 0) {
+        const Segment &last = p.segs.back();
+        const Segment &first = src.segs.front();
+        const float *attach = reverse ? src.end : src.start;
+        const float *adir = reverse ? src.end_dir : src.start_dir;
+        float dx = p.end[0] - attach[0];
+        float dy = p.end[1] - attach[1];
+        float dz = p.end[2] - attach[2];
+        if (dx * dx + dy * dy + dz * dz > 0.001f) {
+            float d1[3];
+            for (int i = 0; i < 3; i++) d1[i] = reverse ? -adir[i] : adir[i];
+            float w = last.width < first.width ? last.width : first.width;
+            float f1 = last.k40 < first.k40 ? last.k40 : first.k40;
+            path_add_segment(p, p.end, p.end_dir, attach, d1, w, f1, 1, 10000.0f,
+                             10000.0f, 0);
+        }
+    }
+    for (size_t k = 0; k < n; k++) {
+        const Segment &s = src.segs[reverse ? n - 1 - k : k];
+        Segment d = s;
+        if (reverse) {
+            for (int i = 0; i < 3; i++) {
+                d.p0[i] = s.p1[i];
+                d.p1[i] = s.p0[i];
+                if (!s.curved) {
+                    d.m0[i] = -s.m0[i];
+                    d.m1[i] = -s.m1[i];
+                } else {
+                    d.m0[i] = -s.m1[i];
+                    d.m1[i] = -s.m0[i];
+                }
+            }
+        }
+        p.segs.push_back(d);
+    }
+    if (reverse) {
+        for (int i = 0; i < 3; i++) {
+            p.end[i] = src.start[i];
+            p.end_dir[i] = -src.start_dir[i];
+        }
+    } else {
+        for (int i = 0; i < 3; i++) {
+            p.end[i] = src.end[i];
+            p.end_dir[i] = src.end_dir[i];
+        }
+    }
+    p.length = p.length + src.length;
+}
+
+// 0x4167a0 node-table push: 12-byte {parent,cross,road}; returns the old count.
+struct RouteEntry {
+    int32_t parent;      // -1 = start node
+    const Cross *cross;
+    Road *road;
+};
+// 0x41a8b0 open-heap entry: 12-byte {g,h,node}; key = g+h.
+struct RouteHeapItem {
+    float g;
+    float h;
+    uint32_t node;
+};
+
+uint32_t route_node_push(std::vector<RouteEntry> &t, int32_t parent,
+                         const Cross *cross, Road *road)
+{
+    uint32_t idx = (uint32_t)t.size();
+    t.push_back(RouteEntry{parent, cross, road});
+    return idx;
+}
+
+// 0x41a8b0 open-heap push: sift up while the parent key is greater.
+void route_heap_push(std::vector<RouteHeapItem> &h, const RouteHeapItem &v)
+{
+    const float key = v.g + v.h;
+    h.push_back(v);
+    size_t i = h.size() - 1;
+    while (i > 0) {
+        size_t par = (i - 1) / 2;
+        if (!(h[par].g + h[par].h > key)) break;
+        h[i] = h[par];
+        i = par;
+    }
+    h[i] = v;
+}
+
+// 0x41a6f0 open-heap pop: heap[0], last moved to the root, sift down on the
+// smaller child key.
+RouteHeapItem route_heap_pop(std::vector<RouteHeapItem> &h)
+{
+    RouteHeapItem top = h.front();
+    RouteHeapItem last = h.back();
+    h.pop_back();
+    if (!h.empty()) {
+        size_t i = 0, n = h.size();
+        const float key = last.g + last.h;
+        while (true) {
+            size_t l = i * 2 + 1;
+            if (l >= n) break;
+            size_t m = l;
+            if (l + 1 < n && h[l + 1].g + h[l + 1].h < h[l].g + h[l].h) m = l + 1;
+            if (!(h[m].g + h[m].h < key)) break;
+            h[i] = h[m];
+            i = m;
+        }
+        h[i] = last;
+    }
+    return top;
+}
+
+// 0x419c50 Traffic__heuristic (body inlined at 0x418511..0x418626).
+float route_heuristic(const Cross *node, const Cross *goal, const Cross *alt)
+{
+    float dx = node->pos[0] - goal->pos[0];
+    float dy = node->pos[1] - goal->pos[1];
+    float dz = node->pos[2] - goal->pos[2];
+    float dA = sqrtf(dx * dx + dy * dy + dz * dz);
+    if (goal == alt) return dA;
+    dx = node->pos[0] - alt->pos[0];
+    dy = node->pos[1] - alt->pos[1];
+    dz = node->pos[2] - alt->pos[2];
+    float dB = sqrtf(dx * dx + dy * dy + dz * dz);
+    float a = dA + route_530;
+    float b = dB + route_534;
+    return b <= a ? b : a;
+}
+
+}  // namespace
+
+// 0x417e50 Traffic__findRoute: A*-style search from p2 to p1 over the
+// cross/road graph; returns a new Path (p2 side first) or false.
+bool Graph::find_route(const float p1[3], const float p2[3], bool flag1, bool flag2,
+                       Path *out)
+{
+    // --- snap p2 (0x417e91..0x418020)
+    const Cross *c2 = nearest_cross(p2[0], p2[1], p2[2], 0.0f, true);
+    const Cross *goal = c2, *alt = c2;
+    Road *p2road = nullptr;
+    float d2 = 0.0f;
+    if (!flag2) {
+        const Lane *l = nearest_lane_pos(p2[0], p2[1], p2[2], nullptr, nullptr);
+        if (l) {
+            Road *r = road_by_node(*this, l->road);
+            // INVENTED: the exe dereferences a null/out-of-range road.
+            if (r) {
+                p2road = r;
+                float lat = 0.0f;
+                path_project(p2road->path, p2[0], p2[2], &d2, &lat);
+                goal = cross_by_node(*this, p2road->node[1], nullptr);
+                if (p2road->k64 > 0) {
+                    p2road = nullptr;
+                    route_530 = 0.0f;
+                } else {
+                    alt = cross_by_node(*this, p2road->node[2], nullptr);
+                    // INVENTED: an unresolvable alt falls back to goal.
+                    if (!alt) alt = goal;
+                    route_534 = d2;
+                    route_530 = p2road->path.length - d2;
+                }
+            } else {
+                route_530 = 0.0f;
+            }
+        } else {
+            route_530 = 0.0f;
+        }
+    } else {
+        route_530 = 0.0f;
+    }
+    if (!goal) return false;                                    // 0x417f44
+
+    // --- snap p1 (0x417f6b..0x418176)
+    const Cross *start = nearest_cross(p1[0], p1[1], p1[2], 0.0f, true);
+    Road *p1road = nullptr;
+    float d1 = 0.0f;
+    const Lane *lane1 =
+        flag1 ? nullptr : nearest_lane_pos(p1[0], p1[1], p1[2], nullptr, nullptr);
+    bool two_start = false;
+    if (lane1) {
+        Road *r = road_by_node(*this, lane1->road);
+        // INVENTED: the exe dereferences a null/out-of-range road.
+        if (r) {
+            p1road = r;
+            float lat = 0.0f;
+            path_project(p1road->path, p1[0], p1[2], &d1, &lat);
+            start = cross_by_node(*this, p1road->node[1], nullptr);
+            if (p1road->k64 <= 0) {                             // 0x417fe4
+                two_start = true;
+                // same-road fast path (0x418025)
+                if (p2road && p2road == p1road) {
+                    Path P;
+                    if (d2 > d1) {
+                        const Cross *c0 =
+                            cross_by_node(*this, p2road->node[1], nullptr);
+                        if (c0 && !p2road->path.segs.empty())   // INVENTED guards
+                            path_add_straight(P, c0->pos, p2road->path.end,
+                                              p2road->path.segs.back().width, 1.0f,
+                                              1, 10000.0f, 10000.0f, 0);
+                        path_append(P, p2road->path, true);
+                    } else {
+                        const Cross *c1 =
+                            cross_by_node(*this, p2road->node[2], nullptr);
+                        if (c1 && !p2road->path.segs.empty())   // INVENTED guards
+                            path_add_straight(P, c1->pos, p2road->path.start,
+                                              p2road->path.segs.front().width, 1.0f,
+                                              1, 10000.0f, 10000.0f, 0);
+                        path_append(P, p2road->path, false);
+                    }
+                    *out = P;                                   // 0x418104
+                    return true;
+                }
+            } else {
+                p1road = nullptr;                               // 0x417ff0
+            }
+        }
+    }
+
+    std::vector<RouteEntry> node_table;
+    std::vector<RouteHeapItem> open_heap;
+    if (two_start) {
+        // two start nodes (0x418109); cross0 = path end side, cross1 = start.
+        Cross *c0 = cross_by_node(*this, p1road->node[1], nullptr);
+        if (c0) {                                               // INVENTED guard
+            float g = p1road->path.length - d1;
+            uint32_t idx = route_node_push(node_table, -1, c0, p1road);
+            float h = route_heuristic(c0, goal, alt);
+            route_heap_push(open_heap, RouteHeapItem{g, h, idx});
+        }
+        Cross *c1 = cross_by_node(*this, p1road->node[2], nullptr);
+        if (c1) {                                               // INVENTED guard
+            float g = d1;
+            uint32_t idx = route_node_push(node_table, -1, c1, p1road);
+            float h = route_heuristic(c1, goal, alt);
+            route_heap_push(open_heap, RouteHeapItem{g, h, idx});
+        }
+    } else {
+        if (!start) return false;                               // 0x418176
+        if (p2road != nullptr && start == goal) {               // 0x41817e
+            Path P;
+            path_append(P, p2road->path,
+                        p2road->node[1] != cross_id_of(*this, goal));
+            *out = P;
+            return true;
+        }
+        if (p2road != nullptr && start == alt) {                // 0x4181c4
+            Path P;
+            path_append(P, p2road->path,
+                        p2road->node[1] != cross_id_of(*this, alt));
+            *out = P;
+            return true;
+        }
+        // push_one_start (0x418226)
+        uint32_t idx = route_node_push(node_table, -1, start, nullptr);
+        float h = route_heuristic(start, goal, alt);
+        route_heap_push(open_heap, RouteHeapItem{0.0f, h, idx});
+    }
+
+    // --- reset route_g of every cross to -1.0f (0x41826d / 0x4182a2)
+    for (Cross &c : cross_eq) c.route_g = -1.0f;
+    for (Cross &c : cross_light) c.route_g = -1.0f;
+
+    // --- A* main loop (0x4182dd..0x4186b2)
+    int32_t found = -1;
+    uint32_t found_idx = 0;
+    while (!open_heap.empty()) {
+        RouteHeapItem top = route_heap_pop(open_heap);          // 0x4182f0
+        const RouteEntry &E = node_table[top.node];
+        if (E.cross == goal || E.cross == alt) {                // 0x41831c
+            found = (int32_t)top.node;
+            found_idx = top.node;
+            break;
+        }
+        const uint32_t eid = cross_id_of(*this, E.cross);
+        float prev_dir[3] = {0.0f, 0.0f, 0.0f};
+        if (E.road) {
+            if (E.road->node[1] == eid) {
+                for (int i = 0; i < 3; i++) prev_dir[i] = E.road->path.end_dir[i];
+            } else {
+                for (int i = 0; i < 3; i++) prev_dir[i] = -E.road->path.start_dir[i];
+            }
+        }
+        Road *prev_road = nullptr;                              // ESI, 0x41838f
+        for (const CrossLink &link : E.cross->links) {          // 0x4183a0
+            Lane *l = lane_at(*this, link.node);
+            if (!l) continue;                                   // INVENTED guard
+            Road *Rn = road_by_node(*this, l->road);
+            if (!Rn) continue;                                  // INVENTED guard
+            if (Rn == prev_road) continue;                      // 0x4183a9 dedupe
+            prev_road = Rn;                                     // 0x4183b1
+            if (Rn->k64 > 0) continue;                          // 0x4183b7
+            // INVENTED: the exe reads segs[0] unchecked.
+            if (Rn->path.segs.empty()) continue;
+            const bool at_end = (Rn->node[1] == eid);
+            float next_dir[3];
+            if (at_end) {
+                for (int i = 0; i < 3; i++) next_dir[i] = Rn->path.end_dir[i];
+            } else {
+                for (int i = 0; i < 3; i++) next_dir[i] = -Rn->path.start_dir[i];
+            }
+            Cross *far = cross_by_node(*this, at_end ? Rn->node[2] : Rn->node[1],
+                                       nullptr);
+            if (!far) continue;                                 // INVENTED guard
+            const bool is_new = (far != goal && far != alt);
+            float dot = prev_dir[0] * next_dir[0] + prev_dir[1] * next_dir[1] +
+                        prev_dir[2] * next_dir[2];
+            float g_new = (dot + 1.0f) * 30.0f;
+            g_new = g_new + top.g;
+            g_new = g_new + (((max_road_width / Rn->path.segs[0].width) + 4.0f) *
+                             Rn->path.length * 0.2f);
+            if (far == goal) g_new = g_new + route_530;         // 0x4184c4
+            else if (far == alt) g_new = g_new + route_534;
+            float rg = far->route_g;
+            if (!(-0.5f > rg || g_new < rg)) continue;          // 0x4184e6
+            far->route_g = g_new;                               // 0x418504
+            float h = is_new ? route_heuristic(far, goal, alt) : 0.0f;
+            uint32_t idx = route_node_push(node_table, (int32_t)top.node, far, Rn);
+            route_heap_push(open_heap, RouteHeapItem{g_new, h, idx});
+        }
+    }
+    if (found < 0) return false;                                // 0x4186b5
+
+    // --- found: assemble the path (0x4186e7..0x418ad7)
+    Path P;
+    const RouteEntry &F = node_table[found_idx];
+    int32_t root = found;
+    Road *last_road = nullptr;
+
+    // 0x4120d0 connector: cross centre -> the road endpoint that sits at c
+    // (node[1] is the path end side).
+    auto add_road_connector = [&](const Cross *c, const Road *r) {
+        if (!c || !r || r->path.segs.empty()) return;   // INVENTED guards
+        if (r->node[1] == cross_id_of(*this, c)) {
+            path_add_straight(P, c->pos, r->path.end, r->path.segs.back().width,
+                              1.0f, 1, 10000.0f, 10000.0f, 0);
+        } else {
+            path_add_straight(P, c->pos, r->path.start, r->path.segs.front().width,
+                              1.0f, 1, 10000.0f, 10000.0f, 0);
+        }
+    };
+
+    if (!flag2) {
+        if (p2road) {
+            // 0x418834 branch B: p2 road piece, ending at the found cross.
+            const uint32_t fid = cross_id_of(*this, F.cross);
+            Cross *other = cross_by_node(*this,
+                                         p2road->node[1] == fid ? p2road->node[2]
+                                                                : p2road->node[1],
+                                         nullptr);
+            add_road_connector(other, p2road);
+            path_append(P, p2road->path, p2road->node[1] != fid);
+        } else {
+            // 0x418918 branch E: no p2 road.
+            Road *r = F.road ? F.road : p1road;
+            if (r) add_road_connector(goal, r);
+        }
+    } else if (F.parent == -1) {
+        // 0x418777 branch C: found is a start node; p1road == 0 falls through
+        // to branch E (0x418834 -> 0x418918 -> CHAIN_SETUP).
+        if (p1road) add_road_connector(goal, p1road);
+    } else {
+        // 0x41872e branch D: found road piece back to the goal cross.
+        add_road_connector(goal, F.road);
+    }
+
+    // 0x418998 CHAIN_SETUP / 0x4189b0 parent-chain loop: append road(cur) so the
+    // piece ends at entry[parent].cross; the root node's own road is not added.
+    int32_t cur = found;
+    int32_t par = F.parent;
+    while (par != -1) {                                         // 0x4189a0
+        Road *rc = node_table[(size_t)cur].road;
+        if (rc) {                                               // INVENTED guard
+            last_road = rc;
+            const bool reverse =
+                (rc->node[1] != cross_id_of(*this, node_table[(size_t)par].cross));
+            path_append(P, rc->path, reverse);
+        }
+        int32_t grand = node_table[(size_t)par].parent;
+        cur = par;
+        par = grand;
+    }
+    root = cur;
+
+    // 0x4189f9 post-loop.
+    if (flag1 && last_road) {
+        add_road_connector(start, last_road);
+    } else if (p1road) {
+        // 0x418ab4: the p1 road starts at the root cross (SETZ).
+        const bool reverse =
+            (p1road->node[1] == cross_id_of(*this, node_table[(size_t)root].cross));
+        path_append(P, p1road->path, reverse);
+    }
+
+    // 0x418ad7 empty-path fallback: p2 argument -> p1 argument, width 1.0f.
+    if (P.segs.empty())
+        path_add_straight(P, p2, p1, 1.0f, 1.0f, 1, 10000.0f, 10000.0f, 0);
+
+    *out = P;                                                   // 0x4186b7
+    return true;
+}
+
 // 0x419da0 Traffic__init.
 void Graph::init(float t)
 {
