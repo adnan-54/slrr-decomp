@@ -1,8 +1,8 @@
 ---
 id: 245
-status: draft
-branch:
-review:
+status: merged
+branch: -
+review: evidence-only
 depends: []
 ---
 # traffic: cross-path claim/release state + ref-set wrappers 0x40f900 / 0x40f930
