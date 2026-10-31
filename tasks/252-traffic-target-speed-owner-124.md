@@ -1,7 +1,8 @@
 ---
 id: 252
-status: implemented
+status: merged
 branch: card/252
+review: deepseek-pass
 review:
 depends: []
 ---
