@@ -1362,14 +1362,17 @@ bool car_live_step(Graph &g, Car &car)
         car_push_instance(g, car);    // 0x4118f0 -> 0x4102d0
         return false;
     }
-    // 0x40f3f3: owner = *(Car+0xc4), vf1 dispatched on its vtable +0x04:
-    // lane vf1 0x40e390 = lane+0xa8 live; cross vf1 0x40e380 = +0x38 live_refs.
+    // 0x40f3f3: vf1 dispatched on the object at *(Car+0xc4). The owner kind is
+    // tracked by cross_node (set by cross_attach 0x40cb60, cleared by
+    // lane_unlink 0x40ca40), not by dir: 0x4107c0 step 7 rewrites +0xc4 to a
+    // lane without touching +0xcc, so dir can stay >= 0 on a lane owner.
     bool cur_live;
-    if (car.dir < 0) {
-        cur_live = car.path_lane < g.lanes.size() && g.lanes[car.path_lane].live;
+    if (car.cross_node != 0) {
+        const Cross *c = cross_by_node(g, car.cross_node, nullptr);  // INVENTED null guard
+        cur_live = c != nullptr && cross_active(*c);                 // cross vf1 0x40e380
     } else {
-        const Cross *c = cross_by_node(g, car.path_lane, nullptr);  // INVENTED null guard
-        cur_live = c != nullptr && cross_active(*c);
+        // lane vf1 0x40e390 = lane+0xa8 live
+        cur_live = car.path_lane < g.lanes.size() && g.lanes[car.path_lane].live;
     }
     // 0x40f402: drop the car when the owner is not live and there is no next ref.
     if (!car.next_lane_b && !cur_live && car.live) {
@@ -1705,7 +1708,7 @@ bool cross_dispatch(Graph &g, uint32_t cross_node, uint32_t ci, float t, uint32_
     Cross *c = cross_by_node(g, cross_node, nullptr);
     // INVENTED: a road/lane node id is not a cross (the exe calls a vtable on it).
     if (!c) return false;
-    if (c->k40 > g.sim_time) return false;               // 0x40e408; writer 0x40de70
+    if (c->k40 > g.sim_time) return false;               // 0x40e40d COMISS / 0x40e414 JBE; writer 0x40de70
     const int32_t r = c->live_refs;                      // +0x38
     if (r > 0) return cross_route_live(g, cross_node, *c, ci, t, link);   // vt+0x1c
     if (r < 0) return cross_route_dying(g, *c, ci, link);                 // vt+0x20

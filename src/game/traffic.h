@@ -43,9 +43,10 @@ struct Cross {                  // ctCross 0x40e850
     float pos[3] = {}; uint32_t k30 = 0;
     float radius = 0;                 // +0x34 (cross_init 0x415650)
     int32_t live_refs = 0;            // +0x38 live-lane refcount, -1 = going inactive
-    float k40 = -1.0f;                // +0x40 route-block deadline: 0x40e400 returns 0 while
-                                      // k40 > sim_time (0x40e408 COMISS/JBE); ctor 0x40c590 stores
-                                      // -1.0f; sole writer 0x40de70 stores sim_time + delay (0x40de90),
+    float k40 = -1.0f;                // +0x40 route-block deadline: 0x40e408 loads k40,
+                                      // 0x40e40d COMISS / 0x40e414 JBE (0x40e400 returns 0
+                                      // iff k40 > sim_time); ctor 0x40c590 stores -1.0f; sole
+                                      // writer 0x40de70 stores sim_time + delay (0x40de90),
                                       // reached only from 0x419980 (0.001f) and native 0x4de360.
     uint32_t active_next = 0;         // +0x54 (eq) / +0x60 (light)
     // +0x44 ResRefLink. INVENTED: id of the bound object's instance, 0 = none.
