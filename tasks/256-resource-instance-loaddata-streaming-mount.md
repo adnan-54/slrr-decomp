@@ -1,6 +1,6 @@
 ---
 id: 256
-status: draft
+status: rejected
 branch:
 review:
 depends: []
