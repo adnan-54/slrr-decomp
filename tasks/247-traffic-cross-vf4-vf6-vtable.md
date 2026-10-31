@@ -1,7 +1,8 @@
 ---
 id: 247
-status: implemented
+status: merged
 branch: card/247
+review: deepseek-pass
 depends: []
 ---
 # traffic: cross vf4 0x4883e0 is a no-op; vf5 0x46acd0 returns 0; vf6 0x40dd00 is the path-lane speed limit
