@@ -1139,6 +1139,18 @@ void car_set_live(Graph &g, uint32_t ci, bool on)
     if (car.live == 0 && car.k128 != 0) car.k128 = 0;   // +0x128
 }
 
+// 0x41a500 Traffic__queueSpawn (ECX = T): append a WeakCarRef for car to the
+// spawn queue (+0x310c). 0x40ca10 writes the serial and the car only.
+static void queue_spawn(Graph &g, uint32_t ci)
+{
+    LeaderSlot e;
+    e.serial = g.cars[ci].serial;                // 0x40ca10: e+0 = car+0
+    e.car = ci + 1;                              // e+4 = car (INVENTED: 1-based index)
+    // INVENTED: the exe leaves the realloc'd +8/+0xc bytes unwritten; LeaderSlot
+    // value-initializes flag/dist to 0.
+    g.spawn_queue.push_back(e);
+}
+
 // 0x410680 TrafficCar__syncInstance (ECX = car, arg ResRefLink *link): bring the
 // instance link, the spawn queue and the park side in step with the owner link.
 // bound = link+8 != 0 (our object id != 0). Returns nothing in every branch.
@@ -1165,13 +1177,15 @@ void car_sync_instance(Graph &g, uint32_t ci, uint32_t link_object)
         }
         car.e8 = g.sim_time;                        // +0xe8 = T+0x84
         // shortcut: Traffic__parkInstance 0x417080(type, &car+0x130) not ported.
-        // shortcut: 0x488080 link unlink of the +0x130 node not ported.
-        // shortcut: counters 0x5e64f4 -= 1, 0x5e64fc += 1 not modelled.
+        car.inst_id = 0;                            // 0x41077e ResRefLink__dtor clears +0x138
+        g.inst_count -= 1;                          // 0x410783
+        g.parked_count += 1;                        // 0x410789
         return;
     }
     if (!inst) {                                    // 0x4106dd
-        // shortcut: counters 0x5e64f4 += 1, 0x5e64f8 += 1 not modelled.
-        // shortcut: Traffic__queueSpawn 0x41a500(car) not ported.
+        g.inst_count += 1;                          // 0x4106e7
+        g.spawn_count += 1;                         // 0x4106ed
+        queue_spawn(g, ci);                         // 0x4106f4
         return;
     }
     // shortcut: 0x4ec210 link_reparent(&car+0x130, link) not ported.
@@ -2455,13 +2469,15 @@ void car_bind_object(Graph &g, uint32_t ci, uint32_t object)
             // shortcut: Traffic__parkInstance 0x417080 and the +0x130
             // type link unlink 0x488080 are not modelled.
             car.inst_id = 0;
-            // shortcut: counters 0x5e64f4/0x5e64fc are not modelled.
+            g.inst_count -= 1;                       // 0x40ee9b / 0x40ed0b
+            g.parked_count += 1;                     // 0x40eea1 / 0x40ed11
         }
     } else if (inst) {
         // shortcut: 0x4ec210 reparent under obj is not ported.
     } else {
-        // shortcut: counters 0x5e64f4/0x5e64f8 and Traffic__queueSpawn
-        // 0x41a500 are not modelled.
+        g.inst_count += 1;                       // 0x40edda / 0x40ec4a
+        g.spawn_count += 1;                      // 0x40ede0 / 0x40ec50
+        queue_spawn(g, ci);                      // 0x41a500
     }
 }
 
@@ -3243,8 +3259,8 @@ uint32_t Graph::spawn_on_road(size_t road, float p1, float p2, float p3, float p
 // copies its fields; type_id != 0 parks the script instance. Both end in
 // TrafficCar__remove 0x40f290.
 // shortcut: +0x130/+0x134/+0x13c instance links, 0x417080 parkInstance,
-// 0x40cac0, 0x47c640 getInfo 0x38, 0x410680 syncInstance, car_add and the
-// 0x5e64f4/0x5e64fc counters are not modelled (src has no materialized cars).
+// 0x40cac0, 0x47c640 getInfo 0x38, 0x410680 syncInstance and car_add are not
+// modelled (src has no materialized cars).
 static void recycle_halted_car(Graph &g, const Cross &c, uint32_t ci)
 {
     Car &car = g.cars[ci];
@@ -3261,6 +3277,10 @@ static void recycle_halted_car(Graph &g, const Cross &c, uint32_t ci)
             n.seed = car.seed;             // +0x154
             n.notify = car.notify;         // +0xdd
         }
+    } else {
+        // typed branch: counters are unconditional (no +0x138 test), unlike 0x410680.
+        g.inst_count -= 1;                           // 0x40fb4a
+        g.parked_count += 1;                         // 0x40fb50
     }
     car.inst_id = 0;                                 // +0x138, both branches
     g.remove_car(ci + 1);                            // 0x40f290

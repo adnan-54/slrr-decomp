@@ -174,6 +174,9 @@ struct Graph {
     // initial 0 (BSS); the setter is not traced.
     int32_t front_mode = 0;
     std::vector<uint8_t> road_enabled;          // +0xc4: enable flag per road group
+    // +0x310c/+0x3110/+0x3114 spawn queue appended by 0x41a500. INVENTED:
+    // std::vector; an entry is the 16-byte WeakCarRef (LeaderSlot layout).
+    std::vector<LeaderSlot> spawn_queue;        // +0x310c
     float max_road_width = 0;                   // +0x312c
     float cross_stop_offset = 0;                // +0x3140 (ctor 0x416000: 0)
     // +0x00 lane event min-heap (schedule 0x417050, push 0x41a950). INVENTED:
@@ -185,6 +188,10 @@ struct Graph {
     // kLiveEnd = end (a pointer in the exe).
     uint32_t live_cars = kLiveEnd;
     int32_t live_count = 0;                     // global 0x5e6514; INVENTED: per graph
+    // 0x5e64f4/f8/fc debug counters ("TrafficCar: %d, %d, %d", 0x4d34b0 case 0xc).
+    int32_t inst_count = 0;                     // global 0x5e64f4; INVENTED: per graph
+    int32_t spawn_count = 0;                    // global 0x5e64f8; INVENTED: per graph
+    int32_t parked_count = 0;                   // global 0x5e64fc; INVENTED: per graph
     // +0x8c/+0x90/+0x94 heads of the active lane/cross lists. INVENTED: 1-based
     // indices into lanes / cross_eq / cross_light (kLiveEnd = end), like live_cars.
     uint32_t active_lanes = kLiveEnd;
