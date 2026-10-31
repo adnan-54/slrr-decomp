@@ -1,8 +1,8 @@
 ---
 id: 258
-status: implemented
+status: merged
 branch: card/258
-review:
+review: claude
 depends: [257, 260]
 ---
 # traffic: Traffic__flushSpawns 0x417c90 + TrafficCar__materialize 0x40d4e0 (decision, pose, params)
