@@ -1,7 +1,8 @@
 ---
 id: 248
-status: implemented
+status: merged
 branch: card/248
+review: deepseek-pass
 depends: [246]
 ---
 # harness: let the city lanes expire so a routed car actually commits its cross ref

@@ -692,8 +692,9 @@ bool all_positions_sane(const traffic::Graph &g)
 }
 
 // INVENTED HARNESS: a car whose current ref is a cross path (path index, not a
-// lane). car+0xcc >= 0 tags a cross owner (car+0xc8 is then the raw &Segment of
-// cross path +0x58+i*0x60, 0x413660); lane refs carry dir -1 (0x40f950).
+// lane). car+0xcc >= 0 tags a cross owner (car+0xc8 is then the raw &Segment at
+// cross path +0x1c + i*0x60 + 4, the record's trailing +0x58/+0x5c are k58/k5c;
+// 0x413660); lane refs carry dir -1 (0x40f950).
 bool any_car_on_cross_ref(const traffic::Graph &g)
 {
     for (const traffic::Car &car : g.cars)

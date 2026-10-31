@@ -97,9 +97,35 @@ Ref tag (INVENTED, mirrors the exe's raw pointers): `next_lane_a` = lane index w
    hand-over happened plus the position/heap invariants).
 2. `Cross::k40` writer (gates `0x40e400`; ctor sets -1.0f, no writer found) — with -1 the
    gate never blocks, so the port is behaviour-equal until a writer is found.
-3. cross vf4 `0x4883e0` (release/unlink half of `0x40cb60`) untraced.
+3. ~~cross vf4 `0x4883e0` untraced~~ — **resolved (card 247): it is an empty `RET 8`**
+   (3-byte body, no write, no call); the list detach is `0x40ca40`, which `0x40f950` calls
+   just before the old-owner vf4. `0x488080` is a different (instance-link) unlink helper.
+   The cross vtable slots are `+0x10` vf4 `0x4883e0` (no-op), `+0x14` vf5 `0x46acd0`
+   (`return 0`), `+0x18` vf6 `0x40dd00` = the path-lane speed limit
+   `max(links[paths[i].a].node->k98, links[paths[i].b].node->k98)`, now ported as
+   `cross_vf6` and used by `car_target_speed 0x40dc00` (which was also rewritten to the exe
+   order; the old next-ref test missed lane index 0).
 4. `0x410680`'s four services and the counter globals.
-5. `0x4107c0` step 1 still omits the Segment length for a `kc0 >= 0` next ref (comment
-   updated in card 244; unobservable until a car actually carries a cross next ref).
+5. ~~step 1 omits the cross Segment length~~ — **fixed on main after card 244**
+   (`0x41082b`/`0x410834`: `+0x38` for a lane ref, `+0x30` for a cross ref).
 6. `car_live_step` keeps a cross-owner car live only through its next ref; cross vf1
    `0x40e380` is not ported.
+7. `Car+0x124` (the lane-change target, unmodelled owner in `0x40dc00`) stays the one
+   remaining `shortcut:` in `car_target_speed`.
+
+## 5. The chain is now exercised end to end (cards 246/248)
+
+`Runtime::touch_road_nodes` per frame keeps the lanes alive, and `ctLane__activeStep`
+skips cars that carry a next ref, so `car_step` only runs on them once their lane dies.
+Card 246 therefore proves the **dispatch**: within 3 frames of the loop a car (serial 137,
+lane 1303) gets `kc0` 0 -> 7, i.e. `0x40e460 -> 0x40e400 -> 0x4157a0 -> car_set_ref` put it
+on cross path 7. Card 248 adds the expiry phase (no touch for up to 300 frames): the lanes
+die (`live_lanes` 1572 -> 0 in ~0.5 s), `0x40fcf0` then steps their cars with no next-ref
+skip, and at frame 95 a car commits a **cross current ref** (`0x4107c0` step 6 ->
+`0x413660`). Why 95 and not sooner: `0x40f6d0` only re-schedules an expiring lane when
+`lane+0xac == 0`, and the routed lanes still hold their `addTraffic` event (lane 1030's at
+sim 487.26), so the first expiry schedules nothing.
+
+Harness counts with all of this: `--city` 70 checks, `--selfcheck` 174, `--race` 168,
+race 659.414 s / lap 2 244.969 s unchanged.
+
