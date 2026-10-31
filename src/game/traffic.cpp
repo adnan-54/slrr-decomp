@@ -291,6 +291,16 @@ void segment_side(const Segment &s, float d, float out[3])
     }
 }
 
+// 0x413660 ctSegment__posOffset (ECX = Segment): pos at d shifted by off.
+void segment_pos_offset(const Segment &s, float d, float off, float out[3])
+{
+    segment_pos(s, d, out);
+    float side[3];
+    segment_side(s, d, side);
+    for (int i = 0; i < 3; i++)
+        out[i] = side[i] * off + out[i];
+}
+
 // 0x413360 ctPath__posAt.
 void path_pos_at(const Path &p, float d, float out[3])
 {
@@ -1082,6 +1092,44 @@ void car_set_live(Graph &g, uint32_t ci, bool on)
     if (car.live == 0 && car.k128 != 0) car.k128 = 0;   // +0x128
 }
 
+// 0x410680 TrafficCar__syncInstance (ECX = car, arg ResRefLink *link): bring the
+// instance link, the spawn queue and the park side in step with the owner link.
+// bound = link+8 != 0 (our object id != 0). Returns nothing in every branch.
+void car_sync_instance(Graph &g, uint32_t ci, uint32_t link_object)
+{
+    Car &car = g.cars[ci];
+    const uint32_t inst = car.inst_id;              // +0x138
+    const uint32_t type = car.type_id;              // +0x14c
+    const bool bound = link_object != 0;
+    if (type == 0) {                                // 0x41069c
+        if (!inst) return;
+        if (!car.live || !bound) {
+            // shortcut: 0x4ec210 link_reparent(&car+0x130, T+0x311c) not ported.
+        } else {
+            // shortcut: 0x4ec210 link_reparent(&car+0x130, link) not ported.
+        }
+        return;
+    }
+    if (!car.live || !bound) {                      // 0x4106d0 -> 0x410713
+        if (!inst) return;
+        if (car.notify) {
+            // shortcut: the T+0x3130 notify sink (0x5935fc "car_rem %d %d") is
+            // not modelled.
+        }
+        car.e8 = g.sim_time;                        // +0xe8 = T+0x84
+        // shortcut: Traffic__parkInstance 0x417080(type, &car+0x130) not ported.
+        // shortcut: 0x488080 link unlink of the +0x130 node not ported.
+        // shortcut: counters 0x5e64f4 -= 1, 0x5e64fc += 1 not modelled.
+        return;
+    }
+    if (!inst) {                                    // 0x4106dd
+        // shortcut: counters 0x5e64f4 += 1, 0x5e64f8 += 1 not modelled.
+        // shortcut: Traffic__queueSpawn 0x41a500(car) not ported.
+        return;
+    }
+    // shortcut: 0x4ec210 link_reparent(&car+0x130, link) not ported.
+}
+
 // 0x40cbd0 ctLane__vf3: live/not-live bookkeeping, first-event scheduling and
 // occupancy. The exe's tail-append branch is a no-op: insert already set car.lane.
 void lane_attach(Graph &g, size_t li, uint32_t ci)
@@ -1102,7 +1150,9 @@ void lane_attach(Graph &g, size_t li, uint32_t ci)
             }
         }
     }
-    // shortcut: TrafficCar__syncInstance 0x410680 needs the instance side (notes/29 §5)
+    // 0x410680 with the road's bound object (+0x68).
+    Road *road = road_by_node(g, lane.road);
+    car_sync_instance(g, ci, road ? road->object : 0);
     if (lane.k34 == 0xffffffffu)
         car.k124 = lane.node88[2] ? lane.node88[2] : lane.node88[3];
     lane.kc8 += car.k24 + car.k14 + car.k20;
@@ -1129,8 +1179,8 @@ void car_ref_pos_offset(const Path *path, int32_t dir, float d, float off, float
     out[0] = out[1] = out[2] = 0.0f;
     if (!path) return;
     if (dir >= 0) {
-        // shortcut: ctSegment__posOffset 0x413660 (cross path, ref->dir >= 0) has
-        // no src equivalent; no src car is on a cross (dir is only ever -1).
+        // Cross ref: +0xbc holds the raw &CrossPath::seg (Segment), not a Path.
+        segment_pos_offset(*reinterpret_cast<const Segment *>(path), d, off, out);  // 0x413660
         return;
     }
     path_pos_offset_at(*path, d, off, out);      // 0x4133f0 ctPath__posOffsetAt
@@ -1142,8 +1192,8 @@ void car_ref_dir(const Path *path, int32_t dir, float d, float out[3])
     out[0] = out[1] = out[2] = 0.0f;
     if (!path) return;
     if (dir >= 0) {
-        // shortcut: ctSegment__dir 0x412f60 (cross path, ref->dir >= 0) is not
-        // reached: no src car is on a cross (dir is only ever -1).
+        // Cross ref: &CrossPath::seg read as a Segment.
+        segment_dir(*reinterpret_cast<const Segment *>(path), d, out);  // 0x412f60
         return;
     }
     path_dir_at(*path, d, out);                  // 0x412ed0 ctPath__dirAt
@@ -1154,9 +1204,8 @@ float car_ref_length(const Path *path, int32_t dir)
 {
     if (!path) return 0.0f;
     if (dir >= 0) {
-        // shortcut: the cross path length read (ref + 0x30 = Segment::len) is not
-        // reached: no src car is on a cross (dir is only ever -1).
-        return 0.0f;
+        // Cross ref: Segment::len (+0x30).
+        return reinterpret_cast<const Segment *>(path)->len;
     }
     return path->length;                         // +0x38
 }
@@ -1265,9 +1314,9 @@ bool car_live_step(Graph &g, Car &car)
         car_push_instance(g, car);    // 0x4118f0 -> 0x4102d0
         return false;
     }
-    // shortcut: cross owners (idx >= 0) are not representable in src until
-    // TrafficCar__step 0x4107c0 hands cars to crosses (skip 0x415b40/0x415b00)
-    // INVENTED: a car not on a lane (dir >= 0) counts as not live.
+    // shortcut: cross vf1 0x40e380 (live_refs test) is not modelled; a car on a
+    // cross is kept live by the next ref that cross_attach 0x40cb60 sets.
+    // INVENTED: a car not on a lane (dir >= 0) counts as not live here.
     const bool cur_live = car.dir < 0 && car.path_lane < g.lanes.size() &&
                           g.lanes[car.path_lane].live;   // lane vf1 0x40e390 = +0xa8
     if (!car.next_lane_b && !cur_live && car.live) {
@@ -1282,18 +1331,26 @@ bool car_live_step(Graph &g, Car &car)
     return true;
 }
 
-// 0x40ca40 TrafficCar__unlinkLane: unlink from the lane's car list.
+// 0x40ca40 TrafficCar__unlinkLane: unlink from the owner's car list (a lane, or
+// a cross's +8/+0xc list).
 // INVENTED: the vector erase replaces the exe's intrusive prev/next pointers, and
 // the exe has no lane bounds check (it trusts the lane pointer).
 void lane_unlink(Graph &g, uint32_t ci)
 {
     Car &car = g.cars[ci];
-    if (car.lane < g.lanes.size()) {
+    if (car.cross_node != 0) {
+        Cross *c = cross_by_node(g, car.cross_node, nullptr);   // INVENTED guard
+        if (c) {
+            std::vector<uint32_t>::iterator it = std::find(c->cars.begin(), c->cars.end(), ci);
+            if (it != c->cars.end()) c->cars.erase(it);
+        }
+    } else if (car.lane < g.lanes.size()) {
         std::vector<uint32_t> &list = g.lanes[car.lane].cars;
         std::vector<uint32_t>::iterator it = std::find(list.begin(), list.end(), ci);
         if (it != list.end()) list.erase(it);
     }
     car.prev = car.next = car.lane = 0;
+    car.cross_node = 0;
 }
 
 // 0x40e710 ctLane__vf4: detach a removed car from its lane (dir unused).
@@ -1369,11 +1426,13 @@ void car_set_ref(Graph &g, uint32_t ci, size_t li, const Path *path, int32_t dir
         if (g.lanes[li].live) car_set_live(g, ci, true);   // owner vf1 0x40e390
         if (!car.live) {                             // destination lane not live
             lane_unlink(g, ci);                      // 0x40ca40
-            if (car.path) {                          // +0xc8
+            if (car.path && car.dir < 0) {           // +0xc8 (lane owner)
                 // INVENTED: bounds check (the exe dereferences the lane pointer).
                 if (car.path_lane < g.lanes.size())
                     lane_detach(g, car.path_lane, ci);    // 0x40e710 (dir ignored)
             }
+            // shortcut: cross vf4 0x4883e0 not traced (dir >= 0 detaches the car
+            // from its cross owner).
             car.path_lane = (uint32_t)li;            // +0xc4
             car.path = path;                         // +0xc8
             car.dir = dir;                           // +0xcc
@@ -1381,8 +1440,8 @@ void car_set_ref(Graph &g, uint32_t ci, size_t li, const Path *path, int32_t dir
             float len = 0.0f;
             if (path) {
                 if (dir < 0) len = path->length;     // +0x38
-                // shortcut: cross owners are not modelled (see step 6 of car_step);
-                // the exe reads Segment::len (+0x30) for dir >= 0.
+                // shortcut: a cross owner (dir >= 0) would read Segment::len
+                // (+0x30); every src call here passes a lane and dir -1.
             }
             const float pos = len - car.k20;         // +0x20
             car.pos = pos;                           // +0x88
@@ -1400,6 +1459,27 @@ void car_set_ref(Graph &g, uint32_t ci, size_t li, const Path *path, int32_t dir
     car.next_lane_a = (uint32_t)li;                  // +0xb8
     car.next_lane_b = path;                          // +0xbc
     car.kc0 = dir;                                   // +0xc0
+}
+
+// 0x40cb60 ctCross__vf3 (ECX = cross; args Car *car, uint32_t path): tail-append
+// the car to the cross's +8/+0xc list, hand it to the exit lane with 0x40f950,
+// then sync its instance with the cross's bound object (+0x44).
+void cross_attach(Graph &g, uint32_t cross_node, uint32_t ci, size_t idx)
+{
+    Cross *c = cross_by_node(g, cross_node, nullptr);
+    // INVENTED: a node id that is not a cross returns (the exe calls a vtable).
+    if (!c) return;
+    Car &car = g.cars[ci];
+    c->cars.push_back(ci);                        // tail append; empty: head = car
+    car.cross_node = cross_node;                  // +0xc owner
+    // INVENTED: the exe indexes paths and links unchecked.
+    if (idx >= c->paths.size()) return;
+    const uint32_t b = c->paths[idx].b;           // +0x1c + idx*0x60 + 1
+    if (b >= c->links.size()) return;
+    Lane *lane = lane_at(g, c->links[b].node);    // +0x14 + b*8
+    if (lane)                                     // INVENTED null guard
+        car_set_ref(g, ci, (size_t)(lane - g.lanes.data()), &lane->path, -1);  // 0x40f950
+    car_sync_instance(g, ci, c->object);          // 0x410680, cross+0x44
 }
 
 // 0x40daa0 TrafficCar__distanceOnRef (defined below lane_end_move).
@@ -1424,9 +1504,9 @@ void cross_path_ref(Graph &g, uint32_t ci, uint32_t cross_node, Cross &c, size_t
     Car &car = g.cars[ci];
     if (car.live == 0) {
         if (c.live_refs != 0) car_set_live(g, ci, true);   // cross vf1 0x40e380
-        // SERVICE MISSING: 0x40f950's immediate branch for a cross owner (cross
-        // vf2 0x477320 is an empty RET 4; vf3 0x40cb60 and vf4 0x4883e0 are not
-        // ported). Unreachable from 0x4157a0, which runs with live_refs > 0.
+        // shortcut: 0x40f950's immediate branch for a cross owner (cross vf2
+        // 0x477320 is an empty RET 4; vf3 0x40cb60 is cross_attach; vf4 0x4883e0
+        // is not traced). Unreachable from 0x4157a0, which runs live_refs > 0.
     }
     car.next_lane_a = cross_node;                        // +0xb8 owner
     car.next_lane_b = reinterpret_cast<const Path *>(&c.paths[i].seg);  // +0xbc
@@ -1731,8 +1811,8 @@ void car_scan_obstacles(Graph &g, uint32_t ci, float dt, float ego_len, float *f
             obs = &g.lanes[car.path_lane].obstacles;     // +0xc4 owner
         } else if (pass == 1) {
             if (!car.next_lane_b) continue;              // +0xbc
-            // shortcut: kc0 >= 0 is a cross path (length at +0x30, owner is a
-            // cross); src has no car on a cross (same shortcut as step 1).
+            // shortcut: a cross next ref (kc0 >= 0, Segment length +0x30, cross
+            // owner) has no obstacle list in src.
             if (car.kc0 >= 0) continue;
             base_pos = car.pos + car.next_lane_b->length;   // +0x38
             // INVENTED: bounds check (the exe dereferences the owner pointer).
@@ -1986,8 +2066,8 @@ void car_step(Graph &g, uint32_t ci)
     } else if (car.kc0 < 0) {              // +0xc0, lane ref
         d0 += car.next_lane_b->length;     // +0x38
     } else {
-        // shortcut: the cross path +0x30 length has no src field; no src car
-        // leaves a lane.
+        // shortcut: step 1 does not add the cross segment length (+0x30) for a
+        // cross next ref; the ref getters (0x40e810 etc.) do read it.
     }
     float target = car_target_speed(g, car);   // 0x41086c -> 0x40dc00
     float leader_speed = -1.0f;                // [EBP-0x20], 0x5935ac
@@ -2009,7 +2089,7 @@ void car_step(Graph &g, uint32_t ci)
     }
     if (!leader && car.next_lane_b) {
         // shortcut: the exe takes the leader from the next ref's owner vf0
-        // (0x4108db indirect vtable call); no src car has a next ref yet.
+        // (0x4108db indirect vtable call); not ported.
     }
     if (leader) car_note_leader(g, ci, leader, 0);   // 0x4108e1..0x4108e6
     // shortcut: target-lane marking 0x4108eb..0x41091b and the flag != 0 refresh
@@ -2187,9 +2267,8 @@ void car_step(Graph &g, uint32_t ci)
             car.next_lane_b = nullptr;
             // +0xc0 (kc0) is NOT cleared (0x411576/0x411580).
             if (car.path)
-                car.pos += car.dir < 0 ? car.path->length : 0.0f;   // +0x38
-            // shortcut: the cross segment length (+0x30) is not modelled; the
-            // dir >= 0 branch reads it in the exe (0x413660, later card).
+                car.pos += car.dir < 0 ? car.path->length
+                                       : reinterpret_cast<const Segment *>(car.path)->len;  // +0x38/+0x30
             lane_unlink(g, ci);                        // 0x4115bb -> 0x40ca40
             // 0x40cbd0 append branch: the hand-over appends itself at the lane
             // tail (lane_attach assumes lane_insert did).
@@ -2198,16 +2277,12 @@ void car_step(Graph &g, uint32_t ci)
                 g.lanes[car.path_lane].cars.push_back(ci);
                 car.lane = car.path_lane;
                 lane_attach(g, car.path_lane, ci);     // 0x4115c0 cur owner vf3
+            } else {
+                cross_attach(g, car.path_lane, ci, (size_t)car.dir);   // 0x40cb60
             }
-            // SERVICE MISSING: with car.dir >= 0 the current owner is a cross and
-            // the exe runs cross vf3 0x40cb60 (append the car to the cross's car
-            // list +8/+0xc, re-ref it onto the exit lane links[paths[idx].b] with
-            // 0x40f950 dir -1, then syncInstance 0x410680 on &cross+0x44). The car
-            // keeps the cross segment ref; its world position stays (0,0,0)
-            // through the dir >= 0 shortcuts until the geometry card.
             if (car.prev_dir < 0) lane_detach(g, prev_lane, ci);   // 0x4115d2 prev vf4
-            // SERVICE MISSING: a cross prev owner hits cross vf4 0x4883e0
-            // (untraced), not lane_detach 0x40e710.
+            // shortcut: a cross prev owner (prev_dir >= 0) detaches through cross
+            // vf4 0x4883e0, not lane_detach 0x40e710.
             car.k12c = 0.0f;                           // 0x4115e4
         }
     }
@@ -2289,6 +2364,33 @@ void lane_insert(Graph &g, size_t li, uint32_t ci)
     lane_attach(g, li, ci);
 }
 
+// Per-car body of 0x40ed30/0x40ebb0, the same branch sequence as 0x410680.
+void car_bind_object(Graph &g, uint32_t ci, uint32_t object)
+{
+    Car &car = g.cars[ci];
+    const uint32_t inst = car.inst_id;   // +0x138
+    if (car.type_id == 0) {              // +0x14c
+        if (inst) {
+            // shortcut: 0x4ec210 reparent under (car.live && linked ? obj
+            // : T+0x311c CarContainer) is not ported.
+        }
+    } else if (!car.live || object == 0) {   // exe: obj+8 == 0 (not linked). INVENTED: object id 0 stands in for it
+        if (inst) {
+            // shortcut: the car_rem event (T+0x3130) is not modelled.
+            car.e8 = g.sim_time;
+            // shortcut: Traffic__parkInstance 0x41a500 and the +0x130
+            // type link unlink are not modelled.
+            car.inst_id = 0;
+            // shortcut: counters 0x5e64f4/0x5e64fc are not modelled.
+        }
+    } else if (inst) {
+        // shortcut: 0x4ec210 reparent under obj is not ported.
+    } else {
+        // shortcut: counters 0x5e64f4/0x5e64f8 and Traffic__queueSpawn
+        // 0x41a500 are not modelled.
+    }
+}
+
 // 0x40ed30 ctRoad__bindObject.
 void road_bind_object(Graph &g, Road &road, uint32_t object)
 {
@@ -2296,40 +2398,17 @@ void road_bind_object(Graph &g, Road &road, uint32_t object)
     Lane *l = lane_at(g, road.node[0]);
     // INVENTED: cap the pointer walk with the lane count (the exe follows a cycle).
     for (size_t guard = 0; l && guard < g.lanes.size(); guard++) {
-        for (uint32_t ci : l->cars) {
-            Car &car = g.cars[ci];
-            const uint32_t inst = car.inst_id;   // +0x138
-            if (car.type_id == 0) {              // +0x14c
-                if (inst) {
-                    // shortcut: 0x4ec210 reparent under (car.live && linked ? obj
-                    // : T+0x311c CarContainer) is not ported.
-                }
-            } else if (!car.live || object == 0) {   // exe: obj+8 == 0 (not linked). INVENTED: object id 0 stands in for it
-                if (inst) {
-                    // shortcut: the car_rem event (T+0x3130) is not modelled.
-                    car.e8 = g.sim_time;
-                    // shortcut: Traffic__parkInstance 0x41a500 and the +0x130
-                    // type link unlink are not modelled.
-                    car.inst_id = 0;
-                    // shortcut: counters 0x5e64f4/0x5e64fc are not modelled.
-                }
-            } else if (inst) {
-                // shortcut: 0x4ec210 reparent under obj is not ported.
-            } else {
-                // shortcut: counters 0x5e64f4/0x5e64f8 and Traffic__queueSpawn
-                // 0x41a500 are not modelled.
-            }
-        }
+        for (uint32_t ci : l->cars) car_bind_object(g, ci, object);
         l = lane_at(g, l->node14);
     }
 }
 
 // 0x40ebb0 ctCross__bindObject.
-void cross_bind_object(Cross &cross, uint32_t object)
+void cross_bind_object(Graph &g, Cross &cross, uint32_t object)
 {
     cross.object = object;   // +0x44 ResRefLink
-    // shortcut: the exe walks cross+8 car links with the same per-car body as
-    // 0x40ed30; src keeps cars only on lanes (card 216), so the loop is empty.
+    // cross+8/+0xc car list, first to last.
+    for (uint32_t ci : cross.cars) car_bind_object(g, ci, object);
 }
 
 // 0x40f4e0 ctLane__activeStep: keep a live lane listed while its sim-time stamp
@@ -2696,7 +2775,8 @@ void Graph::set_lane_live(size_t li, bool on)
             }
         }
     }
-    // shortcut: TrafficCar__syncInstance 0x410680 (road+0x68) is not modelled.
+    // 0x410680 with the road's bound object (+0x68) for every car of the lane.
+    for (uint32_t ci : lane.cars) car_sync_instance(*this, ci, road ? road->object : 0);
 }
 
 // 0x40f8e0 ctRoad__vf1: every lane of the road gets vf7 (0x40eed0), which keeps
@@ -2781,12 +2861,12 @@ uint32_t Graph::bind_object(const std::string &params, uint32_t object)
     }
     if (kind == 2) {
         if ((size_t)idx >= cross_eq.size()) return 0;
-        cross_bind_object(cross_eq[(size_t)idx], object);
+        cross_bind_object(*this, cross_eq[(size_t)idx], object);
         return (uint32_t)idx + 1;
     }
     if (kind == 3) {
         if ((size_t)idx >= cross_light.size()) return 0;
-        cross_bind_object(cross_light[(size_t)idx], object);
+        cross_bind_object(*this, cross_light[(size_t)idx], object);
         return (uint32_t)(cross_eq.size() + (size_t)idx + 1);
     }
     return 0;
