@@ -181,7 +181,10 @@ bool read_road(Reader &r, traffic::Road &road)
         if (!r.f32(&road.v10[i])) return false;
     for (int i = 0; i < 3; i++)
         if (!r.f32(&road.v1c[i])) return false;
-    if (!r.u32(&road.k64)) return false;
+    // k64 is compared signed (CMP/JLE 0x417f2c, CMP/JG 0x4183b3).
+    uint32_t k64;
+    if (!r.u32(&k64)) return false;
+    road.k64 = (int32_t)k64;
     return read_path(r, road.path);
 }
 
@@ -2619,9 +2622,14 @@ void path_add_straight(Path &p, const float p0[3], const float p1[3], float w,
     float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
     for (int i = 0; i < 3; i++) s.m0[i] = d[i];
     normalize(s.m0);
-    for (int i = 0; i < 3; i++) s.m1[i] = -s.m0[i];
+    // exe 0x414e5e..0x414f93: m1 is the horizontal side vector (the card said
+    // -m0; exe wins), which segment_side 0x4131a0 returns for straight segments.
+    s.m1[0] = -d[2];
+    s.m1[1] = 0.0f;
+    s.m1[2] = d[0];
+    normalize(s.m1);
     s.len = len;
-    s.flat_len = len;
+    s.flat_len = sqrtf(d[0] * d[0] + d[2] * d[2]);   // 0x414ecc: horizontal
     s.curved = false;
     s.width = w;
     s.k40 = f1;
@@ -2631,18 +2639,18 @@ void path_add_straight(Path &p, const float p0[3], const float p1[3], float w,
     s.i2 = i2;
     p.segs.push_back(s);
     p.length = s.len + p.length;
+    // 0x4120d0 stores seg.m0 verbatim in start_dir and -seg.m0 in end_dir; it
+    // does not normalize again.
     if (p.segs.size() == 1) {
         for (int i = 0; i < 3; i++) {
             p.start[i] = p0[i];
             p.start_dir[i] = s.m0[i];
         }
-        normalize(p.start_dir);
     }
     for (int i = 0; i < 3; i++) {
         p.end[i] = p1[i];
-        p.end_dir[i] = s.m1[i];
+        p.end_dir[i] = -s.m0[i];
     }
-    normalize(p.end_dir);
 }
 
 // 0x412960 ctPath__append: append src (reversed when reverse), bridging the gap
@@ -2662,9 +2670,13 @@ void path_append(Path &p, const Path &src, bool reverse)
                 p.start_dir[i] = src.start_dir[i];
             }
         }
-    } else if (n != 0) {
+    } else {
+        // 0x412960 runs this connector whenever dest is non-empty, with no
+        // source-count test. INVENTED: an empty source has no segs[0] to read,
+        // so use width/f1 = 0 (a loaded road/lane path always has one).
         const Segment &last = p.segs.back();
-        const Segment &first = src.segs.front();
+        const float sw = src.segs.empty() ? 0.0f : src.segs.front().width;
+        const float sf = src.segs.empty() ? 0.0f : src.segs.front().k40;
         const float *attach = reverse ? src.end : src.start;
         const float *adir = reverse ? src.end_dir : src.start_dir;
         float dx = p.end[0] - attach[0];
@@ -2673,8 +2685,8 @@ void path_append(Path &p, const Path &src, bool reverse)
         if (dx * dx + dy * dy + dz * dz > 0.001f) {
             float d1[3];
             for (int i = 0; i < 3; i++) d1[i] = reverse ? -adir[i] : adir[i];
-            float w = last.width < first.width ? last.width : first.width;
-            float f1 = last.k40 < first.k40 ? last.k40 : first.k40;
+            float w = last.width < sw ? last.width : sw;
+            float f1 = last.k40 < sf ? last.k40 : sf;
             path_add_segment(p, p.end, p.end_dir, attach, d1, w, f1, 1, 10000.0f,
                              10000.0f, 0);
         }

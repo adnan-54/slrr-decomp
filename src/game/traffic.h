@@ -64,7 +64,7 @@ struct Cross {                  // ctCross 0x40e850
     int32_t phase_count = 0;          // +0x74 (light only)
 };
 
-struct Road { uint32_t node[3] = {}; float v10[3] = {}, v1c[3] = {}; uint32_t k64 = 0; Path path;
+struct Road { uint32_t node[3] = {}; float v10[3] = {}, v1c[3] = {}; int32_t k64 = 0; Path path;
               // +0x68 ResRefLink. INVENTED: id of the bound object's instance, 0 = none.
               uint32_t object = 0; };
 
