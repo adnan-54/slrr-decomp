@@ -1,7 +1,8 @@
 ---
 id: 246
-status: implemented
+status: merged
 branch: card/246
+review: deepseek-pass
 depends: [243, 244]
 ---
 # harness: run the city far enough for a real lane-end hand-over, and check the traffic invariants
