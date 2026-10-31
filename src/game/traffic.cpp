@@ -1000,8 +1000,9 @@ void car_release(Graph &g, uint32_t i)
 float car_target_speed(const Graph &g, const Car &car)
 {
     float s = car.max_speed;
-    // +0xc4 PathRef lane. INVENTED: bounds check; an index (a pointer in the exe).
-    if (car.path_lane < g.lanes.size() && g.lanes[car.path_lane].k98 < s)
+    // +0xc4 PathRef lane. INVENTED: dir/bounds check; an index (a pointer in the
+    // exe). A cross current ref (dir >= 0) keeps a cross node id in path_lane.
+    if (car.dir < 0 && car.path_lane < g.lanes.size() && g.lanes[car.path_lane].k98 < s)
         s = g.lanes[car.path_lane].k98;   // ctLane vf6 0x40dd50
     float f = 0.0f;
     if (!car.next_lane_b) {          // +0xbc, next lane
@@ -1013,7 +1014,7 @@ float car_target_speed(const Graph &g, const Car &car)
     } else {
         f = car.max_speed;
         if (car.next_lane_a) {       // +0xb8, cross object (kb8 in the exe)
-            // shortcut: vf6 of next-lane/cross objects not traced; 0 for spawned cars
+            // shortcut: cross vf6 0x40dd00 not traced; 0 for spawned cars
             f = 0.0f;
             return f <= s ? s : f;
         }
@@ -1401,6 +1402,170 @@ void car_set_ref(Graph &g, uint32_t ci, size_t li, const Path *path, int32_t dir
     car.kc0 = dir;                                   // +0xc0
 }
 
+// 0x40daa0 TrafficCar__distanceOnRef (defined below lane_end_move).
+bool car_distance_on_ref(Graph &g, uint32_t ci, const Path *ref1, const Path *ref2,
+                         float *out);
+
+// 0x40e3a0 ctLane__room (ECX = lane; arg float need): room at the lane tail.
+bool lane_room(Graph &g, const Lane &lane, float need)
+{
+    if (lane.cars.empty()) return true;                  // +0xc tail, no car
+    const uint32_t tail = lane.cars.back();
+    float dist = 0.0f;
+    if (!car_distance_on_ref(g, tail, &lane.path, nullptr, &dist))   // 0x40daa0
+        return false;
+    const float room = lane.path.length - (g.cars[tail].k20 + dist);  // +0x74, +0x20
+    return !(need > room);                               // COMISS; JBE -> 1
+}
+
+// 0x40f900 ctCross__setPathRef -> 0x40f950 car_set_ref with a cross owner.
+void cross_path_ref(Graph &g, uint32_t ci, uint32_t cross_node, Cross &c, size_t i)
+{
+    Car &car = g.cars[ci];
+    if (car.live == 0) {
+        if (c.live_refs != 0) car_set_live(g, ci, true);   // cross vf1 0x40e380
+        // SERVICE MISSING: 0x40f950's immediate branch for a cross owner (cross
+        // vf2 0x477320 is an empty RET 4; vf3 0x40cb60 and vf4 0x4883e0 are not
+        // ported). Unreachable from 0x4157a0, which runs with live_refs > 0.
+    }
+    car.next_lane_a = cross_node;                        // +0xb8 owner
+    car.next_lane_b = reinterpret_cast<const Path *>(&c.paths[i].seg);  // +0xbc
+    car.kc0 = (int32_t)i;                                // +0xc0 idx
+}
+
+// 0x4157a0 ctCross__routeLive (ECX = cross): live_refs > 0; the car takes a
+// random pick among the best-scored cross paths.
+bool cross_route_live(Graph &g, uint32_t cross_node, Cross &c, uint32_t ci, float t,
+                      uint32_t link)
+{
+    if (t > 5.2f) return false;                          // 0x593800
+    Car &car = g.cars[ci];
+    const float need = car.k20 + car.k14;
+    const bool behaviour1 = car.behaviour == 1;          // +0x160
+    const int32_t prio = (double)t >= 0.1 ? (int32_t)c.cycle : 0;   // 0x593568 double 0.1
+    std::vector<size_t> cand;                            // candidates[128] in the exe
+    int32_t best = 0;
+    for (size_t i = 0; i < c.paths.size(); i++) {
+        if (c.path_state[i].block != 0) continue;        // +4
+        if (c.paths[i].a != link) continue;              // byte vs the full 32-bit link
+        if ((int32_t)c.paths[i].c < prio) continue;      // ushort, signed compare
+        // INVENTED: link-index and node bounds (the exe indexes both unchecked).
+        if (c.paths[i].b >= c.links.size()) continue;
+        Lane *lane = lane_at(g, c.links[c.paths[i].b].node);
+        if (!lane) continue;
+        if (lane->halted) continue;                      // +0xc4
+        const float cap = lane->kcc * lane->k9c - lane->kc8;  // +0xcc*+0x9c-+0xc8
+        if (!(cap > need)) {                             // MULSS/SUBSS then COMISS
+            c.path_state[i].block = 0x3e9;               // 1001
+            continue;
+        }
+        int32_t score = lane_room(g, *lane, need) ? 1 : 0;     // 0x40e3a0
+        if (lane->live == behaviour1) score += 1;        // lane vf1 0x40e390 = +0xa8
+        if (((uint32_t)car.k40 & lane->ka0) != 0) score += 2;
+        if (cand.empty() || score > best) {              // CMOVGE: higher score resets
+            best = score;
+            cand.assign(1, i);
+        } else if (score == best) {
+            cand.push_back(i);                           // ties are all kept
+        }
+    }
+    if (!cand.empty()) {
+        const size_t pick = cand[(msvc_rand() & 0x7fff) % cand.size()];   // 0x571110
+        cross_claim_path(c, pick);                       // 0x415b40
+        cross_path_ref(g, ci, cross_node, c, pick);      // 0x40f900
+        return true;
+    }
+    // Stale-block sweep, only when no path scored.
+    for (size_t i = 0; i < c.paths.size(); i++) {
+        if (c.paths[i].a != link) continue;
+        if ((int32_t)c.paths[i].c < prio) continue;
+        if ((int32_t)c.paths[i].c <= c.path_state[i].block + 5) continue;
+        if (c.paths[i].b >= c.links.size()) continue;    // INVENTED bounds (exe unchecked)
+        Lane *lane = lane_at(g, c.links[c.paths[i].b].node);
+        if (!lane || lane->halted) continue;             // INVENTED null guard
+        cross_claim_path(c, i);                          // 0x415b40
+    }
+    return false;
+}
+
+// 0x4159d0 ctCross__routeDying (ECX = cross): live_refs < 0; the car takes the
+// cheapest exit lane (strict min, ties keep the first).
+bool cross_route_dying(Graph &g, Cross &c, uint32_t ci, uint32_t link)
+{
+    const Car &car = g.cars[ci];
+    const float need = car.k20 + car.k14;
+    int32_t best = -1;
+    float best_score = 0.0f;
+    for (size_t i = 0; i < c.paths.size(); i++) {
+        if (c.path_state[i].block != 0) continue;        // +4
+        if (c.path_state[i].count != 0) continue;        // +0 (both zero)
+        if (c.paths[i].a != link) continue;
+        if (c.paths[i].b >= c.links.size()) continue;    // INVENTED bounds (exe unchecked)
+        Lane *lane = lane_at(g, c.links[c.paths[i].b].node);
+        if (!lane) continue;                             // INVENTED null guard
+        if (!lane_room(g, *lane, need)) continue;        // 0x40e3a0, before halted
+        if (lane->halted) continue;                      // +0xc4
+        float score = lane->kc8 / lane->kcc;             // DIVSS +0xc8/+0xcc
+        if (((uint32_t)car.k40 & lane->ka0) != 0)
+            score = (float)((double)score - 100.0);      // 0x593730 double 100.0
+        if (best == -1 || score < best_score) { best = (int32_t)i; best_score = score; }
+    }
+    if (best == -1) return false;
+    Lane *lane = lane_at(g, c.links[c.paths[best].b].node);   // valid: checked above
+    car_set_ref(g, ci, (size_t)(lane - g.lanes.data()), &lane->path, -1);   // 0x40f950
+    return true;
+}
+
+// 0x40e590 ctCross__routeIdle (ECX = cross; args Car* car, uint32_t link):
+// live_refs == 0; cheapest link lane with room on another road.
+bool cross_route_idle(Graph &g, Cross &c, uint32_t ci, uint32_t link)
+{
+    const Car &car = g.cars[ci];
+    const float need = car.k20 + car.k14;
+    if (link >= c.links.size()) return false;            // INVENTED: exe indexes unchecked
+    const Lane *l0 = lane_at(g, c.links[link].node);
+    if (!l0) return false;                               // INVENTED null guard
+    const uint32_t road0 = l0->road;                     // +0x10
+    int32_t best = -1;
+    float best_score = 0.0f;
+    for (size_t i = 0; i < c.links.size(); i++) {
+        if (c.links[i].flag != 0) continue;              // +4 byte
+        Lane *lane = lane_at(g, c.links[i].node);
+        if (!lane) continue;                             // INVENTED null guard
+        if (lane->road == road0) continue;
+        if (!lane->cars.empty()) {                       // +0xc tail
+            const uint32_t tail = lane->cars.back();
+            float dist = 0.0f;
+            if (!car_distance_on_ref(g, tail, &lane->path, nullptr, &dist))  // 0x40daa0
+                continue;
+            if (need > lane->path.length - (g.cars[tail].k20 + dist)) continue;
+        }
+        if (lane->halted) continue;                      // +0xc4
+        float score = lane->kc8 / lane->kcc;             // +0xc8 / +0xcc
+        if (((uint32_t)car.k40 & lane->ka0) != 0)
+            score = (float)((double)score - 100.0);      // 0x593730 double 100.0
+        if (best == -1 || score < best_score) { best = (int32_t)i; best_score = score; }
+    }
+    if (best == -1) return false;
+    Lane *lane = lane_at(g, c.links[best].node);
+    car_set_ref(g, ci, (size_t)(lane - g.lanes.data()), &lane->path, -1);   // 0x40f950
+    return true;
+}
+
+// 0x40e400 ctCross__route (ECX = cross; args Car* car, float t, uint32_t link):
+// pick the cross vf by the sign of live_refs; return its result.
+bool cross_dispatch(Graph &g, uint32_t cross_node, uint32_t ci, float t, uint32_t link)
+{
+    Cross *c = cross_by_node(g, cross_node, nullptr);
+    // INVENTED: a road/lane node id is not a cross (the exe calls a vtable on it).
+    if (!c) return false;
+    if (c->k40 > g.sim_time) return false;               // +0x40 vs T+0x84
+    const int32_t r = c->live_refs;                      // +0x38
+    if (r > 0) return cross_route_live(g, cross_node, *c, ci, t, link);   // vt+0x1c
+    if (r < 0) return cross_route_dying(g, *c, ci, link);                 // vt+0x20
+    return cross_route_idle(g, *c, ci, link);                             // vt+0x24
+}
+
 // 0x40e460 ctLane__laneEndMove (ECX = lane, args: Car* car, float t,
 // uint32_t link = lane.k38): move a car waiting at the lane end to a next lane.
 bool lane_end_move(Graph &g, size_t li, uint32_t ci, float t)
@@ -1412,13 +1577,11 @@ bool lane_end_move(Graph &g, size_t li, uint32_t ci, float t)
     const Lane *next0 = g.lane_by_node(lane.node88[0]);   // +0x88
     const Lane *next1 = g.lane_by_node(lane.node88[1]);   // +0x8c
     if (next0 == nullptr && next1 == nullptr) {
-        // SERVICE MISSING: the exe calls 0x40e400 with the lane's cross
-        // (road_by_node(lane.road)->node[2 - lane.k18]) and returns true when a
-        // cross vf hands the car over (0x4157a0 live_refs > 0, 0x4159d0 < 0,
-        // 0x40e590 == 0), false when none does. src has no car-on-cross refs and
-        // no Cross+0x40 (UNRESOLVED writer; ctor 0x40c590 sets -1.0f), so the
-        // "no route" result is fixed here.
-        return false;
+        // INVENTED: null/k18 guards (the exe dereferences the road unchecked).
+        Road *rd = road_by_node(g, lane.road);
+        uint32_t cn = 0;
+        if (rd && lane.k18 < 3) cn = rd->node[2 - lane.k18];
+        return cross_dispatch(g, cn, ci, t, lane.k38);   // 0x40e400
     }
     if (t > car_target_speed(g, car) / car.k38) return false;   // 0x40dc00, +0x38
     if (!lane.live && t > 0.0f) return false;        // +0xa8
@@ -1559,6 +1722,9 @@ void car_scan_obstacles(Graph &g, uint32_t ci, float dt, float ego_len, float *f
         const std::vector<uint32_t> *obs;
         float base_pos = 0.0f;
         if (pass == 0) {
+            // SERVICE MISSING: a cross owner's obstacle list (exe owner+4) is not
+            // modelled; no obstacle list exists while the current ref is a cross.
+            if (car.dir >= 0) continue;
             // INVENTED: bounds check (the exe dereferences the owner pointer).
             if (car.path_lane >= g.lanes.size()) continue;
             base_pos = car.pos;                          // +0x88
@@ -1784,7 +1950,9 @@ uint32_t lane_side_pick(const Graph &g, const Lane &lane, uint32_t ci, float f)
 void car_start_lane_change(Graph &g, uint32_t ci, float f)
 {
     Car &car = g.cars[ci];
-    if (car.live == 0 || car.next_lane_b != nullptr) return;   // +0xdc, +0xbc
+    // +0xdc, +0xbc, +0xcc: the current owner must be a lane (the exe uses owner
+    // vf5 0x46acd0 for a cross, untraced).
+    if (car.live == 0 || car.next_lane_b != nullptr || car.dir >= 0) return;
     // INVENTED: bounds check (the exe dereferences the owner pointer).
     if (car.path_lane >= g.lanes.size()) return;
     const Lane &lane = g.lanes[car.path_lane];             // car+0xc4 owner
@@ -2020,18 +2188,26 @@ void car_step(Graph &g, uint32_t ci)
             // +0xc0 (kc0) is NOT cleared (0x411576/0x411580).
             if (car.path)
                 car.pos += car.dir < 0 ? car.path->length : 0.0f;   // +0x38
-            // shortcut: the cross path +0x30 length has no src field; no src car
-            // leaves a lane.
+            // shortcut: the cross segment length (+0x30) is not modelled; the
+            // dir >= 0 branch reads it in the exe (0x413660, later card).
             lane_unlink(g, ci);                        // 0x4115bb -> 0x40ca40
             // 0x40cbd0 append branch: the hand-over appends itself at the lane
             // tail (lane_attach assumes lane_insert did).
-            // INVENTED: lane id bounds check (the exe dereferences the owner).
-            if (car.path_lane < g.lanes.size()) {
+            // INVENTED: dir/lane-id bounds check (the exe dereferences the owner).
+            if (car.dir < 0 && car.path_lane < g.lanes.size()) {
                 g.lanes[car.path_lane].cars.push_back(ci);
                 car.lane = car.path_lane;
                 lane_attach(g, car.path_lane, ci);     // 0x4115c0 cur owner vf3
             }
-            lane_detach(g, prev_lane, ci);             // 0x4115d2 prev owner vf4
+            // SERVICE MISSING: with car.dir >= 0 the current owner is a cross and
+            // the exe runs cross vf3 0x40cb60 (append the car to the cross's car
+            // list +8/+0xc, re-ref it onto the exit lane links[paths[idx].b] with
+            // 0x40f950 dir -1, then syncInstance 0x410680 on &cross+0x44). The car
+            // keeps the cross segment ref; its world position stays (0,0,0)
+            // through the dir >= 0 shortcuts until the geometry card.
+            if (car.prev_dir < 0) lane_detach(g, prev_lane, ci);   // 0x4115d2 prev vf4
+            // SERVICE MISSING: a cross prev owner hits cross vf4 0x4883e0
+            // (untraced), not lane_detach 0x40e710.
             car.k12c = 0.0f;                           // 0x4115e4
         }
     }
@@ -2430,8 +2606,9 @@ void Graph::remove_car(uint32_t handle)
     if (car.serial == 0) return;   // INVENTED: "not on a lane" (car+0xc == 0); every
                                    // spawned src car is on a lane until released
     lane_unlink(*this, ci);
-    // INVENTED: path_lane is an index where 0 is a valid lane; the exe tests the pointer.
-    if (car.path_lane < lanes.size()) lane_detach(*this, car.path_lane, ci);
+    // INVENTED: dir/bounds check; the exe tests the owner pointer. A cross owner
+    // (dir >= 0) detaches through cross vf4 0x4883e0, not lane_detach 0x40e710.
+    if (car.dir < 0 && car.path_lane < lanes.size()) lane_detach(*this, car.path_lane, ci);
     car.next_lane_a = 0;
     car.next_lane_b = nullptr;
     car.path_lane = 0;
