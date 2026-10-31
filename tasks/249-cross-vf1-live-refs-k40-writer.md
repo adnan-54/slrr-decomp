@@ -1,6 +1,6 @@
 ---
 id: 249
-status: todo
+status: implemented
 branch: card/249
 depends: []
 ---
