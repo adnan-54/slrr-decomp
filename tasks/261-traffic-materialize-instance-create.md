@@ -3,7 +3,7 @@ id: 261
 status: todo
 branch:
 review:
-depends: [258, 259, 262]
+depends: [258, 259]
 ---
 # traffic: materialize creator — createScripted "traffic_car" under the road/cross stand-in
 
@@ -11,9 +11,9 @@ depends: [258, 259, 262]
 Replace card 258's creator stub in runtime.cpp (`run_animate_callbacks`, the 0x4bac10 call
 site of `flush_spawns`) with the instance side of TrafficCar__materialize 0x40d4e0's create
 branch: resolve the car's type, create the scripted `traffic_car` instance with the params
-string 258 already builds, return its id. Depends on 262 so the created car is taken over by
-the traffic step at once like in the exe (without 0x38 it would be a free physics car);
-uses 259's parent stand-in. Notes: `notes/42-traffic-410680-services.md` §11, §15.
+string 258 already builds, return its id. No dependency on 262: Part__initInstance 0x4c1f90
+sleeps the new car's root, so without the 0x38 take-over it stays at its spawn pose; card 264
+adds the take-over call (0x40d8fd) and the pose push. Uses 259's parent stand-in. Notes: `notes/42-traffic-410680-services.md` §11, §15, §18.
 
 ## Exe evidence (0x40d4e0 create branch, asm-checked, notes/42 §11)
 ```
@@ -22,7 +22,7 @@ buf = sprintf("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d" (0x593614), pos, ypr, seed)   /
 obj = 0x523c80 GameObject__createScripted(&parent /*road +0x68 / cross +0x44 bound object*/,
           &car+0x144 /*type link, id +0x14c = Car::type_id*/, buf, "traffic_car" (0x593638))
 0x40cac0 ResRefLink__set(ECX = &car+0x130, obj)                // inst_id = obj+0x80 (id)
-getInfo(ECX = 0x5fde90, &car+0x130, 0x38, &car)                 // 0x40d8fd: card 262 hook
+getInfo(ECX = 0x5fde90, &car+0x130, 0x38, &car)                 // 0x40d8fd: card 264 hook
 if (car.notify) queue(T+0x3130, 0, 0x10, "car_add %d %d" (inst_id, car), 0)   // sink not modelled
 ```
 Same create call shape already in src (car.cpp bot_trigger, 0x483bd0):
@@ -40,8 +40,8 @@ Creator lambda (runtime.cpp, `inst` = the ground Resource being animated):
     return r ? r->id : 0;                       // 0x40cac0: inst_id = obj+0x80
 }
 ```
-If 262 exposes the take-over as a Graph/Runtime call, call it right after the create (it is
-`getInfo(&car+0x130, 0x38, &car)` at 0x40d8fd); otherwise leave a `// shortcut:` naming 262.
+Leave `// shortcut: getInfo(&car+0x130, 0x38, &car) take-over (0x40d8fd) is card 264` right after
+the create (264 replaces it).
 Update the `// shortcut: instance creation is card 261` comment.
 
 ## Files

@@ -113,6 +113,10 @@ type_car vf15 0x4a15c0:
   `obs_add <T.id>`, rebind, T+0x58 = old tc+0x154, re-register callbacks 8 and 9 (physics/drive on).
   current 0 -> tc != 0 (take over): 0x4ae5a0, zero wheel states, unregister callbacks 8/9 (car
   becomes kinematic, driven by the traffic step), restore links, T+0x2054 = tc. Returns T+0x2054.
+**Correction (notes/42 §16, asm-read):** the owner is the car instance C (arg 1; ECX = M type model),
+so `T+0x2054` above is `C+0x2054`; "rebind" = `C+0x2058` type link := old tc type obj (tc+0x150), and
+the take-over also zeroes the root velocity to `R*(0,0,-tc.speed)`, sets node flag 0x100 and stops the
+wheel effect handles W+0x194/+0x1b4. The pose writer is 0x4118f0's tail (notes/42 §17).
 Not carded: (correction, notes/28 §2: Valocity.java:163 does reach addTrafficCar in a City career run) and the take-over needs the traffic per-frame
 step to drive the frozen car; porting it alone would freeze a car that nothing moves.
 

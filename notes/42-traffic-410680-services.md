@@ -163,7 +163,7 @@ Mat34 set-column; the camera position is a main-loop copy of the first camera sn
   261 (draft) the hook in Runtime (createScripted under the road/cross object, getInfo 0x38/0x3c).
 - The reparent/park side only acts on real instances: type-0 script cars (addTrafficCar) and
   materialized cars. Split (§15): 259 CarContainer + reparent hook (todo), 262 type_car 0x38
-  take-over (draft), 263 park/takeParked (draft), 261 creator (todo, after 262).
+  take-over (todo), 263 park/takeParked (draft), 261 creator (todo, no 262 dependency, §18), 264 pose push + 0x40d8fd.
 
 ## 11. 0x40d4e0 TrafficCar__materialize, asm-checked (ECX = ESI = car, arg &budget)
 ```
@@ -287,3 +287,100 @@ only binds; the exe's map node instance comes from 0x5195a0, notes/31). Smallest
 - The materialize Creator (card 258, `flush_spawns`) uses the same parent stand-in.
 - Park/takeParked (0x417080/0x418f60) need the pseudo-car 0x38 take-over and 0x4eb3f0 (typed
   manager vf7 pose apply, notes §11) — card 263 (draft).
+
+## 16. type_car vf15 0x4a15c0 case 0x38 GII_CAR_TRAFFICPTR (asm 0x4a215c..0x4a2512, traced 2026-10-31)
+Jump table: index byte `0x4a2a90[0x37] = 0x1c`, entry `0x4a29f0[0x1c] = 0x4a215c`. Ghidra's float
+case labels are garbage (7.84727e-44 = 0x38); read the asm. Registers: **ECX = EDI = M** (type
+model, `M+0x1fb4` wheel count), `[EBP+8]` = **C** (car instance struct, ESI), `[EBP+0x10]` = p (&tc).
+So "M+0x2054"/"T+0x2054" in notes/27 §3 and card 262 is **C+0x2054**. Car links used:
+`C+0x2058` 16-byte ResRefLink {id `+0x2060`, obj `+0x2064`}; tc type link `tc+0x144` {id +0x14c,
+obj +0x150}. `C+0x58` = the 7th params int of Part__initInstance 0x4c1f90 (`Str__scan(params,
+"%f,%f,%f,%f,%f,%f,%d", .., P+0x58)`, notes/08 §184; createCar 0x4992e0 calls it at 0x49934a).
+The only writers of `C+0x2058` are this case (set) and the Vehicle dtor 0x491bd0 (unlink).
+```
+if (!p) return C+0x2054;                                         // 0x4a2163 -> 0x4a24fe
+old = C+0x2054; if (old == *p) return old;                       // 0x4a2176 -> 0x4a25b0
+if (*p == 0) {                                                   // release
+    0x4e8860 GameRef__clearNodeFlags(ECX = C, 0x100)             // C+0xc node +0x84 &= ~0x100
+    q = {0}; 0x4ea900(ECX = C, &q)                               // if C+8 && C+0xc: q.set(node+0xfc parent obj)
+    if (q.id(+8)) { sprintf(buf, "obs_add %d" (0x59d194), C+8 /*id*/);
+                    0x47d550 Game__queueEvent(ECX = 0x5fde90, &q, 0, 0x10, buf, 0) }
+    0x40cac0 ResRefLink__set(ECX = &C+0x2058, old+0x150)          // C remembers tc's type object
+    C+0x58 = old+0x154                                            // seed
+    C+0x1e7c = (C+0x2050)->+0xf0                                  // engine omega = idle omega
+    0x47d670 Game__registerCallback(ECX = 0x5fde90, C, 8); (C, 9)
+    0x488080(&q); C+0x2054 = 0; return 0                          // 0x4a24f3..0x4a24fe
+}
+if (old == 0) {                                                  // take over (0x4a2257)
+    0x4ae5a0 PhysBody__sleepRoot(ECX = C+0x13ec)                 // if !(+0x58 & 0x80): walk +0x20 while
+                                                                  // +0x58&4, PhysBody__sleep 0x506d90
+    B = C+0x13ec; k = B+0x20c; v = -(*p)+0xb0 (tc speed; XORPS 0x593570 sign mask)
+    vel = R_k(B) * (0, 0, v): vel_i = (B[k*0xd4+0xa4+0x10i] + B[..+0xa8+0x10i])*0.0 + B[..+0xac+0x10i]*v
+    R = 0x480700 PhysBody__root(ECX = B)
+    for s in {R+0x20c, R+0x20c^1}: R[s*0xd4+0x70..0x78] = vel; R[(s+1)*0xd4+0..8] = (0,0,0)  // state vel, angvel
+    0x4ebdd0 GameRef__setNodeFlags(ECX = C, 0x100)
+    C+0x1e00 = 0 (horn); C+0x1e7c = (C+0x2050)->+0xf0
+    for i < M+0x1fb4: W = C+0x1414 + i*0x2e4
+        if (W+0x19c) { 0x4ec720(ECX = &W+0x194); 0x488080(&W+0x194); W+0x1a4 = 0 }   // skid/sound handle 1
+        if (W+0x1bc) { 0x4ec790(ECX = &W+0x1b4); 0x488080(&W+0x1b4); W+0x1c4 = 0 }   // handle 2
+    0x47e390 Game__unregisterCallback(ECX = 0x5fde90, C, 8); (C, 9)
+    t = *p; if (C+0x2060) { 0x40cac0(ECX = &t+0x144, C+0x2064); t+0x154 = C+0x58 }
+    C+0x2054 = t; return t                                        // 0x4a24b4
+}
+// old != 0 && *p != 0 (swap, 0x4a24cb)
+if (C+0x2060) { 0x40cac0(ECX = &(*p)+0x144, C+0x2064); (*p)+0x154 = C+0x58 }
+C+0x2054 = *p; return *p
+```
+- `0x4ec720` / `0x4ec790` (ECX = handle link): `o = link+0xc; if (o) { if (o+0x7c != 1) o->vf5(1.0f);
+  if (0x51f4f0(0xa0000001,0,0) >= 0) { r = o->vf3(1.0f); if (r && r+0x18) r+0x18->+0x9c |= 0x40000000
+  (0x4ec790: r+0x1c->+0xfc |= 0x80000000) } }` - stops the two wheel effect handles. src has no
+  W+0x194/+0x1b4 handles (notes/09 §274).
+- Effect: while C+0x2054 is set the car is asleep, not in callback modes 8 (control 0x47bc20) and 9
+  (drive 0x47be30), and Vehicle__update/updateControls return early (notes/09 §354); it is moved
+  only by the traffic pose push (§17).
+
+## 17. Who moves a taken-over car: 0x4118f0 TrafficCar__pushInstance tail (asm 0x411a62..0x411ef6)
+After `0x4102d0 TrafficCar__advance` (ECX = ESI = car):
+```
+sig = (car+0xb8 && car+0xc0 > -1) ? *(next_owner+0x1c + kc0*0x60 + 0x5c) : 0      // next cross path +0x5c
+if (!sig) sig = 0x40d970(ECX = &car+0xc4)   // cur ref {owner +0xc4, path +0xc8, idx +0xcc}: owner && idx >= 0
+                                            //   ? *(owner+0x1c + idx*0x60 + 0x5c) : 0
+if (!sig) sig = car+0x128                   // lane change -1/0/+1
+p = (front_x +0x98, world_y +0x90, front_z +0x9c)
+if (!0x40da20(ECX = &car+0xc4, p.x, p.z, &p.y)) 0x40da20(ECX = &car+0xd0, p.x, p.z, &p.y)   // §12
+f = p - world(+0x8c..+0x94); n = |f|; if (n != 0) f *= 1.0f/n        // UCOMISS/LAHF 0x44/JNP: skip on n == 0
+s = (f.z, 0, -f.x); n = sqrt(s.x²+s.z²); if (n != 0) s *= 1.0f/n
+u = f x s  (u.x = f.y*s.z - s.y*f.z, u.y = s.x*f.z - s.z*f.x, u.z = s.y*f.x - s.x*f.y)
+if (car+0x138 == 0) return                                             // 0x411c49 no instance
+pos = world + f * (car+0x18 * 0.5f (0x593590 = 0x3f000000))
+M = Mat34; 0x567250(&M, 0, s); (&M, 1, u); (&M, 2, f); ypr = 0x569970 Math__matToYpr(M)
+a = car+0xb4 * car+0x3c; if (|a| (ANDPS 0x5935c0) > car+0x34) a *= car+0x34 / |a|
+k = min(2*dt, 1.0f (0x593598)); car+0x158 = (a - car+0x158) * k + car+0x158   // dt = sim_time - old e8
+vel = -(car+0xb0) * f
+h = atan2(-heading_x(+0xa0), -heading_z(+0xa4))     // FLD -hx; FLD -hz; FPATAN = atan2(ST1, ST0)
+d = h - ypr[0]; if (d > pi (0x5935a4 = 0x40490fdb)) d -= 2pi (0x5935a8 = 0x40c90fdb);
+                if (-pi (0x5935b0 = 0xc0490fdb) > d) d += 2pi
+blk = 0x56a000("fffffffffffffffi" (0x5935e8), pos.x, pos.y, pos.z, ypr[0..2], vel.x, vel.y, vel.z,
+               0, 0, 0, 2*d, -(car+0xb0 * dt), car+0x158, sig)
+0x4eb3f0(ECX = &car+0x130, &blk)            // typed vf7 = type_car__vf7 0x4a99b0 (notes/09 §496)
+```
+0x4a99b0 scans this as pos3, ypr3, vel3, angvel3, steer, wheelspin delta, pitch-add, int dir
+(notes/09 §514): the car is re-placed every traffic frame, gets the path velocity, and sleeps.
+**Correction (notes/37 §4):** the 16 args are not "pos, dir, up, vel, steer, accel, k158, cross
+object" but the list above. **Correction (§11, notes/42 line 217):** `0x56a050` writes a binary
+tagged block, not text: per char `'i'` {1, int32}, `'f'` {2, (float)double}, `'d'` {3, double},
+`'s'` {4, len4, bytes}, terminator 0. So floats pass through exactly. src bot_trigger (car.cpp
+~3706) formats `"%f"` text for the same kind of block (6 decimals) - a precision difference to check
+against move_trigger's parser.
+- src: `traffic::Car::k158` is `uint32_t` but the exe field is a float (MOVSS at 0x411d35).
+- `CrossPath::k5c` = exe cross path record +0x5c (notes/19 §110), the signal value read above.
+
+## 18. Card split for §16/§17
+- 262 (todo): CarData traffic pointer + case 0x38 (car.cpp/car.h) and the addTrafficCar /
+  remTrafficCar calls (natives.cpp).
+- 264 (todo, after 261 + 262): pose push tail 0x4118f0 + `push_pose` Graph hook (INVENTED, like
+  `reparent`) + the 0x40d8fd take-over call in the 261 creator (traffic.cpp/.h, runtime.cpp).
+- 261 does not need 262: the created car is slept by Part__initInstance (0x4c1f90 sleeps the root),
+  so without 0x38 it stays at its spawn pose; 264 adds the 0x38 call. Dependency dropped.
+- Remaining after 264: the vel/angvel/steer/spin/pitch/dir args of 0x4a99b0 (src `car_set_matrix`
+  takes pos/ypr only; notes/09 §514-540 covers most of it) - draft 265 when needed.
